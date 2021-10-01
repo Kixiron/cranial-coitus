@@ -1,0 +1,10 @@
+[package]
+name = "cranial-coitus"
+authors = ["Chase Wilson <me@chasewilson.dev>"]
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+
+[dependencies]
+clap = "3.0.0-beta.4"
+petgraph = { version = "0.6.0", features = ["stable_graph"] }

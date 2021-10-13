@@ -49,8 +49,21 @@ impl Rvsdg {
     }
 
     fn add_edge(&mut self, src: OutputPort, dest: InputPort, kind: EdgeKind) {
-        // TODO: Add some invariant assertions here
+        // TODO: Add some more invariant assertions here, ideally for
+        //       ensuring that we're creating the expected edge type for
+        //       the given ports
+        debug_assert_eq!(self.graph[src.0].kind, PortKind::Output);
+        debug_assert_eq!(self.graph[dest.0].kind, PortKind::Input);
+
         self.graph.add_edge(src.0, dest.0, kind);
+    }
+
+    pub fn total_nodes(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn contains_node(&self, node: NodeId) -> bool {
+        self.nodes.contains_key(&node)
     }
 
     pub fn add_value_edge(&mut self, src: OutputPort, dest: InputPort) {
@@ -77,8 +90,10 @@ impl Rvsdg {
         self.nodes.get(&node)
     }
 
+    #[track_caller]
     pub fn get_node(&self, node: NodeId) -> &Node {
-        self.try_node(node).unwrap()
+        self.try_node(node)
+            .expect("tried to get node that doesn't exist")
     }
 
     pub fn try_node_mut(&mut self, node: NodeId) -> Option<&mut Node> {
@@ -89,6 +104,10 @@ impl Rvsdg {
         self.try_node_mut(node).unwrap()
     }
 
+    pub fn port_parent<P: Port>(&self, port: P) -> NodeId {
+        self.graph[port.index()].parent
+    }
+
     pub fn incoming_count(&self, node: NodeId) -> usize {
         self.get_node(node)
             .inputs()
@@ -96,6 +115,7 @@ impl Rvsdg {
             .map(|input| {
                 self.graph
                     .edges_directed(input.0, Direction::Incoming)
+                    .filter(|edge| self.nodes.contains_key(&self.graph[edge.source()].parent))
                     .count()
             })
             .sum()
@@ -114,17 +134,42 @@ impl Rvsdg {
             .sum()
     }
 
-    pub fn get_input(&self, input: InputPort) -> (&Node, EdgeKind) {
+    pub fn input_source(&self, input: InputPort) -> OutputPort {
+        let mut incoming = self.graph.edges_directed(input.0, Direction::Incoming);
+        debug_assert_eq!(incoming.clone().count(), 1);
+
+        OutputPort(incoming.next().unwrap().source())
+    }
+
+    pub fn get_input(&self, input: InputPort) -> (&Node, OutputPort, EdgeKind) {
+        self.try_input(input).unwrap_or_else(|| {
+            let port = self.graph[input.0];
+
+            panic!(
+                "incorrect number of edges found for input port {:?} (port data: {:?}, node: {:?})",
+                input, port, self.nodes[&port.parent],
+            );
+        })
+    }
+
+    pub fn try_input(&self, input: InputPort) -> Option<(&Node, OutputPort, EdgeKind)> {
         let port = self.graph[input.0];
         debug_assert_eq!(port.kind, PortKind::Input);
 
         let mut incoming = self.graph.edges_directed(input.0, Direction::Incoming);
-        debug_assert_eq!(incoming.clone().count(), 1,);
+        // FIXME: debug_assert_matches!()
+        debug_assert!(
+            matches!(incoming.clone().count(), 0 | 1),
+            "incorrect number of edges found for input port {:?} (port data: {:?}, node: {:?})",
+            input,
+            port,
+            self.nodes[&port.parent],
+        );
 
-        let edge = incoming.next().unwrap();
-        let (src, kind) = (edge.source(), *edge.weight());
-
-        (&self.nodes[&self.graph[src].parent], kind)
+        incoming.next().map(|edge| {
+            let (src, kind) = (edge.source(), *edge.weight());
+            (&self.nodes[&self.graph[src].parent], OutputPort(src), kind)
+        })
     }
 
     pub fn get_output(&self, output: OutputPort) -> Option<(&Node, EdgeKind)> {
@@ -142,13 +187,40 @@ impl Rvsdg {
             })
     }
 
-    pub fn inputs(&self, node: NodeId) -> impl Iterator<Item = (InputPort, &Node, EdgeKind)> {
-        self.get_node(node).inputs().into_iter().map(|input| {
-            let (node, edge) = self.get_input(input);
-            (input, node, edge)
-        })
+    pub fn inputs(
+        &self,
+        node: NodeId,
+    ) -> impl Iterator<Item = (InputPort, &Node, OutputPort, EdgeKind)> {
+        let node = self.get_node(node);
+
+        node.inputs()
+            .into_iter()
+            .map(move |input| {
+                let port = self.graph[input.0];
+                let (node, output, kind) = self.try_input(input)
+                    .unwrap_or_else(|| panic!(
+                        "incorrect number of edges found for input port {:?} (port data: {:?}, node: {:?})",
+                        input,
+                        port,
+                        self.nodes[&port.parent],
+                    ));
+
+                (input, node, output, kind)
+            })
     }
 
+    pub fn try_inputs(
+        &self,
+        node: NodeId,
+    ) -> impl Iterator<Item = (InputPort, Option<(&Node, OutputPort, EdgeKind)>)> {
+        let node = self.get_node(node);
+
+        node.inputs()
+            .into_iter()
+            .map(move |input| (input, self.try_input(input)))
+    }
+
+    #[track_caller]
     pub fn outputs(
         &self,
         node: NodeId,
@@ -167,7 +239,7 @@ impl Rvsdg {
         self.graph.remove_edge(edge);
     }
 
-    pub fn remove_output(&mut self, output: OutputPort) {
+    pub fn remove_output_edge(&mut self, output: OutputPort) {
         let outgoing = self
             .graph
             .edges_directed(output.0, Direction::Outgoing)
@@ -182,6 +254,11 @@ impl Rvsdg {
         }
     }
 
+    pub fn remove_output_port(&mut self, output: OutputPort) {
+        self.remove_output_edge(output);
+        self.graph.remove_node(output.0);
+    }
+
     pub fn remove_inputs(&mut self, node: NodeId) {
         for input in self.get_node(node).inputs() {
             self.graph.remove_node(input.0);
@@ -194,11 +271,11 @@ impl Rvsdg {
         }
     }
 
-    pub fn replace_node(&mut self, node_id: NodeId, node: Node) {
+    pub fn replace_node<N: Into<Node>>(&mut self, node_id: NodeId, node: N) {
         *self
             .nodes
             .get_mut(&node_id)
-            .expect("attempted to replace a node that doesn't exist") = node;
+            .expect("attempted to replace a node that doesn't exist") = node.into();
     }
 
     pub fn remove_node(&mut self, node: NodeId) {
@@ -207,26 +284,55 @@ impl Rvsdg {
         self.nodes.remove(&node);
     }
 
-    pub fn splice_ports(&mut self, input: InputPort, output: OutputPort) {
-        if let Some((src, src_kind)) = self
+    pub fn rewire_dependents(&mut self, old_port: OutputPort, rewire_to: OutputPort) {
+        let edges: Vec<_> = self
             .graph
-            .edges_directed(input.0, Direction::Incoming)
-            .next()
-            .map(|edge| (edge.source(), *edge.weight()))
-        {
-            if let Some((dest, dest_kind)) = self
+            .edges_directed(old_port.0, Direction::Outgoing)
+            .map(|edge| (edge.id(), edge.target(), *edge.weight()))
+            .collect();
+
+        for (edge, dest, kind) in edges {
+            self.graph.remove_edge(edge);
+            self.graph.add_edge(rewire_to.0, dest, kind);
+
+            // let parent = self.graph[dest].parent;
+            // for input in self.nodes.get_mut(&parent).unwrap().inputs_mut() {
+            //     if *input == InputPort(dest) {
+            //         println!("replaced {:?} on {:?} to point to {:?}")
+            //         *input = InputPort(dest);
+            //     }
+            // }
+        } //
+    }
+
+    pub fn splice_ports(&mut self, input: InputPort, output: OutputPort) {
+        debug_assert_eq!(self.port_parent(input), self.port_parent(output));
+
+        let mut incoming = self.graph.edges_directed(input.0, Direction::Incoming);
+        // FIXME: `debug_assert_matches!()`
+        debug_assert!(matches!(incoming.clone().count(), 1 | 0));
+
+        if let Some((src, src_kind)) = incoming.next().map(|edge| (edge.source(), *edge.weight())) {
+            for (dest, dest_kind) in self
                 .graph
                 .edges_directed(output.0, Direction::Outgoing)
-                .next()
                 .map(|edge| (edge.target(), *edge.weight()))
+                .collect::<Vec<_>>()
             {
                 println!(
-                    "splicing {:?}->{:?} into {:?}->{:?} (kind: {:?})",
+                    "splicing {:?}->{:?} into {:?}->{:?} (kind: {:?}, parent: {:?}, inputs: {:?}, outputs: {:?})",
                     input,
                     output,
                     OutputPort(src),
                     InputPort(dest),
                     src_kind,
+                    self.nodes[&self.graph[input.0].parent],
+                    self.inputs(self.graph[input.0].parent)
+                        .map(|(port, _, _, _)| port)
+                        .collect::<Vec<_>>(),
+                    self.outputs(self.graph[input.0].parent)
+                        .map(|(port, _)| port)
+                        .collect::<Vec<_>>(),
                 );
                 debug_assert_eq!(src_kind, dest_kind);
 
@@ -254,7 +360,7 @@ impl Rvsdg {
         let end_id = self.next_node();
 
         let effect_port = self.input_port(end_id);
-        self.add_edge(effect, effect_port, EdgeKind::Effect);
+        self.add_effect_edge(effect, effect_port);
 
         let end = End::new(end_id, effect_port);
         self.nodes.insert(end_id, Node::End(end));
@@ -273,14 +379,25 @@ impl Rvsdg {
         int
     }
 
+    pub fn bool(&mut self, value: bool) -> Bool {
+        let bool_id = self.next_node();
+
+        let output = self.output_port(bool_id);
+
+        let bool = Bool::new(bool_id, output);
+        self.nodes.insert(bool_id, Node::Bool(bool, value));
+
+        bool
+    }
+
     pub fn add(&mut self, lhs: OutputPort, rhs: OutputPort) -> Add {
         let add_id = self.next_node();
 
         let lhs_port = self.input_port(add_id);
-        self.add_edge(lhs, lhs_port, EdgeKind::Value);
+        self.add_value_edge(lhs, lhs_port);
 
         let rhs_port = self.input_port(add_id);
-        self.add_edge(rhs, rhs_port, EdgeKind::Value);
+        self.add_value_edge(rhs, rhs_port);
 
         let output = self.output_port(add_id);
 
@@ -294,10 +411,10 @@ impl Rvsdg {
         let load_id = self.next_node();
 
         let ptr_port = self.input_port(load_id);
-        self.add_edge(ptr, ptr_port, EdgeKind::Value);
+        self.add_value_edge(ptr, ptr_port);
 
         let effect_port = self.input_port(load_id);
-        self.add_edge(effect, effect_port, EdgeKind::Effect);
+        self.add_effect_edge(effect, effect_port);
 
         let loaded = self.output_port(load_id);
         let effect_out = self.output_port(load_id);
@@ -312,13 +429,13 @@ impl Rvsdg {
         let store_id = self.next_node();
 
         let ptr_port = self.input_port(store_id);
-        self.add_edge(ptr, ptr_port, EdgeKind::Value);
+        self.add_value_edge(ptr, ptr_port);
 
         let value_port = self.input_port(store_id);
-        self.add_edge(value, value_port, EdgeKind::Value);
+        self.add_value_edge(value, value_port);
 
         let effect_port = self.input_port(store_id);
-        self.add_edge(effect, effect_port, EdgeKind::Effect);
+        self.add_effect_edge(effect, effect_port);
 
         let effect_out = self.output_port(store_id);
 
@@ -332,7 +449,7 @@ impl Rvsdg {
         let input_id = self.next_node();
 
         let effect_port = self.input_port(input_id);
-        self.add_edge(effect, effect_port, EdgeKind::Effect);
+        self.add_effect_edge(effect, effect_port);
 
         let value = self.output_port(input_id);
         let effect_out = self.output_port(input_id);
@@ -347,10 +464,10 @@ impl Rvsdg {
         let output_id = self.next_node();
 
         let value_port = self.input_port(output_id);
-        self.add_edge(value, value_port, EdgeKind::Value);
+        self.add_value_edge(value, value_port);
 
         let effect_port = self.input_port(output_id);
-        self.add_edge(effect, effect_port, EdgeKind::Effect);
+        self.add_effect_edge(effect, effect_port);
 
         let effect_out = self.output_port(output_id);
 
@@ -389,24 +506,25 @@ impl Rvsdg {
     {
         let theta_id = self.next_node();
 
-        let effect_port = self.input_port(theta_id);
-        self.add_edge(effect, effect_port, EdgeKind::Effect);
+        let effect_in = self.input_port(theta_id);
+        self.add_effect_edge(effect, effect_in);
 
         // Wire up the external inputs to the theta node
-        let outer_inputs: Box<[_]> = inputs
+        let outer_inputs: Vec<_> = inputs
             .into_iter()
             .map(|input| {
                 let port = self.input_port(theta_id);
-                self.add_edge(input, port, EdgeKind::Value);
+                self.add_value_edge(input, port);
                 port
             })
             .collect();
 
         // Create the theta's subgraph
         let mut subgraph = Rvsdg::new();
+        subgraph.node_counter = self.node_counter;
 
         // Create the input ports within the subgraph
-        let (inner_inputs, inner_input_ports): (Vec<_>, Vec<_>) = (0..outer_inputs.len())
+        let (input_params, inner_input_ports): (Vec<_>, Vec<_>) = (0..outer_inputs.len())
             .map(|_| {
                 let param = subgraph.input_param(EdgeKind::Value);
                 (param.node, param.value())
@@ -418,48 +536,187 @@ impl Rvsdg {
         let ThetaData {
             outputs,
             condition,
-            effect: inner_effect_out,
+            effect: output_effect,
         } = theta(&mut subgraph, start.effect(), &inner_input_ports);
 
-        let _end = subgraph.end(inner_effect_out);
-        let effect_out = self.output_port(theta_id);
+        let _end = subgraph.end(output_effect);
 
-        let inner_outputs: Box<[_]> = outputs
+        let output_params: Vec<_> = outputs
             .iter()
             .map(|&output| subgraph.output_param(output, EdgeKind::Value).node)
             .collect();
 
-        let outer_outputs: Box<[_]> = (0..inner_outputs.len())
+        self.node_counter = subgraph.node_counter;
+
+        let effect_out = self.output_port(theta_id);
+        let outer_outputs: Vec<_> = (0..output_params.len())
             .map(|_| self.output_port(theta_id))
             .collect();
 
         let theta = Theta::new(
-            theta_id,
-            outer_inputs,
-            effect_port,
-            inner_inputs.into_boxed_slice(),
-            start.effect(),
-            outer_outputs,
-            effect_out,
-            inner_outputs,
-            inner_effect_out,
-            start.node,
-            Box::new(subgraph),
-            condition,
+            theta_id,           // node
+            outer_inputs,       // inputs
+            effect_in,          // effect_in
+            input_params,       // input_params
+            start.effect(),     // input_effect
+            outer_outputs,      // outputs
+            effect_out,         // effect_out
+            output_params,      // output_params
+            output_effect,      // output_effect
+            start.node,         // start_node
+            Box::new(subgraph), // body
+            condition,          // condition
         );
         self.nodes.insert(theta_id, Node::Theta(theta.clone()));
 
         theta
     }
 
+    pub fn phi<I, T, F>(
+        &mut self,
+        inputs: I,
+        effect: OutputPort,
+        condition: OutputPort,
+        truthy: T,
+        falsy: F,
+    ) -> Phi
+    where
+        I: IntoIterator<Item = OutputPort>,
+        T: FnOnce(&mut Rvsdg, OutputPort, &[OutputPort]) -> PhiData,
+        F: FnOnce(&mut Rvsdg, OutputPort, &[OutputPort]) -> PhiData,
+    {
+        let phi_id = self.next_node();
+
+        let effect_in = self.input_port(phi_id);
+        self.add_effect_edge(effect, effect_in);
+
+        let cond_port = self.input_port(phi_id);
+        self.add_value_edge(condition, cond_port);
+
+        // Wire up the external inputs to the phi node
+        let outer_inputs: Vec<_> = inputs
+            .into_iter()
+            .map(|input| {
+                let port = self.input_port(phi_id);
+                self.add_value_edge(input, port);
+                port
+            })
+            .collect();
+
+        // Create the phi's true branch
+        let mut truthy_subgraph = Rvsdg::new();
+        truthy_subgraph.node_counter = self.node_counter;
+
+        // Create the input ports within the subgraph
+        let (truthy_input_params, truthy_inner_input_ports): (Vec<_>, Vec<_>) = (0..outer_inputs
+            .len())
+            .map(|_| {
+                let param = truthy_subgraph.input_param(EdgeKind::Value);
+                (param.node, param.value())
+            })
+            .unzip();
+
+        // Create the branch's start node
+        let start = truthy_subgraph.start();
+        let PhiData {
+            outputs: truthy_outputs,
+            effect: truthy_output_effect,
+        } = truthy(
+            &mut truthy_subgraph,
+            start.effect(),
+            &truthy_inner_input_ports,
+        );
+
+        let _end = truthy_subgraph.end(truthy_output_effect);
+
+        let truthy_output_params: Vec<_> = truthy_outputs
+            .iter()
+            .map(|&output| truthy_subgraph.output_param(output, EdgeKind::Value).node)
+            .collect();
+
+        self.node_counter = truthy_subgraph.node_counter;
+
+        // Create the phi's true branch
+        let mut falsy_subgraph = Rvsdg::new();
+        falsy_subgraph.node_counter = self.node_counter;
+
+        // Create the input ports within the subgraph
+        let (falsy_input_params, falsy_inner_input_ports): (Vec<_>, Vec<_>) = (0..outer_inputs
+            .len())
+            .map(|_| {
+                let param = falsy_subgraph.input_param(EdgeKind::Value);
+                (param.node, param.value())
+            })
+            .unzip();
+
+        // Create the branch's start node
+        let start = falsy_subgraph.start();
+        let PhiData {
+            outputs: falsy_outputs,
+            effect: falsy_output_effect,
+        } = falsy(
+            &mut falsy_subgraph,
+            start.effect(),
+            &falsy_inner_input_ports,
+        );
+
+        let _end = falsy_subgraph.end(falsy_output_effect);
+
+        let falsy_output_params: Vec<_> = falsy_outputs
+            .iter()
+            .map(|&output| falsy_subgraph.output_param(output, EdgeKind::Value).node)
+            .collect();
+
+        self.node_counter = falsy_subgraph.node_counter;
+
+        // FIXME: I'd really like to be able to support variable numbers of inputs for each branch
+        //        to allow some more flexible optimizations like removing effect flow from a branch
+        debug_assert_eq!(truthy_input_params.len(), falsy_input_params.len());
+        let input_params = truthy_input_params
+            .into_iter()
+            .zip(falsy_input_params)
+            .map(|(truthy, falsy)| [truthy, falsy])
+            .collect();
+
+        debug_assert_eq!(truthy_output_params.len(), falsy_output_params.len());
+        let output_params: Vec<_> = truthy_output_params
+            .into_iter()
+            .zip(falsy_output_params)
+            .map(|(truthy, falsy)| [truthy, falsy])
+            .collect();
+
+        let effect_out = self.output_port(phi_id);
+        let outer_outputs: Vec<_> = (0..output_params.len())
+            .map(|_| self.output_port(phi_id))
+            .collect();
+
+        let phi = Phi::new(
+            phi_id,                                      // node
+            outer_inputs,                                // inputs
+            effect_in,                                   // effect_in
+            input_params,                                // input_params
+            start.effect(),                              // input_effect
+            outer_outputs,                               // outputs
+            effect_out,                                  // effect_out
+            output_params,                               // output_params
+            [truthy_output_effect, falsy_output_effect], // output_effect
+            start.node,                                  // start_node
+            Box::new([truthy_subgraph, falsy_subgraph]), // body
+            cond_port,                                   // condition
+        );
+        self.nodes.insert(phi_id, Node::Phi(phi.clone()));
+
+        phi
+    }
+
     pub fn eq(&mut self, lhs: OutputPort, rhs: OutputPort) -> Eq {
         let eq_id = self.next_node();
 
         let lhs_port = self.input_port(eq_id);
-        self.add_edge(lhs, lhs_port, EdgeKind::Value);
+        self.add_value_edge(lhs, lhs_port);
 
         let rhs_port = self.input_port(eq_id);
-        self.add_edge(rhs, rhs_port, EdgeKind::Value);
+        self.add_value_edge(rhs, rhs_port);
 
         let output = self.output_port(eq_id);
 
@@ -473,7 +730,7 @@ impl Rvsdg {
         let not_id = self.next_node();
 
         let input_port = self.input_port(not_id);
-        self.add_edge(input, input_port, EdgeKind::Value);
+        self.add_value_edge(input, input_port);
 
         let output = self.output_port(not_id);
 
@@ -492,6 +749,7 @@ impl Rvsdg {
 #[derive(Debug, Clone)]
 pub enum Node {
     Int(Int, i32),
+    Bool(Bool, bool),
     Array(Array, u16),
     Add(Add),
     Load(Load),
@@ -505,12 +763,92 @@ pub enum Node {
     OutputPort(OutputParam),
     Eq(Eq),
     Not(Not),
+    Phi(Phi),
+}
+
+impl From<InputParam> for Node {
+    fn from(v: InputParam) -> Self {
+        Self::InputPort(v)
+    }
+}
+
+impl From<Theta> for Node {
+    fn from(v: Theta) -> Self {
+        Self::Theta(v)
+    }
+}
+
+impl From<Output> for Node {
+    fn from(v: Output) -> Self {
+        Self::Output(v)
+    }
+}
+
+impl From<Input> for Node {
+    fn from(v: Input) -> Self {
+        Self::Input(v)
+    }
+}
+
+impl From<End> for Node {
+    fn from(v: End) -> Self {
+        Self::End(v)
+    }
+}
+
+impl From<Start> for Node {
+    fn from(v: Start) -> Self {
+        Self::Start(v)
+    }
+}
+
+impl From<Store> for Node {
+    fn from(v: Store) -> Self {
+        Self::Store(v)
+    }
+}
+
+impl From<Load> for Node {
+    fn from(v: Load) -> Self {
+        Self::Load(v)
+    }
+}
+
+impl From<Add> for Node {
+    fn from(v: Add) -> Self {
+        Self::Add(v)
+    }
+}
+
+impl From<OutputParam> for Node {
+    fn from(v: OutputParam) -> Self {
+        Self::OutputPort(v)
+    }
+}
+
+impl From<Eq> for Node {
+    fn from(v: Eq) -> Self {
+        Self::Eq(v)
+    }
+}
+
+impl From<Not> for Node {
+    fn from(v: Not) -> Self {
+        Self::Not(v)
+    }
+}
+
+impl From<Phi> for Node {
+    fn from(v: Phi) -> Self {
+        Self::Phi(v)
+    }
 }
 
 impl Node {
     pub fn node_id(&self) -> NodeId {
         match *self {
             Self::Int(Int { node, .. }, _)
+            | Self::Bool(Bool { node, .. }, _)
             | Self::Array(Array { node, .. }, _)
             | Self::Add(Add { node, .. })
             | Self::Load(Load { node, .. })
@@ -523,14 +861,15 @@ impl Node {
             | Self::InputPort(InputParam { node, .. })
             | Self::OutputPort(OutputParam { node, .. })
             | Self::Eq(Eq { node, .. })
-            | Self::Not(Not { node, .. }) => node,
+            | Self::Not(Not { node, .. })
+            | Self::Phi(Phi { node, .. }) => node,
         }
     }
 
     // FIXME: TinyVec?
     pub fn inputs(&self) -> Vec<InputPort> {
         match self {
-            Self::Int(_, _) => Vec::new(),
+            Self::Int(_, _) | Self::Bool(_, _) => Vec::new(),
             Self::Array(array, _) => array.elements.to_vec(),
             Self::Add(add) => vec![add.lhs, add.rhs],
             Self::Load(load) => vec![load.ptr, load.effect_in],
@@ -548,6 +887,42 @@ impl Node {
             Self::OutputPort(output) => vec![output.value],
             Self::Eq(eq) => vec![eq.lhs, eq.rhs],
             Self::Not(not) => vec![not.input],
+            Self::Phi(phi) => {
+                let mut inputs = phi.inputs.to_vec();
+                inputs.push(phi.condition);
+                inputs.push(phi.effect_in);
+                inputs
+            }
+        }
+    }
+
+    // FIXME: TinyVec?
+    pub fn inputs_mut(&mut self) -> Vec<&mut InputPort> {
+        match self {
+            Self::Int(_, _) | Self::Bool(_, _) => Vec::new(),
+            Self::Array(array, _) => array.elements.iter_mut().collect(),
+            Self::Add(add) => vec![&mut add.lhs, &mut add.rhs],
+            Self::Load(load) => vec![&mut load.ptr, &mut load.effect_in],
+            Self::Store(store) => vec![&mut store.ptr, &mut store.value, &mut store.effect_in],
+            Self::Start(_) => Vec::new(),
+            Self::End(end) => vec![&mut end.effect],
+            Self::Input(input) => vec![&mut input.effect_in],
+            Self::Output(output) => vec![&mut output.value, &mut output.effect_in],
+            Self::Theta(theta) => {
+                let mut inputs: Vec<_> = theta.inputs.iter_mut().collect();
+                inputs.push(&mut theta.effect_in);
+                inputs
+            }
+            Self::InputPort(_) => Vec::new(),
+            Self::OutputPort(output) => vec![&mut output.value],
+            Self::Eq(eq) => vec![&mut eq.lhs, &mut eq.rhs],
+            Self::Not(not) => vec![&mut not.input],
+            Self::Phi(phi) => {
+                let mut inputs: Vec<_> = phi.inputs.iter_mut().collect();
+                inputs.push(&mut phi.condition);
+                inputs.push(&mut phi.effect_in);
+                inputs
+            }
         }
     }
 
@@ -555,6 +930,7 @@ impl Node {
     pub fn outputs(&self) -> Vec<OutputPort> {
         match self {
             Self::Int(int, _) => vec![int.value],
+            Self::Bool(bool, _) => vec![bool.value],
             Self::Array(array, _) => vec![array.value],
             Self::Add(add) => vec![add.value],
             Self::Load(load) => vec![load.value, load.effect_out],
@@ -572,17 +948,22 @@ impl Node {
             Self::OutputPort(_) => Vec::new(),
             Self::Eq(eq) => vec![eq.value],
             Self::Not(not) => vec![not.value],
+            Self::Phi(phi) => {
+                let mut inputs = phi.outputs.to_vec();
+                inputs.push(phi.effect_out);
+                inputs
+            }
         }
     }
 
     pub fn input_desc(&self) -> EdgeDescriptor {
         match self {
-            Self::Int(..) | Self::Start(_) | Self::InputPort(_) => {
+            Self::Int(..) | Self::Bool(..) | Self::Start(_) | Self::InputPort(_) => {
                 EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::zero())
             }
             Self::Add(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::two()),
-            Self::Load(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::two()),
-            Self::Store(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::three()),
+            Self::Load(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one()),
+            Self::Store(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::two()),
             &Self::Array(_, len) => {
                 EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::exact(len as usize))
             }
@@ -598,29 +979,38 @@ impl Node {
             },
             Self::Eq(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::two()),
             Self::Not(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
+            Self::Phi(phi) => {
+                EdgeDescriptor::new(EdgeCount::one(), EdgeCount::exact(phi.inputs().len() + 1))
+            }
         }
     }
 
     pub fn output_desc(&self) -> EdgeDescriptor {
         match self {
-            Self::Int(..) | Self::Add(_) | Self::Array(..) | Self::OutputPort(_) => {
-                EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::unlimited())
-            }
+            Self::Int(..)
+            | Self::Bool(..)
+            | Self::Add(_)
+            | Self::Array(..)
+            | Self::OutputPort(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::unlimited()),
             Self::Load(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::unlimited()),
-            Self::Store(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one()),
+            Self::Store(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
             Self::Start(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
             Self::End(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::zero()),
             Self::Input(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
             Self::Output(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one()),
-            Self::Theta(theta) => {
-                EdgeDescriptor::new(EdgeCount::one(), EdgeCount::exact(theta.outputs().len()))
-            }
+            Self::Theta(theta) => EdgeDescriptor::new(
+                EdgeCount::one(),
+                EdgeCount::new(None, Some(theta.outputs().len())),
+            ),
             Self::InputPort(output) => match output.kind {
                 EdgeKind::Effect => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
                 EdgeKind::Value => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
             },
             Self::Eq(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
             Self::Not(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
+            Self::Phi(phi) => {
+                EdgeDescriptor::new(EdgeCount::one(), EdgeCount::exact(phi.outputs().len()))
+            }
         }
     }
 
@@ -634,6 +1024,22 @@ impl Node {
     pub const fn as_int(&self) -> Option<(Int, i32)> {
         if let Self::Int(int, val) = *self {
             Some((int, val))
+        } else {
+            None
+        }
+    }
+
+    pub const fn as_bool(&self) -> Option<(Bool, bool)> {
+        if let Self::Bool(bool, val) = *self {
+            Some((bool, val))
+        } else {
+            None
+        }
+    }
+
+    pub const fn as_store(&self) -> Option<Store> {
+        if let Self::Store(store) = *self {
+            Some(store)
         } else {
             None
         }
@@ -660,6 +1066,7 @@ impl Node {
         matches!(self, Self::Start(..))
     }
 
+    #[track_caller]
     pub fn to_theta_mut(&mut self) -> &mut Theta {
         if let Self::Theta(theta) = self {
             theta
@@ -667,9 +1074,71 @@ impl Node {
             panic!("attempted to get theta, got {:?}", self);
         }
     }
+
+    #[track_caller]
+    pub fn to_phi_mut(&mut self) -> &mut Phi {
+        if let Self::Phi(phi) = self {
+            phi
+        } else {
+            panic!("attempted to get phi, got {:?}", self);
+        }
+    }
+
+    #[track_caller]
+    pub fn to_store_mut(&mut self) -> &mut Store {
+        if let Self::Store(store) = self {
+            store
+        } else {
+            panic!("attempted to get store, got {:?}", self);
+        }
+    }
+
+    /// Returns `true` if the node is [`OutputPort`].
+    ///
+    /// [`OutputPort`]: Node::OutputPort
+    pub const fn is_output_port(&self) -> bool {
+        matches!(self, Self::OutputPort(..))
+    }
+
+    #[track_caller]
+    pub fn to_int(&self) -> Int {
+        if let Self::Int(int, _) = *self {
+            int
+        } else {
+            panic!("attempted to get int, got {:?}", self);
+        }
+    }
+
+    #[track_caller]
+    pub fn to_bool(&self) -> Bool {
+        if let Self::Bool(bool, _) = *self {
+            bool
+        } else {
+            panic!("attempted to get bool, got {:?}", self);
+        }
+    }
+
+    #[track_caller]
+    pub fn to_input_param(&self) -> InputParam {
+        if let Self::InputPort(param) = *self {
+            param
+        } else {
+            panic!("attempted to get input port, got {:?}", self);
+        }
+    }
+
+    #[track_caller]
+    pub fn to_output_param(&self) -> OutputParam {
+        if let Self::OutputPort(param) = *self {
+            param
+        } else {
+            panic!("attempted to get output port, got {:?}", self);
+        }
+    }
 }
 
-struct EdgeDescriptor {
+#[derive(Debug, Clone, Copy)]
+pub struct EdgeDescriptor {
     effect: EdgeCount,
     value: EdgeCount,
 }
@@ -678,9 +1147,18 @@ impl EdgeDescriptor {
     const fn new(effect: EdgeCount, value: EdgeCount) -> Self {
         Self { effect, value }
     }
+
+    pub const fn effect(&self) -> EdgeCount {
+        self.effect
+    }
+
+    pub const fn value(&self) -> EdgeCount {
+        self.value
+    }
 }
 
-struct EdgeCount {
+#[derive(Debug, Clone, Copy)]
+pub struct EdgeCount {
     min: Option<usize>,
     max: Option<usize>,
 }
@@ -713,9 +1191,26 @@ impl EdgeCount {
     const fn three() -> Self {
         Self::exact(3)
     }
+
+    pub const fn contains(&self, value: usize) -> bool {
+        match (self.min, self.max) {
+            (Some(min), None) => value >= min,
+            (None, Some(max)) => value <= max,
+            (Some(min), Some(max)) => value >= min && value <= max,
+            (None, None) => true,
+        }
+    }
+
+    pub const fn min(&self) -> Option<usize> {
+        self.min
+    }
+
+    pub const fn max(&self) -> Option<usize> {
+        self.max
+    }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct PortData {
     kind: PortKind,
     parent: NodeId,
@@ -771,7 +1266,7 @@ impl Display for EdgeKind {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Add {
     node: NodeId,
     lhs: InputPort,
@@ -789,6 +1284,10 @@ impl Add {
         }
     }
 
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
     /// Get the add's left hand side
     pub const fn lhs(&self) -> InputPort {
         self.lhs
@@ -804,7 +1303,7 @@ impl Add {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Int {
     node: NodeId,
     value: OutputPort,
@@ -824,7 +1323,27 @@ impl Int {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bool {
+    node: NodeId,
+    value: OutputPort,
+}
+
+impl Bool {
+    pub const fn new(node: NodeId, value: OutputPort) -> Self {
+        Self { node, value }
+    }
+
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
+    pub const fn value(&self) -> OutputPort {
+        self.value
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Load {
     node: NodeId,
     ptr: InputPort,
@@ -850,6 +1369,10 @@ impl Load {
         }
     }
 
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
     pub const fn ptr(&self) -> InputPort {
         self.ptr
     }
@@ -867,7 +1390,7 @@ impl Load {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Store {
     node: NodeId,
     ptr: InputPort,
@@ -893,12 +1416,20 @@ impl Store {
         }
     }
 
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
     pub const fn ptr(&self) -> InputPort {
         self.ptr
     }
 
     pub const fn value(&self) -> InputPort {
         self.value
+    }
+
+    pub fn value_mut(&mut self) -> &mut InputPort {
+        &mut self.value
     }
 
     pub const fn effect_in(&self) -> InputPort {
@@ -910,7 +1441,7 @@ impl Store {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Array {
     node: NodeId,
     elements: Box<[InputPort]>,
@@ -935,7 +1466,7 @@ impl Array {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Start {
     node: NodeId,
     effect: OutputPort,
@@ -946,7 +1477,7 @@ impl Start {
         Self { node, effect }
     }
 
-    pub const fn id(&self) -> NodeId {
+    pub const fn node(&self) -> NodeId {
         self.node
     }
 
@@ -955,7 +1486,7 @@ impl Start {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct End {
     node: NodeId,
     effect: InputPort,
@@ -967,7 +1498,7 @@ impl End {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InputParam {
     node: NodeId,
     value: OutputPort,
@@ -979,12 +1510,16 @@ impl InputParam {
         Self { node, value, kind }
     }
 
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
     pub const fn value(&self) -> OutputPort {
         self.value
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OutputParam {
     node: NodeId,
     value: InputPort,
@@ -1004,13 +1539,14 @@ impl OutputParam {
 #[derive(Debug, Clone)]
 pub struct Theta {
     node: NodeId,
-    inputs: Box<[InputPort]>,
+    inputs: Vec<InputPort>,
+    // TODO: Make the input & output effects optional and linked along with the inner effect params
     effect_in: InputPort,
-    input_params: Box<[NodeId]>,
+    input_params: Vec<NodeId>,
     input_effect: OutputPort,
-    outputs: Box<[OutputPort]>,
+    outputs: Vec<OutputPort>,
     effect_out: OutputPort,
-    output_params: Box<[NodeId]>,
+    output_params: Vec<NodeId>,
     output_effect: OutputPort,
     start_node: NodeId,
     body: Box<Rvsdg>,
@@ -1021,13 +1557,13 @@ impl Theta {
     #[allow(clippy::too_many_arguments)]
     const fn new(
         node: NodeId,
-        inputs: Box<[InputPort]>,
+        inputs: Vec<InputPort>,
         effect_in: InputPort,
-        input_params: Box<[NodeId]>,
+        input_params: Vec<NodeId>,
         input_effect: OutputPort,
-        outputs: Box<[OutputPort]>,
+        outputs: Vec<OutputPort>,
         effect_out: OutputPort,
-        output_params: Box<[NodeId]>,
+        output_params: Vec<NodeId>,
         output_effect: OutputPort,
         start_node: NodeId,
         body: Box<Rvsdg>,
@@ -1049,15 +1585,15 @@ impl Theta {
         }
     }
 
-    pub const fn id(&self) -> NodeId {
+    pub const fn node(&self) -> NodeId {
         self.node
     }
 
-    pub const fn inputs(&self) -> &[InputPort] {
+    pub fn inputs(&self) -> &[InputPort] {
         &self.inputs
     }
 
-    pub const fn input_params(&self) -> &[NodeId] {
+    pub fn input_params(&self) -> &[NodeId] {
         &self.input_params
     }
 
@@ -1065,12 +1601,20 @@ impl Theta {
         self.effect_in
     }
 
-    pub const fn outputs(&self) -> &[OutputPort] {
+    pub fn outputs(&self) -> &[OutputPort] {
         &self.outputs
     }
 
-    pub const fn output_params(&self) -> &[NodeId] {
+    pub fn outputs_mut(&mut self) -> &mut Vec<OutputPort> {
+        &mut self.outputs
+    }
+
+    pub fn output_params(&self) -> &[NodeId] {
         &self.output_params
+    }
+
+    pub fn output_params_mut(&mut self) -> &mut Vec<NodeId> {
+        &mut self.output_params
     }
 
     pub const fn effect_out(&self) -> OutputPort {
@@ -1092,9 +1636,13 @@ impl Theta {
     pub const fn start_node(&self) -> NodeId {
         self.start_node
     }
+
+    pub const fn condition(&self) -> OutputPort {
+        self.condition
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ThetaData {
     outputs: Box<[OutputPort]>,
     condition: OutputPort,
@@ -1114,7 +1662,128 @@ impl ThetaData {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
+pub struct Phi {
+    node: NodeId,
+    inputs: Vec<InputPort>,
+    // TODO: Make optional
+    effect_in: InputPort,
+    input_params: Vec<[NodeId; 2]>,
+    input_effect: OutputPort,
+    outputs: Vec<OutputPort>,
+    effect_out: OutputPort,
+    output_params: Vec<[NodeId; 2]>,
+    // TODO: Make optional, linked with `effect_in`
+    output_effects: [OutputPort; 2],
+    start_node: NodeId,
+    bodies: Box<[Rvsdg; 2]>,
+    condition: InputPort,
+}
+
+impl Phi {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        node: NodeId,
+        inputs: Vec<InputPort>,
+        effect_in: InputPort,
+        input_params: Vec<[NodeId; 2]>,
+        input_effect: OutputPort,
+        outputs: Vec<OutputPort>,
+        effect_out: OutputPort,
+        output_params: Vec<[NodeId; 2]>,
+        output_effects: [OutputPort; 2],
+        start_node: NodeId,
+        bodies: Box<[Rvsdg; 2]>,
+        condition: InputPort,
+    ) -> Self {
+        Self {
+            node,
+            inputs,
+            effect_in,
+            input_params,
+            input_effect,
+            outputs,
+            effect_out,
+            output_params,
+            output_effects,
+            start_node,
+            bodies,
+            condition,
+        }
+    }
+
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
+    pub fn inputs(&self) -> &[InputPort] {
+        &self.inputs
+    }
+
+    pub const fn condition(&self) -> InputPort {
+        self.condition
+    }
+
+    pub const fn effect_in(&self) -> InputPort {
+        self.effect_in
+    }
+
+    pub const fn effect_out(&self) -> OutputPort {
+        self.effect_out
+    }
+
+    pub fn input_params(&self) -> &[[NodeId; 2]] {
+        &self.input_params
+    }
+
+    pub fn outputs(&self) -> &[OutputPort] {
+        &self.outputs
+    }
+
+    pub fn outputs_mut(&mut self) -> &mut Vec<OutputPort> {
+        &mut self.outputs
+    }
+
+    pub fn output_params(&self) -> &[[NodeId; 2]] {
+        &self.output_params
+    }
+
+    pub const fn truthy(&self) -> &Rvsdg {
+        &self.bodies[0]
+    }
+
+    pub fn truthy_mut(&mut self) -> &mut Rvsdg {
+        &mut self.bodies[0]
+    }
+
+    pub const fn falsy(&self) -> &Rvsdg {
+        &self.bodies[1]
+    }
+
+    pub fn falsy_mut(&mut self) -> &mut Rvsdg {
+        &mut self.bodies[1]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhiData {
+    outputs: Box<[OutputPort]>,
+    effect: OutputPort,
+}
+
+impl PhiData {
+    pub fn new<O>(outputs: O, effect: OutputPort) -> Self
+    where
+        O: IntoIterator<Item = OutputPort>,
+    {
+        Self {
+            outputs: outputs.into_iter().collect(),
+            effect,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Input {
     node: NodeId,
     effect_in: InputPort,
@@ -1137,8 +1806,16 @@ impl Input {
         }
     }
 
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
     pub const fn value(&self) -> OutputPort {
         self.value
+    }
+
+    pub const fn effect_in(&self) -> InputPort {
+        self.effect_in
     }
 
     pub const fn effect(&self) -> OutputPort {
@@ -1146,7 +1823,7 @@ impl Input {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Output {
     node: NodeId,
     value: InputPort,
@@ -1169,12 +1846,24 @@ impl Output {
         }
     }
 
+    pub const fn value(&self) -> InputPort {
+        self.value
+    }
+
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
+    pub const fn effect_in(&self) -> InputPort {
+        self.effect_in
+    }
+
     pub const fn effect(&self) -> OutputPort {
         self.effect_out
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Eq {
     node: NodeId,
     lhs: InputPort,
@@ -1192,6 +1881,10 @@ impl Eq {
         }
     }
 
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
     /// Get the eq's left hand side
     pub const fn lhs(&self) -> InputPort {
         self.lhs
@@ -1207,7 +1900,7 @@ impl Eq {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Not {
     node: NodeId,
     input: InputPort,
@@ -1217,6 +1910,10 @@ pub struct Not {
 impl Not {
     const fn new(node: NodeId, input: InputPort, value: OutputPort) -> Self {
         Self { node, input, value }
+    }
+
+    pub const fn node(&self) -> NodeId {
+        self.node
     }
 
     /// Get the not's input
@@ -1231,7 +1928,7 @@ impl Not {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
-pub struct NodeId(u32);
+pub struct NodeId(pub u32);
 
 impl Debug for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1251,7 +1948,7 @@ pub trait Port: Debug + Clone + Copy + PartialEq + cmp::Eq + Hash {
     fn index(&self) -> NodeIndex;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct InputPort(NodeIndex);
 
@@ -1275,7 +1972,7 @@ impl Display for InputPort {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct OutputPort(NodeIndex);
 

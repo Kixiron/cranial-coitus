@@ -12,7 +12,6 @@ use std::{
 
 #[derive(Debug)]
 pub struct IrBuilder {
-    id: u32,
     instructions: Vec<Instruction>,
     values: HashMap<OutputPort, Value>,
     evaluated: HashSet<NodeId>,
@@ -22,18 +21,11 @@ pub struct IrBuilder {
 impl IrBuilder {
     pub fn new() -> Self {
         Self {
-            id: 0,
             instructions: Vec::new(),
             values: HashMap::new(),
             evaluated: HashSet::new(),
             evaluation_stack: Vec::new(),
         }
-    }
-
-    fn next_id(&mut self) -> VarId {
-        let id = VarId::new(self.id);
-        self.id += 1;
-        id
     }
 
     fn inst(&mut self, inst: impl Into<Instruction>) {
@@ -84,22 +76,22 @@ impl IrBuilder {
         }
 
         match node {
-            &crate::graph::Node::Int(int, value) => {
-                let var = self.next_id();
+            &Node::Int(int, value) => {
+                let var = VarId::new(int.node().0);
                 self.inst(crate::ir::Assign::new(var, Const::Int(value)));
 
                 self.values.insert(int.value(), var.into());
             }
 
             &Node::Bool(bool, value) => {
-                let var = self.next_id();
+                let var = VarId::new(bool.node().0);
                 self.inst(Assign::new(var, Const::Bool(value)));
 
                 self.values.insert(bool.value(), var.into());
             }
 
             Node::Add(add) => {
-                let var = self.next_id();
+                let var = VarId::new(add.node().0);
 
                 let lhs = input_values[&add.lhs()].clone();
                 let rhs = input_values[&add.rhs()].clone();
@@ -109,7 +101,7 @@ impl IrBuilder {
             }
 
             Node::Eq(eq) => {
-                let var = self.next_id();
+                let var = VarId::new(eq.node().0);
 
                 let lhs = input_values[&eq.lhs()].clone();
                 let rhs = input_values[&eq.rhs()].clone();
@@ -119,7 +111,7 @@ impl IrBuilder {
             }
 
             Node::Not(not) => {
-                let var = self.next_id();
+                let var = VarId::new(not.node().0);
 
                 let value = input_values[&not.input()].clone();
                 self.inst(Assign::new(var, Not::new(value)));
@@ -128,7 +120,7 @@ impl IrBuilder {
             }
 
             Node::Load(load) => {
-                let var = self.next_id();
+                let var = VarId::new(load.node().0);
 
                 let ptr = input_values[&load.ptr()].clone();
                 self.inst(Assign::new(var, Load::new(ptr)));
@@ -143,7 +135,7 @@ impl IrBuilder {
             }
 
             Node::Input(input) => {
-                let var = self.next_id();
+                let var = VarId::new(input.node().0);
                 self.inst(Assign::new(var, Call::new("input", Vec::new())));
                 self.values.insert(input.value(), var.into());
             }
@@ -155,7 +147,6 @@ impl IrBuilder {
 
             Node::Theta(theta) => {
                 let mut builder = Self {
-                    id: self.id,
                     values: HashMap::new(),
                     instructions: Vec::new(),
                     evaluated: HashSet::new(),
@@ -170,7 +161,6 @@ impl IrBuilder {
                 }
 
                 let body = builder.translate(theta.body());
-                self.id = builder.id;
 
                 for (&output, &param) in theta.outputs().iter().zip(theta.output_params()) {
                     let value =
@@ -188,7 +178,6 @@ impl IrBuilder {
                 let cond = input_values[&phi.condition()].clone();
 
                 let mut truthy_builder = Self {
-                    id: self.id,
                     values: HashMap::new(),
                     instructions: Vec::new(),
                     evaluated: HashSet::new(),
@@ -203,7 +192,6 @@ impl IrBuilder {
                 }
 
                 let truthy = truthy_builder.translate(phi.truthy());
-                self.id = truthy_builder.id;
 
                 for (&output, &[param, _]) in phi.outputs().iter().zip(phi.output_params()) {
                     let value = truthy_builder.values
@@ -214,7 +202,6 @@ impl IrBuilder {
                 }
 
                 let mut falsy_builder = Self {
-                    id: self.id,
                     values: HashMap::new(),
                     instructions: Vec::new(),
                     evaluated: HashSet::new(),
@@ -229,7 +216,6 @@ impl IrBuilder {
                 }
 
                 let falsy = falsy_builder.translate(phi.falsy());
-                self.id = falsy_builder.id;
 
                 for (&output, &[_, param]) in phi.outputs().iter().zip(phi.output_params()) {
                     let value =
@@ -241,19 +227,14 @@ impl IrBuilder {
                 self.inst(Phi::new(cond, truthy.into_inner(), falsy.into_inner()));
             }
 
-            Node::InputPort(_) => {}
-            Node::OutputPort(_) => {}
-
-            Node::Array(_, _) => todo!(),
-
-            Node::Start(_) | Node::End(_) => {}
+            Node::InputPort(_) | Node::OutputPort(_) | Node::Start(_) | Node::End(_) => {}
         };
 
         self.evaluated.insert(node.node_id());
 
         let mut outputs: Vec<_> = graph
             .outputs(node.node_id())
-            .flat_map(|(_, data)| data.map(|(node, _)| node.node_id()))
+            .flat_map(|(_, data)| data.map(|(node, _, _)| node.node_id()))
             .collect();
         outputs.sort_unstable();
         self.evaluation_stack.extend(outputs);

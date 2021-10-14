@@ -547,13 +547,27 @@ impl From<Const> for Value {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Const {
     Int(i32),
     Bool(bool),
 }
 
 impl Const {
+    pub fn convert_to_i32(&self) -> Option<i32> {
+        match *self {
+            Self::Int(int) => Some(int),
+            Self::Bool(bool) => Some(bool as i32),
+        }
+    }
+
+    // pub fn convert_to_u8(&self) -> Option<u8> {
+    //     match *self {
+    //         Self::Int(int) => Some(int.rem_euclid(u8::MAX as i32) as u8),
+    //         Self::Bool(bool) => Some(bool as u8),
+    //     }
+    // }
+
     pub fn as_bool(&self) -> Option<bool> {
         if let Self::Bool(bool) = *self {
             Some(bool)

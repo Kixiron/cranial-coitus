@@ -1,9 +1,17 @@
+mod associative_add;
 mod const_dedup;
+mod const_folding;
+mod const_loads;
 mod dce;
+mod eliminate_const_phi;
 mod unobserved_store;
 
+pub use associative_add::AssociativeAdd;
 pub use const_dedup::ConstDedup;
+pub use const_folding::ConstFolding;
+pub use const_loads::ConstLoads;
 pub use dce::Dce;
+pub use eliminate_const_phi::ElimConstPhi;
 pub use unobserved_store::UnobservedStore;
 
 use crate::graph::{
@@ -12,6 +20,31 @@ use crate::graph::{
 };
 use std::collections::{HashSet, VecDeque};
 
+// TODO:
+// - Technically speaking, if the program contains no `input()` or `output()` invocations
+//   it has no *observable* side effects and we can thusly delete it all...
+// - Redundant loads propagating through other effect kinds
+//   ```
+//   _578 := load _577
+//   call output(_578)
+//   _579 := load _577
+//   ```
+// - Loop unrolling: We can always extract the first iteration of a loop into something like this
+//   ```
+//   // *ptr is known not to be zero
+//   <body>
+//   if *ptr != 0 {
+//     do { <body> } while *ptr != 0
+//   }
+//   ```
+//   provided that we know the condition (`*ptr` in the above) is non-zero. This should
+//   theoretically allow us to slowly unroll and fully (or at very least partially)
+//   evaluate loops in more generalized situations
+// - Data flow propagation: If we know the input
+// - Removing equivalent nodes (CSE)
+// - Region ingress/egress elimination (remove unused input and output edges
+//   that go into regions, including effect edges (but only when it's unused in
+//   all sub-regions))
 pub trait Pass {
     /// The name of the current pass
     fn pass_name(&self) -> &str;
@@ -23,8 +56,9 @@ pub trait Pass {
     }
 
     fn visit_graph_inner(&mut self, graph: &mut Rvsdg, mut stack_init: Vec<NodeId>) -> bool {
-        let span = tracing::info_span!("opt-pass", pass = self.pass_name());
+        let span = tracing::info_span!("pass", pass = self.pass_name());
         span.in_scope(|| {
+            tracing::debug!("running pass {}", self.pass_name());
             stack_init.sort_unstable();
 
             let (mut visited, mut stack, mut buffer) = (
@@ -83,7 +117,7 @@ pub trait Pass {
                         graph
                             .outputs(node_id)
                             .filter_map(|(_, data)| data)
-                            .filter_map(|(output, _)| {
+                            .filter_map(|(output, _, _)| {
                                 let output_id = output.node_id();
 
                                 // At first glance it may seem like `visited.contains(&output_id)` should always return
@@ -101,7 +135,18 @@ pub trait Pass {
 
             self.post_visit_graph(graph, &visited);
 
-            self.did_change()
+            let did_change = self.did_change();
+            tracing::debug!(
+                "finished running pass {} ({})",
+                self.pass_name(),
+                if did_change {
+                    "changed"
+                } else {
+                    "didn't change"
+                },
+            );
+
+            did_change
         })
     }
 
@@ -125,11 +170,9 @@ pub trait Pass {
                 Node::Phi(phi) => self.visit_phi(graph, phi),
                 Node::InputPort(input_param) => self.visit_input_param(graph, input_param),
                 Node::OutputPort(output_param) => self.visit_output_param(graph, output_param),
-
-                Node::Array(_, _) => todo!(),
             }
         } else {
-            println!("visited node that doesn't exist: {:?}", node_id);
+            tracing::error!("visited node that doesn't exist: {:?}", node_id);
         }
     }
 

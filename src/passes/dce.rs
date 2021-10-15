@@ -47,7 +47,14 @@ impl Pass for Dce {
                             | Node::OutputPort(..)
                     ))
             {
-                tracing::debug!("removed dead node {:?}", node_id);
+                tracing::debug!(
+                    visited = visited.contains(&node_id),
+                    incoming = graph.incoming_count(node_id),
+                    outgoing = graph.outgoing_count(node_id),
+                    node = ?graph.get_node(node_id),
+                    "removed dead node {:?}",
+                    node_id,
+                );
                 graph.remove_node(node_id);
                 self.changed();
             }

@@ -22,7 +22,8 @@ use std::collections::{HashSet, VecDeque};
 
 // TODO:
 // - Technically speaking, if the program contains no `input()` or `output()` invocations
-//   it has no *observable* side effects and we can thusly delete it all...
+//   and does not infinitely loop it has no *observable* side effects and we can thusly
+//   delete it all...
 // - Redundant loads propagating through other effect kinds
 //   ```
 //   _578 := load _577
@@ -69,11 +70,12 @@ pub trait Pass {
 
             // Initialize the stack with all of the start nodes within the graph
             stack.extend(stack_init);
-            stack.extend(
-                graph
-                    .nodes()
-                    .filter_map(|node_id| graph.get_node(node_id).is_start().then(|| node_id)),
-            );
+            stack.extend(graph.nodes().filter_map(|node_id| {
+                let node = graph.get_node(node_id);
+
+                (node.is_start() || node.is_end() || node.is_input_port() || node.is_output_port())
+                    .then(|| node_id)
+            }));
             // Sort for determinism
             stack.make_contiguous().sort_unstable();
 

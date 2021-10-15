@@ -123,29 +123,75 @@ impl IrBuilder {
                 let var = VarId::new(load.node().0);
 
                 let ptr = input_values[&load.ptr()].clone();
-                self.inst(Assign::new(var, Load::new(ptr)));
+                self.inst(Assign::new(
+                    var,
+                    Load::new(
+                        ptr,
+                        graph
+                            .try_input(load.effect_in())
+                            .and_then(|(_, output, _)| self.values.get(&output))
+                            .and_then(Value::as_var),
+                    ),
+                ));
 
                 self.values.insert(load.value(), var.into());
+                self.values.insert(load.effect(), var.into());
             }
 
             Node::Store(store) => {
+                let var = VarId::new(store.node().0);
+
                 let ptr = input_values[&store.ptr()].clone();
                 let value = input_values[&store.value()].clone();
-                self.inst(Store::new(ptr, value));
+                self.inst(Store::new(
+                    ptr,
+                    value,
+                    graph
+                        .try_input(store.effect_in())
+                        .and_then(|(_, output, _)| self.values.get(&output))
+                        .and_then(Value::as_var),
+                ));
+
+                self.values.insert(store.effect(), var.into());
             }
 
             Node::Input(input) => {
                 let var = VarId::new(input.node().0);
-                self.inst(Assign::new(var, Call::new("input", Vec::new())));
+
+                self.inst(Assign::new(
+                    var,
+                    Call::new(
+                        "input",
+                        Vec::new(),
+                        graph
+                            .try_input(input.effect_in())
+                            .and_then(|(_, output, _)| self.values.get(&output))
+                            .and_then(Value::as_var),
+                    ),
+                ));
+
                 self.values.insert(input.value(), var.into());
+                self.values.insert(input.effect(), var.into());
             }
 
             Node::Output(output) => {
+                let var = VarId::new(output.node().0);
+
                 let value = input_values[&output.value()].clone();
-                self.inst(Call::new("output", vec![value]));
+                self.inst(Call::new(
+                    "output",
+                    vec![value],
+                    graph
+                        .try_input(output.effect_in())
+                        .and_then(|(_, output, _)| self.values.get(&output))
+                        .and_then(Value::as_var),
+                ));
+
+                self.values.insert(output.effect(), var.into());
             }
 
             Node::Theta(theta) => {
+                let var = VarId::new(theta.node().0);
                 let mut builder = Self {
                     values: HashMap::new(),
                     instructions: Vec::new(),
@@ -169,12 +215,34 @@ impl IrBuilder {
                     self.values.insert(output, value);
                 }
 
-                let cond = builder.values.get(&theta.condition()).cloned().unwrap();
+                let cond = theta.body().get_node(theta.condition()).to_output_param();
+                let cond = builder
+                    .values
+                    .get(&theta.body().get_input(cond.value()).1)
+                    .cloned();
 
-                self.inst(Theta::new(body.into_inner(), cond));
+                if cond.is_none() {
+                    tracing::error!(
+                        "failed to get condition for theta {:?} (cond: {:?})",
+                        theta.node(),
+                        theta.condition(),
+                    );
+                }
+
+                self.inst(Theta::new(
+                    body.into_inner(),
+                    cond,
+                    graph
+                        .try_input(theta.effect_in())
+                        .and_then(|(_, output, _)| self.values.get(&output))
+                        .and_then(Value::as_var),
+                ));
+
+                self.values.insert(theta.effect_out(), var.into());
             }
 
             Node::Phi(phi) => {
+                let var = VarId::new(phi.node().0);
                 let cond = input_values[&phi.condition()].clone();
 
                 let mut truthy_builder = Self {
@@ -224,10 +292,25 @@ impl IrBuilder {
                     self.values.insert(output, value);
                 }
 
-                self.inst(Phi::new(cond, truthy.into_inner(), falsy.into_inner()));
+                self.inst(Phi::new(
+                    cond,
+                    truthy.into_inner(),
+                    falsy.into_inner(),
+                    graph
+                        .try_input(phi.effect_in())
+                        .and_then(|(_, output, _)| self.values.get(&output))
+                        .and_then(Value::as_var),
+                ));
+
+                self.values.insert(phi.effect_out(), var.into());
             }
 
-            Node::InputPort(_) | Node::OutputPort(_) | Node::Start(_) | Node::End(_) => {}
+            Node::Start(start) => {
+                let var = VarId::new(start.node().0);
+                self.values.insert(start.effect(), var.into());
+            }
+
+            Node::InputPort(_) | Node::OutputPort(_) | Node::End(_) => {}
         };
 
         self.evaluated.insert(node.node_id());

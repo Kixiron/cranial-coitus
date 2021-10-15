@@ -115,11 +115,13 @@ impl Pass for ConstFolding {
         // If both values are known we can statically evaluate the comparison
         if let (Some(lhs), Some(rhs)) = (lhs, rhs) {
             tracing::debug!(
-                "replaced self-equality with {} ({:?} == {:?}) {:?}",
+                "replaced const eq with {} ({:?} == {:?}) {:?} ({:?} == {:?})",
                 lhs == rhs,
                 lhs,
                 rhs,
                 eq,
+                graph.get_input(lhs_node),
+                graph.get_input(rhs_node),
             );
 
             let true_val = graph.bool(lhs == rhs);
@@ -129,7 +131,7 @@ impl Pass for ConstFolding {
             self.changed();
 
         // If the operands are equal this comparison will always be true
-        } else if lhs_node == rhs_node {
+        } else if graph.get_input(lhs_node).0.node_id() == graph.get_input(rhs_node).0.node_id() {
             tracing::debug!(
                 "replaced self-equality with true ({:?} == {:?}) {:?}",
                 lhs_node,

@@ -147,11 +147,12 @@ impl Pass for ConstLoads {
                         load,
                         store,
                     );
-                    self.changed();
 
                     graph.splice_ports(load.effect_in(), load.effect());
                     graph.rewire_dependents(load.value(), graph.input_source(store.value()));
                     graph.remove_node(load.node());
+
+                    self.changed();
                 }
             }
         }
@@ -194,14 +195,15 @@ impl Pass for ConstLoads {
 
                 // If the load's input is known but not constant, replace
                 // it with a constant input
-                if !graph.get_input(store.value()).0.is_int() {
+                if graph.get_input(store.value()).0.is_int() {
+                    tracing::debug!("redirected {:?} to a constant of {}", store, value);
+
                     let int = graph.int(value);
                     self.values.insert(int.node(), (value as i32).into());
 
                     graph.remove_input(store.value());
                     graph.add_value_edge(int.value(), store.value());
 
-                    tracing::debug!("redirected {:?} to a constant of {}", store, value);
                     self.changed();
                 }
             }

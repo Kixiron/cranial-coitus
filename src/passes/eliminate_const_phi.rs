@@ -23,7 +23,6 @@ impl ElimConstPhi {
     }
 }
 
-// TODO: Const fold `not`
 impl Pass for ElimConstPhi {
     fn pass_name(&self) -> &str {
         "eliminate-const-phi"

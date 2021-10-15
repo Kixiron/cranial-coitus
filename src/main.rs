@@ -34,8 +34,17 @@ fn main() {
     let _ = fs::remove_dir_all(&dump_dir);
     fs::create_dir_all(&dump_dir).unwrap();
 
-    let tokens = parse::parse(&contents);
-    Token::debug_tokens(&tokens, File::create(dump_dir.join("tokens")).unwrap());
+    let span = tracing::info_span!("parsing");
+    let tokens = span.in_scope(|| {
+        tracing::info!("started parsing {}", args.file.display());
+
+        let tokens = parse::parse(&contents);
+        if cfg!(debug_assertions) {
+            Token::debug_tokens(&tokens, File::create(dump_dir.join("tokens")).unwrap());
+        }
+
+        tokens
+    });
 
     let mut graph = Rvsdg::new();
     let start = graph.start();
@@ -83,8 +92,8 @@ fn main() {
     let program = IrBuilder::new().translate(&graph);
     println!(
         "Optimized Program (took {} iterations):\n{}",
-        program.pretty_print(),
         pass,
+        program.pretty_print(),
     );
 }
 
@@ -185,14 +194,18 @@ fn validate(graph: &Rvsdg) {
 }
 
 fn set_logger() {
+    use atty::Stream;
     use tracing_subscriber::{
-        fmt::{self, time},
-        prelude::__tracing_subscriber_SubscriberExt,
-        util::SubscriberInitExt,
-        EnvFilter,
+        fmt, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt, EnvFilter,
     };
 
-    let fmt_layer = fmt::layer().with_target(false).with_timer(time::uptime());
+    let fmt_layer = fmt::layer()
+        .with_target(false)
+        // .with_timer(time::uptime())
+        .without_time()
+        // Don't use ansi codes if we're not printing to a console
+        .with_ansi(atty::is(Stream::Stdout));
+
     let filter_layer = EnvFilter::try_from_env("COITUS_LOG")
         .or_else(|_| EnvFilter::try_new("info"))
         .unwrap();

@@ -128,14 +128,20 @@ impl From<Call> for Instruction {
 #[derive(Debug, Clone)]
 pub struct Theta {
     body: Vec<Instruction>,
-    cond: Value,
+    cond: Option<Value>,
+    pred_effect: Option<VarId>,
 }
 
 impl Theta {
-    pub fn new(body: Vec<Instruction>, cond: impl Into<Value>) -> Self {
+    pub fn new<C, E>(body: Vec<Instruction>, cond: C, pred_effect: E) -> Self
+    where
+        C: Into<Option<Value>>,
+        E: Into<Option<VarId>>,
+    {
         Self {
             body,
             cond: cond.into(),
+            pred_effect: pred_effect.into(),
         }
     }
 }
@@ -148,7 +154,13 @@ impl Pretty for Theta {
         A: Clone,
     {
         allocator
-            .text("do")
+            .text(if let Some(effect) = self.pred_effect {
+                Cow::Owned(format!("// pred: {}", effect))
+            } else {
+                Cow::Borrowed("// pred: ???")
+            })
+            .append(allocator.hardline())
+            .append(allocator.text("do"))
             .append(allocator.space())
             .append(allocator.text("{"))
             .append(if self.body.is_empty() {
@@ -175,7 +187,11 @@ impl Pretty for Theta {
             .append(allocator.space())
             .append(allocator.text("{"))
             .append(allocator.space())
-            .append(self.cond.pretty(allocator))
+            .append(if let Some(cond) = self.cond.as_ref() {
+                cond.pretty(allocator)
+            } else {
+                allocator.text("???")
+            })
             .append(allocator.space())
             .append(allocator.text("}"))
     }
@@ -186,14 +202,25 @@ pub struct Phi {
     cond: Value,
     truthy: Vec<Instruction>,
     falsy: Vec<Instruction>,
+    pred_effect: Option<VarId>,
 }
 
 impl Phi {
-    pub fn new(cond: impl Into<Value>, truthy: Vec<Instruction>, falsy: Vec<Instruction>) -> Self {
+    pub fn new<C, E>(
+        cond: C,
+        truthy: Vec<Instruction>,
+        falsy: Vec<Instruction>,
+        pred_effect: E,
+    ) -> Self
+    where
+        C: Into<Value>,
+        E: Into<Option<VarId>>,
+    {
         Self {
             cond: cond.into(),
             truthy,
             falsy,
+            pred_effect: pred_effect.into(),
         }
     }
 }
@@ -206,7 +233,13 @@ impl Pretty for Phi {
         A: Clone,
     {
         allocator
-            .text("if")
+            .text(if let Some(effect) = self.pred_effect {
+                Cow::Owned(format!("// pred: {}", effect))
+            } else {
+                Cow::Borrowed("// pred: ???")
+            })
+            .append(allocator.hardline())
+            .append(allocator.text("if"))
             .append(allocator.space())
             .append(self.cond.pretty(allocator))
             .append(allocator.space())
@@ -244,13 +277,19 @@ impl Pretty for Phi {
 pub struct Call {
     function: Cow<'static, str>,
     args: Vec<Value>,
+    pred_effect: Option<VarId>,
 }
 
 impl Call {
-    pub fn new(function: impl Into<Cow<'static, str>>, args: Vec<Value>) -> Self {
+    pub fn new<F, E>(function: F, args: Vec<Value>, pred_effect: E) -> Self
+    where
+        F: Into<Cow<'static, str>>,
+        E: Into<Option<VarId>>,
+    {
         Self {
             function: function.into(),
             args,
+            pred_effect: pred_effect.into(),
         }
     }
 }
@@ -262,16 +301,25 @@ impl Pretty for Call {
         D::Doc: Clone,
         A: Clone,
     {
-        allocator.text("call").append(allocator.space()).append(
-            allocator.text(self.function.clone()).append(
-                allocator
-                    .intersperse(
-                        self.args.iter().map(|arg| arg.pretty(allocator)),
-                        allocator.text(","),
-                    )
-                    .parens(),
-            ),
-        )
+        allocator
+            .text("call")
+            .append(allocator.space())
+            .append(
+                allocator.text(self.function.clone()).append(
+                    allocator
+                        .intersperse(
+                            self.args.iter().map(|arg| arg.pretty(allocator)),
+                            allocator.text(","),
+                        )
+                        .parens(),
+                ),
+            )
+            .append(allocator.space())
+            .append(allocator.text(if let Some(effect) = self.pred_effect {
+                Cow::Owned(format!("// pred: {}", effect))
+            } else {
+                Cow::Borrowed("// pred: ???")
+            }))
     }
 }
 
@@ -282,7 +330,10 @@ pub struct Assign {
 }
 
 impl Assign {
-    pub fn new(var: VarId, value: impl Into<Expr>) -> Self {
+    pub fn new<I>(var: VarId, value: I) -> Self
+    where
+        I: Into<Expr>,
+    {
         Self {
             var,
             value: value.into(),
@@ -377,7 +428,11 @@ pub struct Add {
 }
 
 impl Add {
-    pub fn new(lhs: impl Into<Value>, rhs: impl Into<Value>) -> Self {
+    pub fn new<L, R>(lhs: L, rhs: R) -> Self
+    where
+        L: Into<Value>,
+        R: Into<Value>,
+    {
         Self {
             lhs: lhs.into(),
             rhs: rhs.into(),
@@ -408,7 +463,10 @@ pub struct Not {
 }
 
 impl Not {
-    pub fn new(value: impl Into<Value>) -> Self {
+    pub fn new<V>(value: V) -> Self
+    where
+        V: Into<Value>,
+    {
         Self {
             value: value.into(),
         }
@@ -436,7 +494,11 @@ pub struct Eq {
 }
 
 impl Eq {
-    pub fn new(lhs: impl Into<Value>, rhs: impl Into<Value>) -> Self {
+    pub fn new<L, R>(lhs: L, rhs: R) -> Self
+    where
+        L: Into<Value>,
+        R: Into<Value>,
+    {
         Self {
             lhs: lhs.into(),
             rhs: rhs.into(),
@@ -464,11 +526,18 @@ impl Pretty for Eq {
 #[derive(Debug, Clone)]
 pub struct Load {
     ptr: Value,
+    pred_effect: Option<VarId>,
 }
 
 impl Load {
-    pub fn new(ptr: Value) -> Self {
-        Self { ptr }
+    pub fn new<E>(ptr: Value, pred_effect: E) -> Self
+    where
+        E: Into<Option<VarId>>,
+    {
+        Self {
+            ptr,
+            pred_effect: pred_effect.into(),
+        }
     }
 }
 
@@ -483,6 +552,12 @@ impl Pretty for Load {
             .text("load")
             .append(allocator.space())
             .append(self.ptr.pretty(allocator))
+            .append(allocator.space())
+            .append(allocator.text(if let Some(effect) = self.pred_effect {
+                Cow::Owned(format!("// pred: {}", effect))
+            } else {
+                Cow::Borrowed("// pred: ???")
+            }))
     }
 }
 
@@ -490,11 +565,19 @@ impl Pretty for Load {
 pub struct Store {
     ptr: Value,
     value: Value,
+    pred_effect: Option<VarId>,
 }
 
 impl Store {
-    pub fn new(ptr: Value, value: Value) -> Self {
-        Self { ptr, value }
+    pub fn new<E>(ptr: Value, value: Value, pred_effect: E) -> Self
+    where
+        E: Into<Option<VarId>>,
+    {
+        Self {
+            ptr,
+            value,
+            pred_effect: pred_effect.into(),
+        }
     }
 }
 
@@ -512,6 +595,12 @@ impl Pretty for Store {
             .append(allocator.text(","))
             .append(allocator.space())
             .append(self.value.pretty(allocator))
+            .append(allocator.space())
+            .append(allocator.text(if let Some(effect) = self.pred_effect {
+                Cow::Owned(format!("// pred: {}", effect))
+            } else {
+                Cow::Borrowed("// pred: ???")
+            }))
     }
 }
 
@@ -519,6 +608,16 @@ impl Pretty for Store {
 pub enum Value {
     Var(VarId),
     Const(Const),
+}
+
+impl Value {
+    pub fn as_var(&self) -> Option<VarId> {
+        if let Self::Var(var) = *self {
+            Some(var)
+        } else {
+            None
+        }
+    }
 }
 
 impl Pretty for Value {

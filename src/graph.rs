@@ -136,18 +136,27 @@ impl Rvsdg {
 
     #[track_caller]
     pub fn get_node(&self, node: NodeId) -> &Node {
-        self.try_node(node)
-            .expect("tried to get node that doesn't exist")
+        if let Some(node) = self.try_node(node) {
+            node
+        } else {
+            panic!("tried to get node that doesn't exist: {:?}", node)
+        }
     }
 
     pub fn try_node_mut(&mut self, node: NodeId) -> Option<&mut Node> {
         self.nodes.get_mut(&node)
     }
 
+    #[track_caller]
     pub fn get_node_mut(&mut self, node: NodeId) -> &mut Node {
-        self.try_node_mut(node).unwrap()
+        if let Some(node) = self.try_node_mut(node) {
+            node
+        } else {
+            panic!("tried to get node that doesn't exist: {:?}", node)
+        }
     }
 
+    #[track_caller]
     pub fn port_parent<P: Port>(&self, port: P) -> NodeId {
         self.graph[port.index()].parent
     }
@@ -231,8 +240,10 @@ impl Rvsdg {
     }
 
     pub fn get_output(&self, output: OutputPort) -> Option<(&Node, InputPort, EdgeKind)> {
-        let port = self.graph[output.0];
-        debug_assert_eq!(port.kind, PortKind::Output);
+        if cfg!(debug_assertions) && self.graph.contains_node(output.0) {
+            let port = self.graph[output.0];
+            debug_assert_eq!(port.kind, PortKind::Output);
+        }
 
         self.graph
             .edges_directed(output.0, Direction::Outgoing)
@@ -301,8 +312,6 @@ impl Rvsdg {
     }
 
     pub fn remove_output_edge(&mut self, output: OutputPort) {
-        debug_assert_eq!(self.graph[output.0].kind, PortKind::Output);
-
         let outgoing = self
             .graph
             .edges_directed(output.0, Direction::Outgoing)
@@ -311,6 +320,8 @@ impl Rvsdg {
 
         if let Some(edge) = outgoing {
             tracing::trace!("removing output port's edge {} (edge: {:?})", output, edge);
+            debug_assert_eq!(self.graph[output.0].kind, PortKind::Output);
+
             self.graph.remove_edge(edge);
         } else {
             tracing::trace!("output {} doesn't exist, not removing edge", output);
@@ -348,6 +359,9 @@ impl Rvsdg {
     }
 
     pub fn rewire_dependents(&mut self, old_port: OutputPort, rewire_to: OutputPort) {
+        debug_assert_eq!(self.graph[old_port.0].kind, PortKind::Output);
+        debug_assert_eq!(self.graph[rewire_to.0].kind, PortKind::Output);
+
         // FIXME: Remove this allocation
         let edges: Vec<_> = self
             .graph
@@ -356,6 +370,15 @@ impl Rvsdg {
             .collect();
 
         for (edge, dest, kind) in edges {
+            tracing::trace!(
+                "rewiring {:?}->{:?} into {:?}->{:?}",
+                old_port,
+                InputPort(dest),
+                rewire_to,
+                InputPort(dest),
+            );
+            debug_assert_eq!(self.graph[dest].kind, PortKind::Input);
+
             self.graph.remove_edge(edge);
             self.graph.add_edge(rewire_to.0, dest, kind);
 
@@ -370,6 +393,8 @@ impl Rvsdg {
     }
 
     pub fn splice_ports(&mut self, input: InputPort, output: OutputPort) {
+        debug_assert_eq!(self.graph[input.0].kind, PortKind::Input);
+        debug_assert_eq!(self.graph[output.0].kind, PortKind::Output);
         debug_assert_eq!(self.port_parent(input), self.port_parent(output));
 
         let mut incoming = self.graph.edges_directed(input.0, Direction::Incoming);
@@ -595,14 +620,15 @@ impl Rvsdg {
         let ThetaData {
             outputs,
             condition,
-            effect: output_effect,
+            effect,
         } = theta(&mut subgraph, start.effect(), &inner_input_ports);
 
-        let _end = subgraph.end(output_effect);
+        let end = subgraph.end(effect);
 
+        let condition_param = subgraph.output_param(condition, EdgeKind::Value);
         let output_params: Vec<_> = outputs
             .iter()
-            .map(|&output| subgraph.output_param(output, EdgeKind::Value).node)
+            .map(|&output| subgraph.output_param(output, EdgeKind::Value).node())
             .collect();
 
         self.node_counter = subgraph.node_counter;
@@ -613,18 +639,18 @@ impl Rvsdg {
             .collect();
 
         let theta = Theta::new(
-            theta_id,           // node
-            outer_inputs,       // inputs
-            effect_in,          // effect_in
-            input_params,       // input_params
-            start.effect(),     // input_effect
-            outer_outputs,      // outputs
-            effect_out,         // effect_out
-            output_params,      // output_params
-            output_effect,      // output_effect
-            start.node,         // start_node
-            Box::new(subgraph), // body
-            condition,          // condition
+            theta_id,               // node
+            outer_inputs,           // inputs
+            effect_in,              // effect_in
+            input_params,           // input_params
+            start.effect(),         // input_effect
+            outer_outputs,          // outputs
+            effect_out,             // effect_out
+            output_params,          // output_params
+            start.node,             // start_node
+            end.node(),             // end_node
+            Box::new(subgraph),     // body
+            condition_param.node(), // condition
         );
         self.nodes.insert(theta_id, Node::Theta(theta.clone()));
 
@@ -690,7 +716,7 @@ impl Rvsdg {
 
         let truthy_output_params: Vec<_> = truthy_outputs
             .iter()
-            .map(|&output| truthy_subgraph.output_param(output, EdgeKind::Value).node)
+            .map(|&output| truthy_subgraph.output_param(output, EdgeKind::Value).node())
             .collect();
 
         self.node_counter = truthy_subgraph.node_counter;
@@ -723,7 +749,7 @@ impl Rvsdg {
 
         let falsy_output_params: Vec<_> = falsy_outputs
             .iter()
-            .map(|&output| falsy_subgraph.output_param(output, EdgeKind::Value).node)
+            .map(|&output| falsy_subgraph.output_param(output, EdgeKind::Value).node())
             .collect();
 
         self.node_counter = falsy_subgraph.node_counter;
@@ -973,8 +999,8 @@ impl Node {
             Self::Load(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one()),
             Self::Store(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::two()),
             Self::End(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
-            Self::Input(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one()),
-            Self::Output(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
+            Self::Input(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
+            Self::Output(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one()),
             Self::Theta(theta) => {
                 EdgeDescriptor::new(EdgeCount::one(), EdgeCount::exact(theta.inputs().len()))
             }
@@ -999,7 +1025,7 @@ impl Node {
             Self::Store(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
             Self::Start(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
             Self::End(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::zero()),
-            Self::Input(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
+            Self::Input(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one()),
             Self::Output(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one()),
             Self::Theta(theta) => EdgeDescriptor::new(
                 EdgeCount::one(),
@@ -1593,6 +1619,14 @@ impl End {
     const fn new(node: NodeId, effect: InputPort) -> Self {
         Self { node, effect }
     }
+
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
+    pub const fn effect_in(&self) -> InputPort {
+        self.effect
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1628,6 +1662,10 @@ impl OutputParam {
         Self { node, value, kind }
     }
 
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
     pub const fn value(&self) -> InputPort {
         self.value
     }
@@ -1644,10 +1682,10 @@ pub struct Theta {
     outputs: Vec<OutputPort>,
     effect_out: OutputPort,
     output_params: Vec<NodeId>,
-    output_effect: OutputPort,
     start_node: NodeId,
+    end_node: NodeId,
     body: Box<Rvsdg>,
-    condition: OutputPort,
+    condition: NodeId,
 }
 
 impl Theta {
@@ -1661,10 +1699,10 @@ impl Theta {
         outputs: Vec<OutputPort>,
         effect_out: OutputPort,
         output_params: Vec<NodeId>,
-        output_effect: OutputPort,
         start_node: NodeId,
+        end_node: NodeId,
         body: Box<Rvsdg>,
-        condition: OutputPort,
+        condition: NodeId,
     ) -> Self {
         Self {
             node,
@@ -1675,8 +1713,8 @@ impl Theta {
             outputs,
             effect_out,
             output_params,
-            output_effect,
             start_node,
+            end_node,
             body,
             condition,
         }
@@ -1730,11 +1768,15 @@ impl Theta {
         *self.body
     }
 
-    pub const fn start_node(&self) -> NodeId {
+    pub const fn start(&self) -> NodeId {
         self.start_node
     }
 
-    pub const fn condition(&self) -> OutputPort {
+    pub const fn end(&self) -> NodeId {
+        self.end_node
+    }
+
+    pub const fn condition(&self) -> NodeId {
         self.condition
     }
 }

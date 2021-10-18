@@ -33,9 +33,7 @@ fn main() {
     let args = Args::parse();
     let contents = fs::read_to_string(&args.file).expect("failed to read file");
 
-    let dump_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/dumps")
-        .join(args.file.with_extension("").file_name().unwrap());
+    let dump_dir = Path::new("./dumps").join(args.file.with_extension("").file_name().unwrap());
 
     let _ = fs::remove_dir_all(&dump_dir);
     fs::create_dir_all(&dump_dir).unwrap();
@@ -73,7 +71,7 @@ fn main() {
         Box::new(UnobservedStore::new()),
         Box::new(ConstFolding::new()),
         Box::new(AssociativeAdd::new()),
-        // Box::new(ElimConstPhi::new()),
+        Box::new(ElimConstPhi::new()),
         Box::new(ConstLoads::new(args.cells as usize)),
         Box::new(ConstFolding::new()),
         Box::new(ConstDedup::new()),
@@ -110,18 +108,19 @@ fn main() {
                 stack.clear();
 
                 let current_graph = IrBuilder::new().translate(&graph).pretty_print();
-                if !current_graph.is_empty() && current_graph != "\n" {
+
+                let diff = TextDiff::configure()
+                    .algorithm(Algorithm::Patience)
+                    .diff_lines(&previous_graph, &current_graph);
+                let diff = format!("{}", diff.unified_diff());
+
+                if !current_graph.is_empty() && current_graph != "\n" && !diff.is_empty() {
                     fs::write(
                         dump_dir.join(format!("{}-{}.cir", pass.pass_name(), pass_num)),
                         &current_graph,
                     )
                     .unwrap();
                 }
-
-                let diff = TextDiff::configure()
-                    .algorithm(Algorithm::Patience)
-                    .diff_lines(&previous_graph, &current_graph);
-                let diff = format!("{}", diff.unified_diff());
 
                 if !diff.is_empty() {
                     write!(

@@ -134,8 +134,6 @@ impl Pass for ConstLoads {
             });
 
             if let Some(value) = stored_value {
-                self.values.insert(store.node(), (value as i32).into());
-
                 // If the load's input is known but not constant, replace
                 // it with a constant input
                 if !graph.get_input(store.value()).0.is_int() {

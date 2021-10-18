@@ -94,7 +94,11 @@ pub trait Pass {
 
             // If there's inputs that are yet to be processed, push this node to the very
             // bottom of the stack and add all of its dependencies to the top of the stack
-            if !buffer.is_empty() {
+            if !buffer.is_empty()
+                || graph
+                    .inputs(node_id)
+                    .any(|(_, input, ..)| !visited.contains(&input.node_id()))
+            {
                 // Sort for determinism
                 buffer.sort_unstable();
 

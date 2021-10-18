@@ -35,6 +35,11 @@ impl Pass for AssociativeAdd {
         self.changed
     }
 
+    fn reset(&mut self) {
+        self.values.clear();
+        self.changed = false;
+    }
+
     // TODO: Arithmetic folding
     // ```
     // _563 := add _562, _560

@@ -52,104 +52,91 @@ pub trait Pass {
 
     fn did_change(&self) -> bool;
 
+    fn reset(&mut self);
+
     fn visit_graph(&mut self, graph: &mut Rvsdg) -> bool {
-        self.visit_graph_inner(graph, Vec::new())
+        self.visit_graph_inner(graph, Vec::new(), &mut VecDeque::new())
     }
 
-    fn visit_graph_inner(&mut self, graph: &mut Rvsdg, mut stack_init: Vec<NodeId>) -> bool {
-        let span = tracing::info_span!("pass", pass = self.pass_name());
-        span.in_scope(|| {
-            tracing::debug!("running pass {}", self.pass_name());
-            stack_init.sort_unstable();
+    fn visit_graph_inner(
+        &mut self,
+        graph: &mut Rvsdg,
+        mut stack_init: Vec<NodeId>,
+        stack: &mut VecDeque<NodeId>,
+    ) -> bool {
+        stack_init.sort_unstable();
 
-            let (mut visited, mut stack, mut buffer) = (
-                HashSet::with_capacity(graph.total_nodes()),
-                VecDeque::with_capacity(graph.total_nodes()),
-                Vec::new(),
-            );
+        let (mut visited, mut buffer) = (HashSet::with_capacity(graph.total_nodes()), Vec::new());
 
-            // Initialize the stack with all of the start nodes within the graph
-            stack.extend(stack_init);
-            stack.extend(graph.nodes().filter_map(|node_id| {
-                let node = graph.get_node(node_id);
+        // Initialize the stack with all of the start nodes within the graph
+        stack.extend(stack_init);
+        stack.extend(graph.nodes().filter_map(|node_id| {
+            let node = graph.get_node(node_id);
 
-                (node.is_start() || node.is_end() || node.is_input_port() || node.is_output_port())
-                    .then(|| node_id)
-            }));
-            // Sort for determinism
-            stack.make_contiguous().sort_unstable();
+            (node.is_start() || node.is_end() || node.is_input_port() || node.is_output_port())
+                .then(|| node_id)
+        }));
+        // Sort for determinism
+        stack.make_contiguous().sort_unstable();
 
-            while let Some(node_id) = stack.pop_back() {
-                // If our attempts failed and we let a duplicate sneak onto the stack,
-                // skip if if we've already evaluated it
-                if visited.contains(&node_id) || !graph.contains_node(node_id) {
-                    continue;
-                }
-
-                // Add all the current node's inputs to the stack
-                buffer.extend(graph.inputs(node_id).filter_map(|(_, input, _, _)| {
-                    let input_id = input.node_id();
-                    (!visited.contains(&input_id) && !stack.contains(&input_id)).then(|| input_id)
-                }));
-
-                // If there's inputs that are yet to be processed, push this node to the very
-                // bottom of the stack and add all of its dependencies to the top of the stack
-                if !buffer.is_empty() {
-                    // Sort for determinism
-                    buffer.sort_unstable();
-
-                    stack.reserve(buffer.len() + 1);
-                    stack.extend(buffer.drain(..));
-                    stack.push_front(node_id);
-
-                    continue;
-                }
-
-                // Visit the node
-                self.visit(graph, node_id);
-
-                // Add the node to the list of nodes we've already visited
-                let existed = visited.insert(node_id);
-                debug_assert!(existed);
-
-                // If the node was deleted within the call to `.visit()` then don't add its dependents
-                if graph.contains_node(node_id) {
-                    // Add all the current node's outputs to the stack
-                    buffer.extend(
-                        graph
-                            .outputs(node_id)
-                            .filter_map(|(_, data)| data)
-                            .filter_map(|(output, _, _)| {
-                                let output_id = output.node_id();
-
-                                // At first glance it may seem like `visited.contains(&output_id)` should always return
-                                // true, it won't in the case of two identical edges to the same node
-                                (!visited.contains(&output_id) && !stack.contains(&output_id))
-                                    .then(|| output_id)
-                            }),
-                    );
-
-                    // Sort for determinism
-                    buffer.sort_unstable();
-                    stack.extend(buffer.drain(..));
-                }
+        while let Some(node_id) = stack.pop_back() {
+            // If our attempts failed and we let a duplicate sneak onto the stack,
+            // skip if if we've already evaluated it
+            if visited.contains(&node_id) || !graph.contains_node(node_id) {
+                continue;
             }
 
-            self.post_visit_graph(graph, &visited);
+            // Add all the current node's inputs to the stack
+            buffer.extend(graph.inputs(node_id).filter_map(|(_, input, _, _)| {
+                let input_id = input.node_id();
+                (!visited.contains(&input_id) && !stack.contains(&input_id)).then(|| input_id)
+            }));
 
-            let did_change = self.did_change();
-            tracing::debug!(
-                "finished running pass {} ({})",
-                self.pass_name(),
-                if did_change {
-                    "changed"
-                } else {
-                    "didn't change"
-                },
-            );
+            // If there's inputs that are yet to be processed, push this node to the very
+            // bottom of the stack and add all of its dependencies to the top of the stack
+            if !buffer.is_empty() {
+                // Sort for determinism
+                buffer.sort_unstable();
 
-            did_change
-        })
+                stack.reserve(buffer.len() + 1);
+                stack.extend(buffer.drain(..));
+                stack.push_front(node_id);
+
+                continue;
+            }
+
+            // Visit the node
+            self.visit(graph, node_id);
+
+            // Add the node to the list of nodes we've already visited
+            let existed = visited.insert(node_id);
+            debug_assert!(existed);
+
+            // If the node was deleted within the call to `.visit()` then don't add its dependents
+            if graph.contains_node(node_id) {
+                // Add all the current node's outputs to the stack
+                buffer.extend(
+                    graph
+                        .outputs(node_id)
+                        .filter_map(|(_, data)| data)
+                        .filter_map(|(output, _, _)| {
+                            let output_id = output.node_id();
+
+                            // At first glance it may seem like `visited.contains(&output_id)` should always return
+                            // true, it won't in the case of two identical edges to the same node
+                            (!visited.contains(&output_id) && !stack.contains(&output_id))
+                                .then(|| output_id)
+                        }),
+                );
+
+                // Sort for determinism
+                buffer.sort_unstable();
+                stack.extend(buffer.drain(..));
+            }
+        }
+
+        self.post_visit_graph(graph, &visited);
+        self.did_change()
     }
 
     fn post_visit_graph(&mut self, _graph: &mut Rvsdg, _visited: &HashSet<NodeId>) {}

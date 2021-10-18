@@ -29,6 +29,7 @@ impl Rvsdg {
         }
     }
 
+    #[allow(dead_code)]
     pub fn to_dot(&self, path: impl AsRef<Path>) {
         use std::io::Write;
 
@@ -101,6 +102,7 @@ impl Rvsdg {
 
     /// Collect all nodes from the current graph and all subgraphs
     #[track_caller]
+    #[allow(dead_code)]
     pub fn transitive_nodes(&self) -> Vec<&Node> {
         let mut buffer = Vec::new();
         self.transitive_nodes_into(&mut buffer);
@@ -143,11 +145,13 @@ impl Rvsdg {
         }
     }
 
+    #[allow(dead_code)]
     pub fn try_node_mut(&mut self, node: NodeId) -> Option<&mut Node> {
         self.nodes.get_mut(&node)
     }
 
     #[track_caller]
+    #[allow(dead_code)]
     pub fn get_node_mut(&mut self, node: NodeId) -> &mut Node {
         if let Some(node) = self.try_node_mut(node) {
             node
@@ -213,7 +217,8 @@ impl Rvsdg {
             let port = self.graph[input.0];
 
             panic!(
-                "incorrect number of edges found for input port {:?} (port data: {:?}, node: {:?})",
+                "incorrect number of edges found for input port {:?} \
+                 (port data: {:?}, node: {:?})",
                 input, port, self.nodes[&port.parent],
             );
         })
@@ -227,14 +232,18 @@ impl Rvsdg {
         // FIXME: debug_assert_matches!()
         debug_assert!(
             matches!(incoming.clone().count(), 0 | 1),
-            "incorrect number of edges found for input port {:?} (port data: {:?}, node: {:?})",
+            "incorrect number of edges found for input port {:?}, \
+             expected 0 or 1 but got {} (port data: {:?}, node: {:?})",
             input,
+            incoming.clone().count(),
             port,
             self.nodes[&port.parent],
         );
 
         incoming.next().map(|edge| {
             let (src, kind) = (edge.source(), *edge.weight());
+            debug_assert_eq!(self.graph[src].kind, PortKind::Output);
+
             (&self.nodes[&self.graph[src].parent], OutputPort(src), kind)
         })
     }
@@ -253,10 +262,11 @@ impl Rvsdg {
                 let node = &self.nodes[&self.graph[dest].parent];
                 debug_assert_eq!(self.graph[edge.target()].kind, PortKind::Input);
 
-                (node, InputPort(edge.source()), *edge.weight())
+                (node, InputPort(edge.target()), *edge.weight())
             })
     }
 
+    #[track_caller]
     pub fn inputs(
         &self,
         node: NodeId,
@@ -279,6 +289,7 @@ impl Rvsdg {
             })
     }
 
+    #[allow(dead_code)]
     pub fn try_inputs(
         &self,
         node: NodeId,
@@ -369,6 +380,14 @@ impl Rvsdg {
             .map(|edge| (edge.id(), edge.target(), *edge.weight()))
             .collect();
 
+        if edges.is_empty() {
+            tracing::debug!(
+                "tried to rewire dependents from {:?} to {:?}, but none were found",
+                old_port,
+                rewire_to,
+            );
+        }
+
         for (edge, dest, kind) in edges {
             tracing::trace!(
                 "rewiring {:?}->{:?} into {:?}->{:?}",
@@ -381,14 +400,6 @@ impl Rvsdg {
 
             self.graph.remove_edge(edge);
             self.graph.add_edge(rewire_to.0, dest, kind);
-
-            // let parent = self.graph[dest].parent;
-            // for input in self.nodes.get_mut(&parent).unwrap().inputs_mut() {
-            //     if *input == InputPort(dest) {
-            //         tracing::trace!("replaced {:?} on {:?} to point to {:?}")
-            //         *input = InputPort(dest);
-            //     }
-            // }
         }
     }
 
@@ -1092,6 +1103,7 @@ impl Node {
     }
 
     #[track_caller]
+    #[allow(dead_code)]
     pub fn to_add_mut(&mut self) -> &mut Add {
         if let Self::Add(add) = self {
             add
@@ -1122,6 +1134,7 @@ impl Node {
     }
 
     #[track_caller]
+    #[allow(dead_code)]
     pub fn to_theta_mut(&mut self) -> &mut Theta {
         if let Self::Theta(theta) = self {
             theta
@@ -1131,6 +1144,7 @@ impl Node {
     }
 
     #[track_caller]
+    #[allow(dead_code)]
     pub fn to_phi_mut(&mut self) -> &mut Phi {
         if let Self::Phi(phi) = self {
             phi
@@ -1140,6 +1154,7 @@ impl Node {
     }
 
     #[track_caller]
+    #[allow(dead_code)]
     pub fn to_store_mut(&mut self) -> &mut Store {
         if let Self::Store(store) = self {
             store
@@ -1163,6 +1178,7 @@ impl Node {
     }
 
     #[track_caller]
+    #[allow(dead_code)]
     pub fn to_int(&self) -> Int {
         if let Self::Int(int, _) = *self {
             int
@@ -1172,6 +1188,7 @@ impl Node {
     }
 
     #[track_caller]
+    #[allow(dead_code)]
     pub fn to_bool(&self) -> Bool {
         if let Self::Bool(bool, _) = *self {
             bool
@@ -1200,80 +1217,80 @@ impl Node {
 }
 
 impl From<InputParam> for Node {
-    fn from(v: InputParam) -> Self {
-        Self::InputPort(v)
+    fn from(input: InputParam) -> Self {
+        Self::InputPort(input)
     }
 }
 
 impl From<Theta> for Node {
-    fn from(v: Theta) -> Self {
-        Self::Theta(v)
+    fn from(theta: Theta) -> Self {
+        Self::Theta(theta)
     }
 }
 
 impl From<Output> for Node {
-    fn from(v: Output) -> Self {
-        Self::Output(v)
+    fn from(output: Output) -> Self {
+        Self::Output(output)
     }
 }
 
 impl From<Input> for Node {
-    fn from(v: Input) -> Self {
-        Self::Input(v)
+    fn from(input: Input) -> Self {
+        Self::Input(input)
     }
 }
 
 impl From<End> for Node {
-    fn from(v: End) -> Self {
-        Self::End(v)
+    fn from(end: End) -> Self {
+        Self::End(end)
     }
 }
 
 impl From<Start> for Node {
-    fn from(v: Start) -> Self {
-        Self::Start(v)
+    fn from(start: Start) -> Self {
+        Self::Start(start)
     }
 }
 
 impl From<Store> for Node {
-    fn from(v: Store) -> Self {
-        Self::Store(v)
+    fn from(store: Store) -> Self {
+        Self::Store(store)
     }
 }
 
 impl From<Load> for Node {
-    fn from(v: Load) -> Self {
-        Self::Load(v)
+    fn from(load: Load) -> Self {
+        Self::Load(load)
     }
 }
 
 impl From<Add> for Node {
-    fn from(v: Add) -> Self {
-        Self::Add(v)
+    fn from(add: Add) -> Self {
+        Self::Add(add)
     }
 }
 
 impl From<OutputParam> for Node {
-    fn from(v: OutputParam) -> Self {
-        Self::OutputPort(v)
+    fn from(output: OutputParam) -> Self {
+        Self::OutputPort(output)
     }
 }
 
 impl From<Eq> for Node {
-    fn from(v: Eq) -> Self {
-        Self::Eq(v)
+    fn from(eq: Eq) -> Self {
+        Self::Eq(eq)
     }
 }
 
 impl From<Not> for Node {
-    fn from(v: Not) -> Self {
-        Self::Not(v)
+    fn from(not: Not) -> Self {
+        Self::Not(not)
     }
 }
 
 impl From<Phi> for Node {
-    fn from(v: Phi) -> Self {
-        Self::Phi(v)
+    fn from(phi: Phi) -> Self {
+        Self::Phi(phi)
     }
 }
 
@@ -1328,6 +1345,7 @@ impl EdgeCount {
         Self::exact(2)
     }
 
+    #[allow(dead_code)]
     const fn three() -> Self {
         Self::exact(3)
     }
@@ -1433,6 +1451,7 @@ impl Add {
         self.lhs
     }
 
+    #[allow(dead_code)]
     pub fn lhs_mut(&mut self) -> &mut InputPort {
         &mut self.lhs
     }
@@ -1442,6 +1461,7 @@ impl Add {
         self.rhs
     }
 
+    #[allow(dead_code)]
     pub fn rhs_mut(&mut self) -> &mut InputPort {
         &mut self.rhs
     }
@@ -1576,6 +1596,7 @@ impl Store {
         self.value
     }
 
+    #[allow(dead_code)]
     pub fn value_mut(&mut self) -> &mut InputPort {
         &mut self.value
     }
@@ -1624,6 +1645,7 @@ impl End {
         self.node
     }
 
+    #[allow(dead_code)]
     pub const fn effect_in(&self) -> InputPort {
         self.effect
     }
@@ -1740,6 +1762,7 @@ impl Theta {
         &self.outputs
     }
 
+    #[allow(dead_code)]
     pub fn outputs_mut(&mut self) -> &mut Vec<OutputPort> {
         &mut self.outputs
     }
@@ -1748,6 +1771,7 @@ impl Theta {
         &self.output_params
     }
 
+    #[allow(dead_code)]
     pub fn output_params_mut(&mut self) -> &mut Vec<NodeId> {
         &mut self.output_params
     }
@@ -1764,14 +1788,17 @@ impl Theta {
         &mut self.body
     }
 
+    #[allow(dead_code)]
     pub fn into_body(self) -> Rvsdg {
         *self.body
     }
 
+    #[allow(dead_code)]
     pub const fn start(&self) -> NodeId {
         self.start_node
     }
 
+    #[allow(dead_code)]
     pub const fn end(&self) -> NodeId {
         self.end_node
     }
@@ -1890,6 +1917,7 @@ impl Phi {
         &self.outputs
     }
 
+    #[allow(dead_code)]
     pub fn outputs_mut(&mut self) -> &mut Vec<OutputPort> {
         &mut self.outputs
     }

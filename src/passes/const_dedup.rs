@@ -34,6 +34,11 @@ impl Pass for ConstDedup {
         self.changed
     }
 
+    fn reset(&mut self) {
+        self.constants.clear();
+        self.changed = false;
+    }
+
     fn visit_bool(&mut self, graph: &mut Rvsdg, bool: Bool, value: bool) {
         if let Some((&const_id, _)) = self
             .constants

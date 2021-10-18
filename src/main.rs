@@ -18,8 +18,11 @@ use crate::{
     },
 };
 use clap::Clap;
+use similar::{Algorithm, TextDiff};
 use std::{
+    collections::VecDeque,
     fs::{self, File},
+    io::{BufWriter, Write},
     path::Path,
 };
 
@@ -30,7 +33,10 @@ fn main() {
     let args = Args::parse();
     let contents = fs::read_to_string(&args.file).expect("failed to read file");
 
-    let dump_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/dumps");
+    let dump_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/dumps")
+        .join(args.file.with_extension("").file_name().unwrap());
+
     let _ = fs::remove_dir_all(&dump_dir);
     fs::create_dir_all(&dump_dir).unwrap();
 
@@ -54,47 +60,102 @@ fn main() {
 
     let (effect, _ptr) = lower_tokens::lower_tokens(&mut graph, ptr, effect, &tokens);
     graph.end(effect);
-
-    graph.to_dot(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/target/dumps/lowered.dot",
-    ));
     validate(&graph);
 
-    let program = IrBuilder::new().translate(&graph);
-    println!("Graph:\n{}", program.pretty_print());
+    let program = IrBuilder::new().translate(&graph).pretty_print();
+    fs::write(dump_dir.join("input.cir"), &program).unwrap();
 
-    let mut pass = 1;
+    let mut evolution = BufWriter::new(File::create(dump_dir.join("evolution.diff")).unwrap());
+    write!(&mut evolution, ">>>>> input\n{}", program).unwrap();
+
+    let mut passes: Vec<Box<dyn Pass>> = vec![
+        Box::new(Dce::new()),
+        Box::new(UnobservedStore::new()),
+        Box::new(ConstFolding::new()),
+        Box::new(AssociativeAdd::new()),
+        // Box::new(ElimConstPhi::new()),
+        Box::new(ConstLoads::new(args.cells as usize)),
+        Box::new(ConstFolding::new()),
+        Box::new(ConstDedup::new()),
+    ];
+    let (mut pass_num, mut stack, mut previous_graph) = (1, VecDeque::new(), program);
+
     loop {
-        let mut changed = Dce::new().visit_graph(&mut graph);
-        changed |= UnobservedStore::new().visit_graph(&mut graph);
-        changed |= ConstFolding::new().visit_graph(&mut graph);
-        changed |= AssociativeAdd::new().visit_graph(&mut graph);
-        changed |= ElimConstPhi::new().visit_graph(&mut graph);
-        changed |= ConstLoads::new(args.cells as usize).visit_graph(&mut graph);
-        changed |= ConstFolding::new().visit_graph(&mut graph);
-        changed |= ConstDedup::new().visit_graph(&mut graph);
-        validate(&graph);
+        let mut changed = false;
 
-        println!("finished simplify pass #{}", pass);
+        for (pass_idx, pass) in passes.iter_mut().enumerate() {
+            let span = tracing::info_span!("pass", pass = pass.pass_name());
+            span.in_scope(|| {
+                tracing::debug!(
+                    "running {} (pass #{}.{})",
+                    pass.pass_name(),
+                    pass_num,
+                    pass_idx,
+                );
 
-        if cfg!(debug_assertions) {
-            let program = IrBuilder::new().translate(&graph);
-            println!("{}", program.pretty_print());
+                changed |= pass.visit_graph_inner(&mut graph, Vec::new(), &mut stack);
+                tracing::debug!(
+                    "finished running {} (pass #{}.{}, {})",
+                    pass.pass_name(),
+                    pass_num,
+                    pass_idx,
+                    if pass.did_change() {
+                        "changed"
+                    } else {
+                        "didn't change"
+                    },
+                );
+
+                pass.reset();
+                stack.clear();
+
+                let current_graph = IrBuilder::new().translate(&graph).pretty_print();
+                if !current_graph.is_empty() && current_graph != "\n" {
+                    fs::write(
+                        dump_dir.join(format!("{}-{}.cir", pass.pass_name(), pass_num)),
+                        &current_graph,
+                    )
+                    .unwrap();
+                }
+
+                let diff = TextDiff::configure()
+                    .algorithm(Algorithm::Patience)
+                    .diff_lines(&previous_graph, &current_graph);
+                let diff = format!("{}", diff.unified_diff());
+
+                if !diff.is_empty() {
+                    write!(
+                        &mut evolution,
+                        ">>>>> {}-{}\n{}",
+                        pass.pass_name(),
+                        pass_num,
+                        diff,
+                    )
+                    .unwrap();
+
+                    fs::write(
+                        dump_dir.join(format!("{}-{}.diff", pass.pass_name(), pass_num)),
+                        diff,
+                    )
+                    .unwrap();
+                }
+
+                previous_graph = current_graph;
+            });
         }
 
-        pass += 1;
-        if !changed || pass >= args.iteration_limit.unwrap_or(usize::MAX) {
+        pass_num += 1;
+        if !changed || pass_num >= args.iteration_limit.unwrap_or(usize::MAX) {
             break;
         }
     }
 
-    let program = IrBuilder::new().translate(&graph);
-    println!(
+    let program = IrBuilder::new().translate(&graph).pretty_print();
+    print!(
         "Optimized Program (took {} iterations):\n{}",
-        pass,
-        program.pretty_print(),
+        pass_num, program,
     );
+    fs::write(dump_dir.join("output.cir"), program).unwrap();
 }
 
 // TODO: Turn validation into a pass

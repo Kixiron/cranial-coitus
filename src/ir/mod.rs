@@ -44,28 +44,11 @@ impl Pretty for Block {
         A: Clone,
     {
         allocator
-            .text("block")
-            .append(allocator.space())
-            .append(allocator.text("{"))
-            .append(if self.instructions.is_empty() {
-                allocator.nil()
-            } else {
-                allocator.hardline()
-            })
-            .append(
-                allocator
-                    .intersperse(
-                        self.instructions.iter().map(|inst| inst.pretty(allocator)),
-                        allocator.hardline(),
-                    )
-                    .indent(2),
+            .intersperse(
+                self.instructions.iter().map(|inst| inst.pretty(allocator)),
+                allocator.hardline(),
             )
-            .append(if self.instructions.is_empty() {
-                allocator.nil()
-            } else {
-                allocator.hardline()
-            })
-            .append(allocator.text("}"))
+            .append(allocator.hardline())
     }
 }
 

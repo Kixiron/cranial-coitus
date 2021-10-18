@@ -32,6 +32,11 @@ impl Pass for ElimConstPhi {
         self.changed
     }
 
+    fn reset(&mut self) {
+        self.values.clear();
+        self.changed = false;
+    }
+
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
         let replaced = self.values.insert(bool.node(), value);
         debug_assert!(replaced.is_none());
@@ -106,7 +111,7 @@ impl Pass for ElimConstPhi {
                         input_map.insert(branch_effect, input_effect);
                     }
 
-                    // Replace input ports with the outer region's output ports
+                // Replace input ports with the outer region's output ports
                 } else if node.is_input_port() {
                     for (&input, &params) in phi.inputs().iter().zip(phi.input_params()) {
                         let param = if condition { params[0] } else { params[1] };

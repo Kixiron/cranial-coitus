@@ -65,34 +65,50 @@ impl Pass for ConstLoads {
         self.changed
     }
 
+    fn reset(&mut self) {
+        self.values.clear();
+        self.changed = false;
+
+        for cell in &mut self.tape {
+            *cell = Some(0);
+        }
+    }
+
     fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
-        let ptr = graph
-            .inputs(load.node())
-            .find_map(|(port, ptr_node, _, _)| {
-                if port == load.ptr() {
-                    ptr_node
-                        .as_int()
-                        .map(|(_, ptr)| ptr)
-                        .or_else(|| self.values.get(&ptr_node.node_id()).and_then(Const::as_int))
-                } else {
-                    None
-                }
-            });
+        let ptr = graph.get_input(load.ptr()).0;
+        let ptr = ptr
+            .as_int()
+            .map(|(_, ptr)| ptr)
+            .or_else(|| self.values.get(&ptr.node_id()).and_then(Const::as_int));
 
         if let Some(offset) = ptr {
             let offset = offset.rem_euclid(self.tape.len() as i32) as usize;
 
             if let Some(value) = self.tape[offset] {
-                tracing::debug!("replacing {:?} with {}", load, value);
+                tracing::debug!(
+                    "replacing load at {} with value {:#04X}: {:?}",
+                    offset,
+                    value,
+                    load,
+                );
+
+                let int = graph.int(value);
+                self.values.insert(int.node(), (value as i32).into());
+
+                tracing::debug!("created int node {:?} with value {}", int.node(), value);
+                tracing::debug!(
+                    "rewiring effect edge bridging from {:?}-{:?} into {:?}->{:?} ({:?} to {:?})",
+                    load.effect_in(),
+                    load.effect(),
+                    graph.get_input(load.effect_in()).1,
+                    graph.get_output(load.effect()).unwrap().1,
+                    graph.get_input(load.effect_in()).0.node_id(),
+                    graph.get_output(load.effect()).unwrap().0.node_id(),
+                );
 
                 graph.splice_ports(load.effect_in(), load.effect());
-                graph.remove_output_edge(load.effect());
-                graph.remove_inputs(load.node());
-                graph.replace_node(
-                    load.node(),
-                    Node::Int(Int::new(load.node(), load.value()), value as i32),
-                );
-                self.values.insert(load.node(), (value as i32).into());
+                graph.rewire_dependents(load.value(), int.value());
+                graph.remove_node(load.node());
 
                 self.changed();
             }
@@ -100,8 +116,52 @@ impl Pass for ConstLoads {
     }
 
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
-        let effect_output = graph.get_output(store.effect());
+        let ptr = graph.get_input(store.ptr()).0;
+        let ptr = ptr.as_int().map(|(_, ptr)| ptr).or_else(|| {
+            self.values
+                .get(&ptr.node_id())
+                .and_then(Const::convert_to_i32)
+        });
 
+        if let Some(offset) = ptr {
+            let offset = offset.rem_euclid(self.tape.len() as i32) as usize;
+
+            let stored_value = graph.get_input(store.value()).0;
+            let stored_value = stored_value.as_int().map(|(_, value)| value).or_else(|| {
+                self.values
+                    .get(&stored_value.node_id())
+                    .and_then(Const::convert_to_i32)
+            });
+
+            if let Some(value) = stored_value {
+                self.values.insert(store.node(), (value as i32).into());
+
+                // If the load's input is known but not constant, replace
+                // it with a constant input
+                if !graph.get_input(store.value()).0.is_int() {
+                    tracing::debug!("redirected {:?} to a constant of {}", store, value);
+
+                    let int = graph.int(value);
+                    self.values.insert(int.node(), (value as i32).into());
+
+                    graph.remove_input(store.value());
+                    graph.add_value_edge(int.value(), store.value());
+
+                    self.changed();
+                }
+            }
+
+            self.tape[offset] = stored_value;
+        } else {
+            tracing::debug!("unknown store {:?}, invalidating tape", store);
+
+            // Invalidate the whole tape
+            for cell in self.tape.iter_mut() {
+                *cell = None;
+            }
+        }
+
+        let effect_output = graph.get_output(store.effect());
         if let Some((node, _, kind)) = effect_output {
             debug_assert_eq!(kind, EdgeKind::Effect);
 
@@ -148,83 +208,24 @@ impl Pass for ConstLoads {
                         store,
                     );
 
-                    graph.splice_ports(load.effect_in(), load.effect());
-                    graph.rewire_dependents(load.value(), graph.input_source(store.value()));
-                    graph.remove_node(load.node());
-
-                    self.changed();
+                    // graph.splice_ports(load.effect_in(), load.effect());
+                    // graph.rewire_dependents(load.value(), graph.input_source(store.value()));
+                    // graph.remove_node(load.node());
+                    //
+                    // self.changed();
                 }
-            }
-        }
-
-        let ptr = graph
-            .inputs(store.node())
-            .find_map(|(port, ptr_node, _, _)| {
-                if port == store.ptr() {
-                    ptr_node.as_int().map(|(_, ptr)| ptr).or_else(|| {
-                        self.values
-                            .get(&ptr_node.node_id())
-                            .and_then(Const::convert_to_i32)
-                    })
-                } else {
-                    None
-                }
-            });
-
-        if let Some(offset) = ptr {
-            let offset = offset.rem_euclid(self.tape.len() as i32) as usize;
-
-            let stored_value = graph
-                .inputs(store.node())
-                .find_map(|(port, value_node, _, _)| {
-                    if port == store.value() {
-                        value_node.as_int().map(|(_, value)| value).or_else(|| {
-                            self.values
-                                .get(&value_node.node_id())
-                                .and_then(Const::convert_to_i32)
-                        })
-                    } else {
-                        None
-                    }
-                });
-
-            self.tape[offset] = stored_value;
-
-            if let Some(value) = stored_value {
-                self.values.insert(store.node(), (value as i32).into());
-
-                // If the load's input is known but not constant, replace
-                // it with a constant input
-                if graph.get_input(store.value()).0.is_int() {
-                    tracing::debug!("redirected {:?} to a constant of {}", store, value);
-
-                    let int = graph.int(value);
-                    self.values.insert(int.node(), (value as i32).into());
-
-                    graph.remove_input(store.value());
-                    graph.add_value_edge(int.value(), store.value());
-
-                    self.changed();
-                }
-            }
-        } else {
-            tracing::debug!("unknown store {:?}, invalidating tape", store);
-
-            // Invalidate the whole tape
-            for cell in self.tape.iter_mut() {
-                *cell = None;
             }
         }
     }
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
         let replaced = self.values.insert(bool.node(), value.into());
-        debug_assert!(replaced.is_none());
+        debug_assert!(replaced.is_none() || replaced == Some(Const::Bool(value)));
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
         let replaced = self.values.insert(int.node(), value.into());
-        debug_assert!(replaced.is_none());
+        debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
     }
 
     fn visit_phi(&mut self, graph: &mut Rvsdg, mut phi: Phi) {

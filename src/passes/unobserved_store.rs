@@ -33,6 +33,11 @@ impl Pass for UnobservedStore {
         self.changed
     }
 
+    fn reset(&mut self) {
+        self.changed = false;
+        self.within_theta = false;
+    }
+
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
         if let Some((consumer, _, kind)) = graph.get_output(store.effect()) {
             debug_assert_eq!(kind, EdgeKind::Effect);

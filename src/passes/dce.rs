@@ -2,16 +2,20 @@ use crate::{
     graph::{Node, NodeId, Phi, Rvsdg, Theta},
     passes::Pass,
 };
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 /// Removes dead code from the graph
 pub struct Dce {
     changed: bool,
+    stack: VecDeque<NodeId>,
 }
 
 impl Dce {
     pub fn new() -> Self {
-        Self { changed: false }
+        Self {
+            changed: false,
+            stack: VecDeque::new(),
+        }
     }
 
     fn changed(&mut self) {
@@ -26,6 +30,10 @@ impl Pass for Dce {
 
     fn did_change(&self) -> bool {
         self.changed
+    }
+
+    fn reset(&mut self) {
+        self.changed = false;
     }
 
     fn post_visit_graph(&mut self, graph: &mut Rvsdg, visited: &HashSet<NodeId>) {
@@ -71,8 +79,9 @@ impl Pass for Dce {
             .map(|&[truthy, falsy]| (truthy, falsy))
             .unzip();
 
-        truthy_visitor.visit_graph_inner(phi.truthy_mut(), truthy_params);
-        falsy_visitor.visit_graph_inner(phi.falsy_mut(), falsy_params);
+        truthy_visitor.visit_graph_inner(phi.truthy_mut(), truthy_params, &mut self.stack);
+        falsy_visitor.visit_graph_inner(phi.falsy_mut(), falsy_params, &mut self.stack);
+
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 
@@ -89,7 +98,7 @@ impl Pass for Dce {
             .copied()
             .collect();
 
-        visitor.visit_graph_inner(theta.body_mut(), params);
+        visitor.visit_graph_inner(theta.body_mut(), params, &mut self.stack);
         self.changed |= visitor.did_change();
 
         graph.replace_node(theta.node(), theta);

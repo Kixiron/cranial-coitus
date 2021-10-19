@@ -3,20 +3,20 @@ use crate::{
     ir::Const,
     passes::Pass,
 };
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Fuses chained additions based on the law of associative addition
 // TODO: Equality is also associative but it's unclear whether or not
 //       that situation can actually arise within brainfuck programs
 pub struct AssociativeAdd {
-    values: HashMap<NodeId, Const>,
+    values: BTreeMap<NodeId, Const>,
     changed: bool,
 }
 
 impl AssociativeAdd {
     pub fn new() -> Self {
         Self {
-            values: HashMap::new(),
+            values: BTreeMap::new(),
             changed: false,
         }
     }

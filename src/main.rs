@@ -9,21 +9,22 @@ mod passes;
 
 use crate::{
     args::Args,
-    graph::{EdgeKind, Rvsdg},
+    graph::{EdgeKind, Node, Rvsdg},
     ir::{IrBuilder, Pretty},
     parse::Token,
     passes::{
         AssociativeAdd, ConstDedup, ConstFolding, ConstLoads, Dce, ElimConstPhi, Pass,
-        UnobservedStore,
+        UnobservedStore, ZeroLoop,
     },
 };
 use clap::Clap;
 use similar::{Algorithm, TextDiff};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     fs::{self, File},
     io::{BufWriter, Write},
     path::Path,
+    time::{Duration, Instant},
 };
 
 // TODO: Write an evaluator so that we can actually verify optimizations
@@ -38,6 +39,8 @@ fn main() {
     let _ = fs::remove_dir_all(&dump_dir);
     fs::create_dir_all(&dump_dir).unwrap();
 
+    let start_time = Instant::now();
+
     let span = tracing::info_span!("parsing");
     let tokens = span.in_scope(|| {
         tracing::info!("started parsing {}", args.file.display());
@@ -46,7 +49,9 @@ fn main() {
         if cfg!(debug_assertions) {
             Token::debug_tokens(&tokens, File::create(dump_dir.join("tokens")).unwrap());
         }
+        let elapsed = start_time.elapsed();
 
+        tracing::info!("finished parsing {} in {:#?}", args.file.display(), elapsed);
         tokens
     });
 
@@ -60,11 +65,12 @@ fn main() {
     graph.end(effect);
     validate(&graph);
 
-    let program = IrBuilder::new().translate(&graph).pretty_print();
-    fs::write(dump_dir.join("input.cir"), &program).unwrap();
+    let input_stats = graph.stats();
+    let input_program = IrBuilder::new().translate(&graph).pretty_print();
+    fs::write(dump_dir.join("input.cir"), &input_program).unwrap();
 
     let mut evolution = BufWriter::new(File::create(dump_dir.join("evolution.diff")).unwrap());
-    write!(&mut evolution, ">>>>> input\n{}", program).unwrap();
+    write!(&mut evolution, ">>>>> input\n{}", input_program).unwrap();
 
     let mut passes: Vec<Box<dyn Pass>> = vec![
         Box::new(Dce::new()),
@@ -72,11 +78,18 @@ fn main() {
         Box::new(ConstFolding::new()),
         Box::new(AssociativeAdd::new()),
         Box::new(ElimConstPhi::new()),
+        Box::new(ZeroLoop::new()),
         Box::new(ConstLoads::new(args.cells as usize)),
         Box::new(ConstFolding::new()),
         Box::new(ConstDedup::new()),
     ];
-    let (mut pass_num, mut stack, mut previous_graph) = (1, VecDeque::new(), program);
+    let (mut pass_num, mut stack, mut visited, mut buffer, mut previous_graph) = (
+        1,
+        VecDeque::new(),
+        BTreeSet::new(),
+        Vec::new(),
+        input_program.clone(),
+    );
 
     loop {
         let mut changed = false;
@@ -84,17 +97,22 @@ fn main() {
         for (pass_idx, pass) in passes.iter_mut().enumerate() {
             let span = tracing::info_span!("pass", pass = pass.pass_name());
             span.in_scope(|| {
-                tracing::debug!(
+                tracing::info!(
                     "running {} (pass #{}.{})",
                     pass.pass_name(),
                     pass_num,
                     pass_idx,
                 );
 
-                changed |= pass.visit_graph_inner(&mut graph, Vec::new(), &mut stack);
-                tracing::debug!(
-                    "finished running {} (pass #{}.{}, {})",
+                let start_time = Instant::now();
+                changed |=
+                    pass.visit_graph_inner(&mut graph, &mut stack, &mut visited, &mut buffer);
+                let elapsed = start_time.elapsed();
+
+                tracing::info!(
+                    "finished running {} in {:#?} (pass #{}.{}, {})",
                     pass.pass_name(),
+                    elapsed,
                     pass_num,
                     pass_idx,
                     if pass.did_change() {
@@ -109,20 +127,15 @@ fn main() {
 
                 let current_graph = IrBuilder::new().translate(&graph).pretty_print();
 
-                let diff = TextDiff::configure()
-                    .algorithm(Algorithm::Patience)
-                    .diff_lines(&previous_graph, &current_graph);
-                let diff = format!("{}", diff.unified_diff());
+                let diff = diff_ir(&previous_graph, &current_graph);
 
-                if !current_graph.is_empty() && current_graph != "\n" && !diff.is_empty() {
+                if !diff.is_empty() {
                     fs::write(
                         dump_dir.join(format!("{}-{}.cir", pass.pass_name(), pass_num)),
                         &current_graph,
                     )
                     .unwrap();
-                }
 
-                if !diff.is_empty() {
                     write!(
                         &mut evolution,
                         ">>>>> {}-{}\n{}",
@@ -149,21 +162,120 @@ fn main() {
         }
     }
 
-    let program = IrBuilder::new().translate(&graph).pretty_print();
+    let elapsed = start_time.elapsed();
+    let output_program = IrBuilder::new().translate(&graph).pretty_print();
+
+    print!("{}", output_program);
+
+    let output_stats = graph.stats();
+    let difference = input_stats.difference(output_stats);
     print!(
-        "Optimized Program (took {} iterations):\n{}",
-        pass_num, program,
+        "Optimized Program (took {} iterations and {:#?})\n\
+         Input Program Stats:\n  \
+           instructions : {}\n  \
+           branches     : {}\n  \
+           loops        : {}\n  \
+           loads        : {}\n  \
+           stores       : {}\n  \
+           constants    : {}\n  \
+           io ops       : {}\n\
+         Output Program Stats:\n  \
+           instructions : {}\n  \
+           branches     : {}\n  \
+           loops        : {}\n  \
+           loads        : {}\n  \
+           stores       : {}\n  \
+           constants    : {}\n  \
+           io ops       : {}\n\
+         Change:\n  \
+           instructions : {:>+6.02}%\n  \
+           branches     : {:>+6.02}%\n  \
+           loops        : {:>+6.02}%\n  \
+           loads        : {:>+6.02}%\n  \
+           stores       : {:>+6.02}%\n  \
+           constants    : {:>+6.02}%\n  \
+           io ops       : {:>+6.02}%\n\
+        ",
+        pass_num,
+        elapsed,
+        input_stats.instructions,
+        input_stats.branches,
+        input_stats.loops,
+        input_stats.loads,
+        input_stats.stores,
+        input_stats.constants,
+        input_stats.io_ops,
+        output_stats.instructions,
+        output_stats.branches,
+        output_stats.loops,
+        output_stats.loads,
+        output_stats.stores,
+        output_stats.constants,
+        output_stats.io_ops,
+        difference.instructions,
+        difference.branches,
+        difference.loops,
+        difference.loads,
+        difference.stores,
+        difference.constants,
+        difference.io_ops,
     );
-    fs::write(dump_dir.join("output.cir"), program).unwrap();
+
+    let io_diff = diff_ir(&input_program, &output_program);
+    if !io_diff.is_empty() {
+        fs::write(dump_dir.join("input-output.diff"), io_diff).unwrap();
+    }
+
+    fs::write(dump_dir.join("output.cir"), output_program).unwrap();
+}
+
+fn diff_ir(old: &str, new: &str) -> String {
+    let start_time = Instant::now();
+
+    let diff = TextDiff::configure()
+        .algorithm(Algorithm::Patience)
+        .deadline(Instant::now() + Duration::from_secs(5))
+        .diff_lines(old, new);
+
+    let diff = format!("{}", diff.unified_diff());
+
+    let elapsed = start_time.elapsed();
+    tracing::debug!(
+        target: "timings",
+        "took {:#?} to diff ir",
+        elapsed,
+    );
+
+    diff
 }
 
 // TODO: Turn validation into a pass
 // TODO: Make validation check edge and port kinds
 fn validate(graph: &Rvsdg) {
+    let start_time = Instant::now();
+
+    validate_inner(graph);
+
+    let elapsed = start_time.elapsed();
+    tracing::debug!(
+        target: "timings",
+        "took {:#?} to validate graph",
+        elapsed,
+    );
+}
+
+fn validate_inner(graph: &Rvsdg) {
     for (node_id, node) in graph
         .nodes()
         .map(|node_id| (node_id, graph.get_node(node_id)))
     {
+        if let Node::Theta(theta) = node {
+            validate_inner(theta.body());
+        } else if let Node::Phi(phi) = node {
+            validate_inner(phi.truthy());
+            validate_inner(phi.falsy());
+        }
+
         let input_desc = node.input_desc();
         let (input_effects, input_values) =
             graph

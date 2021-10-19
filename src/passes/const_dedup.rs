@@ -3,18 +3,18 @@ use crate::{
     ir::Const,
     passes::Pass,
 };
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Deduplicates constants within the graph, reusing them as much as possible
 pub struct ConstDedup {
-    constants: HashMap<NodeId, Const>,
+    constants: BTreeMap<NodeId, Const>,
     changed: bool,
 }
 
 impl ConstDedup {
     pub fn new() -> Self {
         Self {
-            constants: HashMap::new(),
+            constants: BTreeMap::new(),
             changed: false,
         }
     }

@@ -5,6 +5,7 @@ mod const_loads;
 mod dce;
 mod eliminate_const_phi;
 mod unobserved_store;
+mod zero_loop;
 
 pub use associative_add::AssociativeAdd;
 pub use const_dedup::ConstDedup;
@@ -13,18 +14,33 @@ pub use const_loads::ConstLoads;
 pub use dce::Dce;
 pub use eliminate_const_phi::ElimConstPhi;
 pub use unobserved_store::UnobservedStore;
+pub use zero_loop::ZeroLoop;
 
 use crate::graph::{
     Add, Bool, End, Eq, Input, InputParam, Int, Load, Node, NodeId, Not, Output, OutputParam, Phi,
     Rvsdg, Start, Store, Theta,
 };
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 
 // TODO:
+// - Addition https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.2B_y
+// - Subtraction https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_-_y
+// - Copy https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_y
+// - Multiplication https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.2A_y
+// - Squared https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.2A_x
+// - Division https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.2F_y
+// - Xor https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.5E_y
+// - Swap https://esolangs.org/wiki/Brainfuck_algorithms#swap_x.2C_y
+// - Negation https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_-x
+// - Bitwise not https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_not_x_.28bitwise.29
+// - Non-wrapping cell zeroing https://esolangs.org/wiki/Brainfuck_algorithms#Non-wrapping
+// - The rest of the motifs here https://esolangs.org/wiki/Brainfuck_algorithms
+// - Data flow propagation: Unconditional cell zeroing on zero branch
 // - Technically speaking, if the program contains no `input()` or `output()` invocations
 //   and does not infinitely loop it has no *observable* side effects and we can thusly
 //   delete it all...
-// - Redundant loads propagating through other effect kinds
+// - Redundant loads propagating through other effect kinds: This is probably best addressed by
+//   separating the IO and memory effect kinds
 //   ```
 //   _578 := load _577
 //   call output(_578)
@@ -41,11 +57,7 @@ use std::collections::{HashSet, VecDeque};
 //   provided that we know the condition (`*ptr` in the above) is non-zero. This should
 //   theoretically allow us to slowly unroll and fully (or at very least partially)
 //   evaluate loops in more generalized situations
-// - Data flow propagation: If we know the input
 // - Removing equivalent nodes (CSE)
-// - Region ingress/egress elimination (remove unused input and output edges
-//   that go into regions, including effect edges (but only when it's unused in
-//   all sub-regions))
 pub trait Pass {
     /// The name of the current pass
     fn pass_name(&self) -> &str;
@@ -55,29 +67,37 @@ pub trait Pass {
     fn reset(&mut self);
 
     fn visit_graph(&mut self, graph: &mut Rvsdg) -> bool {
-        self.visit_graph_inner(graph, Vec::new(), &mut VecDeque::new())
+        self.visit_graph_inner(
+            graph,
+            &mut VecDeque::new(),
+            &mut BTreeSet::new(),
+            &mut Vec::new(),
+        )
     }
 
     fn visit_graph_inner(
         &mut self,
         graph: &mut Rvsdg,
-        mut stack_init: Vec<NodeId>,
         stack: &mut VecDeque<NodeId>,
+        visited: &mut BTreeSet<NodeId>,
+        buffer: &mut Vec<NodeId>,
     ) -> bool {
-        stack_init.sort_unstable();
+        visited.clear();
+        buffer.clear();
 
-        let (mut visited, mut buffer) = (HashSet::with_capacity(graph.total_nodes()), Vec::new());
-
-        // Initialize the stack with all of the start nodes within the graph
-        stack.extend(stack_init);
-        stack.extend(graph.nodes().filter_map(|node_id| {
+        // Initialize the stack with all of the important nodes within the graph
+        // The reason we do this weird pushing thing is to make sure that the start nodes
+        // are to the end of the queue so that they'll be the first ones to be popped and
+        // processed
+        for node_id in graph.nodes() {
             let node = graph.get_node(node_id);
 
-            (node.is_start() || node.is_end() || node.is_input_port() || node.is_output_port())
-                .then(|| node_id)
-        }));
-        // Sort for determinism
-        stack.make_contiguous().sort_unstable();
+            if node.is_start() || node.is_input_port() {
+                stack.push_back(node_id);
+            } else if node.is_end() || node.is_output_port() {
+                stack.push_front(node_id);
+            }
+        }
 
         while let Some(node_id) = stack.pop_back() {
             // If our attempts failed and we let a duplicate sneak onto the stack,
@@ -87,24 +107,27 @@ pub trait Pass {
             }
 
             // Add all the current node's inputs to the stack
-            buffer.extend(graph.inputs(node_id).filter_map(|(_, input, _, _)| {
-                let input_id = input.node_id();
-                (!visited.contains(&input_id) && !stack.contains(&input_id)).then(|| input_id)
+            let mut missing_inputs = false;
+            buffer.extend(graph.try_inputs(node_id).filter_map(|(_, input)| {
+                input.and_then(|(input, ..)| {
+                    let input_id = input.node_id();
+
+                    if !visited.contains(&input_id) {
+                        missing_inputs = true;
+                        Some(input_id)
+                    } else {
+                        None
+                    }
+                })
             }));
 
-            // If there's inputs that are yet to be processed, push this node to the very
-            // bottom of the stack and add all of its dependencies to the top of the stack
-            if !buffer.is_empty()
-                || graph
-                    .inputs(node_id)
-                    .any(|(_, input, ..)| !visited.contains(&input.node_id()))
-            {
-                // Sort for determinism
-                buffer.sort_unstable();
-
+            // If there's inputs that are yet to be processed, push the current
+            // node into the stack and then all of its dependencies, ensuring
+            // that the dependencies are processed first
+            if missing_inputs {
                 stack.reserve(buffer.len() + 1);
+                stack.push_back(node_id);
                 stack.extend(buffer.drain(..));
-                stack.push_front(node_id);
 
                 continue;
             }
@@ -133,17 +156,19 @@ pub trait Pass {
                         }),
                 );
 
-                // Sort for determinism
-                buffer.sort_unstable();
                 stack.extend(buffer.drain(..));
             }
         }
 
-        self.post_visit_graph(graph, &visited);
+        self.post_visit_graph(graph, visited);
+        stack.clear();
+        buffer.clear();
+        visited.clear();
+
         self.did_change()
     }
 
-    fn post_visit_graph(&mut self, _graph: &mut Rvsdg, _visited: &HashSet<NodeId>) {}
+    fn post_visit_graph(&mut self, _graph: &mut Rvsdg, _visited: &BTreeSet<NodeId>) {}
 
     fn visit(&mut self, graph: &mut Rvsdg, node_id: NodeId) {
         if let Some(node) = graph.try_node(node_id).cloned() {

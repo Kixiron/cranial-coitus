@@ -3,18 +3,18 @@ use crate::{
     ir::Const,
     passes::Pass,
 };
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Evaluates constant operations within the program
 pub struct ConstFolding {
-    values: HashMap<NodeId, Const>,
+    values: BTreeMap<NodeId, Const>,
     changed: bool,
 }
 
 impl ConstFolding {
     pub fn new() -> Self {
         Self {
-            values: HashMap::new(),
+            values: BTreeMap::new(),
             changed: false,
         }
     }
@@ -24,7 +24,6 @@ impl ConstFolding {
     }
 }
 
-// TODO: Const fold `not`
 impl Pass for ConstFolding {
     fn pass_name(&self) -> &str {
         "constant-folding"

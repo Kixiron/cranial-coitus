@@ -2,18 +2,18 @@ use crate::{
     graph::{Bool, NodeId, Phi, Rvsdg, Theta},
     passes::Pass,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Evaluates constant operations within the program
 pub struct ElimConstPhi {
-    values: HashMap<NodeId, bool>,
+    values: BTreeMap<NodeId, bool>,
     changed: bool,
 }
 
 impl ElimConstPhi {
     pub fn new() -> Self {
         Self {
-            values: HashMap::new(),
+            values: BTreeMap::new(),
             changed: false,
         }
     }

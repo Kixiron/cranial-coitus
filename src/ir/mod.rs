@@ -6,12 +6,24 @@ use pretty::{Arena, DocAllocator, DocBuilder};
 use std::{
     borrow::Cow,
     fmt::{self, Debug, Display, Write},
+    time::Instant,
 };
 
 pub trait Pretty {
     fn pretty_print(&self) -> String {
+        let start_time = Instant::now();
+
         let arena = Arena::<()>::new();
-        self.pretty(&arena).1.pretty(80).to_string()
+        let pretty = self.pretty(&arena).1.pretty(80).to_string();
+
+        let elapsed = start_time.elapsed();
+        tracing::debug!(
+            target: "timings",
+            "took {:#?} to pretty print ir",
+            elapsed,
+        );
+
+        pretty
     }
 
     fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>

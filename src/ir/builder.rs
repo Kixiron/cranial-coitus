@@ -6,25 +6,28 @@ use crate::{
     },
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet},
     mem,
+    time::Instant,
 };
 
 #[derive(Debug)]
 pub struct IrBuilder {
     instructions: Vec<Instruction>,
-    values: HashMap<OutputPort, Value>,
-    evaluated: HashSet<NodeId>,
+    values: BTreeMap<OutputPort, Value>,
+    evaluated: BTreeSet<NodeId>,
     evaluation_stack: Vec<NodeId>,
+    top_level: bool,
 }
 
 impl IrBuilder {
     pub fn new() -> Self {
         Self {
             instructions: Vec::new(),
-            values: HashMap::new(),
-            evaluated: HashSet::new(),
+            values: BTreeMap::new(),
+            evaluated: BTreeSet::new(),
             evaluation_stack: Vec::new(),
+            top_level: true,
         }
     }
 
@@ -33,6 +36,11 @@ impl IrBuilder {
     }
 
     pub fn translate(&mut self, graph: &Rvsdg) -> Block {
+        let start_time = Instant::now();
+
+        let old_level = self.top_level;
+        self.top_level = false;
+
         self.evaluation_stack.extend(graph.nodes());
         self.evaluation_stack.sort_unstable();
 
@@ -42,7 +50,20 @@ impl IrBuilder {
             }
         }
 
-        Block::new(mem::take(&mut self.instructions))
+        let block = Block::new(mem::take(&mut self.instructions));
+
+        self.top_level = old_level;
+
+        if self.top_level {
+            let elapsed = start_time.elapsed();
+            tracing::debug!(
+                target: "timings",
+                "took {:#?} to sequentialize rvsdg",
+                elapsed,
+            );
+        }
+
+        block
     }
 
     pub fn push(&mut self, graph: &Rvsdg, node: &Node) {
@@ -53,7 +74,7 @@ impl IrBuilder {
         let mut inputs: Vec<_> = graph.inputs(node.node_id()).collect();
         inputs.sort_unstable_by_key(|(_, input, _, _)| input.node_id());
 
-        let mut input_values = HashMap::new();
+        let mut input_values = BTreeMap::new();
         for (input, input_node, output, kind) in inputs {
             if !self.evaluated.contains(&input_node.node_id()) {
                 self.evaluation_stack.push(input_node.node_id());
@@ -193,10 +214,11 @@ impl IrBuilder {
             Node::Theta(theta) => {
                 let var = VarId::new(theta.node().0);
                 let mut builder = Self {
-                    values: HashMap::new(),
+                    values: BTreeMap::new(),
                     instructions: Vec::new(),
-                    evaluated: HashSet::new(),
+                    evaluated: BTreeSet::new(),
                     evaluation_stack: Vec::new(),
+                    top_level: false,
                 };
 
                 for (input, &param) in theta.inputs().iter().zip(theta.input_params()) {
@@ -246,10 +268,11 @@ impl IrBuilder {
                 let cond = input_values[&phi.condition()].clone();
 
                 let mut truthy_builder = Self {
-                    values: HashMap::new(),
+                    values: BTreeMap::new(),
                     instructions: Vec::new(),
-                    evaluated: HashSet::new(),
+                    evaluated: BTreeSet::new(),
                     evaluation_stack: Vec::new(),
+                    top_level: false,
                 };
 
                 for (input, &[param, _]) in phi.inputs().iter().zip(phi.input_params()) {
@@ -270,10 +293,11 @@ impl IrBuilder {
                 }
 
                 let mut falsy_builder = Self {
-                    values: HashMap::new(),
+                    values: BTreeMap::new(),
                     instructions: Vec::new(),
-                    evaluated: HashSet::new(),
+                    evaluated: BTreeSet::new(),
                     evaluation_stack: Vec::new(),
+                    top_level: false,
                 };
 
                 for (input, &[_, param]) in phi.inputs().iter().zip(phi.input_params()) {

@@ -3,32 +3,38 @@ use crate::{
     ir::Const,
     passes::Pass,
 };
-use std::{collections::HashMap, mem};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    mem,
+};
 
 /// Evaluates constant loads within the program
 pub struct ConstLoads {
-    values: HashMap<NodeId, Const>,
+    values: BTreeMap<NodeId, Const>,
     tape: Vec<Option<i32>>,
     changed: bool,
     buffer: Vec<&'static Node>,
+    visited_buf: BTreeSet<NodeId>,
 }
 
 impl ConstLoads {
     pub fn new(tape_len: usize) -> Self {
         Self {
-            values: HashMap::new(),
+            values: BTreeMap::new(),
             tape: vec![Some(0); tape_len],
             changed: false,
             buffer: Vec::new(),
+            visited_buf: BTreeSet::new(),
         }
     }
 
     pub fn unknown(tape_len: usize) -> Self {
         Self {
-            values: HashMap::new(),
+            values: BTreeMap::new(),
             tape: vec![None; tape_len],
             changed: false,
             buffer: Vec::new(),
+            visited_buf: BTreeSet::new(),
         }
     }
 
@@ -38,15 +44,16 @@ impl ConstLoads {
 
     fn with_buffer<'a, F, R>(&mut self, with: F) -> R
     where
-        F: FnOnce(&mut Vec<&'a Node>) -> R,
+        F: FnOnce(&mut Vec<&'a Node>, &mut BTreeSet<NodeId>) -> R,
     {
         let (ptr, len, cap) = Vec::into_raw_parts(mem::take(&mut self.buffer));
         // Safety: Different lifetimes are valid for transmute, see
         // https://github.com/rust-lang/unsafe-code-guidelines/issues/282
         let mut buffer: Vec<&'a Node> = unsafe { Vec::from_raw_parts(ptr.cast(), len, cap) };
 
-        let ret = with(&mut buffer);
+        let ret = with(&mut buffer, &mut self.visited_buf);
         buffer.clear();
+        self.visited_buf.clear();
 
         let (ptr, len, cap) = Vec::into_raw_parts(buffer);
         // Safety: Different lifetimes are valid for transmute
@@ -135,8 +142,13 @@ impl Pass for ConstLoads {
 
             if let Some(value) = stored_value {
                 // If the load's input is known but not constant, replace
-                // it with a constant input
-                if !graph.get_input(store.value()).0.is_int() {
+                // it with a constant input. Note that we explicitly ignore
+                // values that come from input ports, this is because we trust
+                // other passes (namely `constant-deduplication` to propagate)
+                // constants into regions
+                if !graph.get_input(store.value()).0.is_int()
+                    && !graph.get_input(store.value()).0.is_input_port()
+                {
                     tracing::debug!("redirected {:?} to a constant of {}", store, value);
 
                     let int = graph.int(value);
@@ -206,11 +218,11 @@ impl Pass for ConstLoads {
                         store,
                     );
 
-                    // graph.splice_ports(load.effect_in(), load.effect());
-                    // graph.rewire_dependents(load.value(), graph.input_source(store.value()));
-                    // graph.remove_node(load.node());
-                    //
-                    // self.changed();
+                    graph.splice_ports(load.effect_in(), load.effect());
+                    graph.rewire_dependents(load.value(), graph.input_source(store.value()));
+                    graph.remove_node(load.node());
+
+                    self.changed();
                 }
             }
         }
@@ -265,11 +277,12 @@ impl Pass for ConstLoads {
         // TODO: Propagate constants out of phi bodies?
 
         // Figure out if there's any stores within either of the phi branches
-        let (truthy_stores, falsy_stores) = self.with_buffer(|buffer| {
-            phi.truthy().transitive_nodes_into(buffer);
+        let (truthy_stores, falsy_stores) = self.with_buffer(|buffer, visited| {
+            phi.truthy().transitive_nodes_into(buffer, visited);
+            visited.clear();
             let truthy_stores = buffer.drain(..).filter(|node| node.is_store()).count();
 
-            phi.falsy().transitive_nodes_into(buffer);
+            phi.falsy().transitive_nodes_into(buffer, visited);
             let falsy_stores = buffer.drain(..).filter(|node| node.is_store()).count();
 
             (truthy_stores, falsy_stores)
@@ -299,8 +312,8 @@ impl Pass for ConstLoads {
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
-        let body_stores = self.with_buffer(|buffer| {
-            theta.body().transitive_nodes_into(buffer);
+        let body_stores = self.with_buffer(|buffer, visited| {
+            theta.body().transitive_nodes_into(buffer, visited);
             buffer.drain(..).filter(|node| node.is_store()).count()
         });
 

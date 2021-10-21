@@ -1,7 +1,7 @@
 use crate::{
-    graph::{EdgeKind, Node, NodeId, OutputPort, Rvsdg},
+    graph::{Node, NodeId, OutputPort, Rvsdg},
     ir::{
-        Add, Assign, Block, Call, Const, Eq, Instruction, Load, Not, Phi, Store, Theta, Value,
+        Add, Assign, Block, Call, Const, Eq, Instruction, Load, Neg, Not, Phi, Store, Theta, Value,
         VarId,
     },
 };
@@ -71,11 +71,14 @@ impl IrBuilder {
             return;
         }
 
-        let mut inputs: Vec<_> = graph.inputs(node.node_id()).collect();
+        let mut inputs: Vec<_> = graph
+            .try_inputs(node.node_id())
+            .flat_map(|(input, data)| data.map(|(node, output, kind)| (input, node, output, kind)))
+            .collect();
         inputs.sort_unstable_by_key(|(_, input, _, _)| input.node_id());
 
         let mut input_values = BTreeMap::new();
-        for (input, input_node, output, kind) in inputs {
+        for (input, input_node, output, _) in inputs {
             if !self.evaluated.contains(&input_node.node_id()) {
                 self.evaluation_stack.push(input_node.node_id());
                 return;
@@ -84,9 +87,7 @@ impl IrBuilder {
             if let Some(value) = self.values.get(&output).cloned() {
                 input_values.insert(input, value);
             } else {
-                debug_assert_eq!(
-                    kind,
-                    EdgeKind::Effect,
+                tracing::error!(
                     "expected an input value for a value edge from {:?} (port {:?}) to {:?} (port {:?})",
                     input_node,
                     output,
@@ -114,8 +115,14 @@ impl IrBuilder {
             Node::Add(add) => {
                 let var = VarId::new(add.node().0);
 
-                let lhs = input_values[&add.lhs()].clone();
-                let rhs = input_values[&add.rhs()].clone();
+                let lhs = input_values
+                    .get(&add.lhs())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
+                let rhs = input_values
+                    .get(&add.rhs())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
                 self.inst(Assign::new(var, Add::new(lhs, rhs)));
 
                 self.values.insert(add.value(), var.into());
@@ -124,8 +131,14 @@ impl IrBuilder {
             Node::Eq(eq) => {
                 let var = VarId::new(eq.node().0);
 
-                let lhs = input_values[&eq.lhs()].clone();
-                let rhs = input_values[&eq.rhs()].clone();
+                let lhs = input_values
+                    .get(&eq.lhs())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
+                let rhs = input_values
+                    .get(&eq.rhs())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
                 self.inst(Assign::new(var, Eq::new(lhs, rhs)));
 
                 self.values.insert(eq.value(), var.into());
@@ -134,16 +147,34 @@ impl IrBuilder {
             Node::Not(not) => {
                 let var = VarId::new(not.node().0);
 
-                let value = input_values[&not.input()].clone();
+                let value = input_values
+                    .get(&not.input())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
                 self.inst(Assign::new(var, Not::new(value)));
 
                 self.values.insert(not.value(), var.into());
             }
 
+            Node::Neg(neg) => {
+                let var = VarId::new(neg.node().0);
+
+                let value = input_values
+                    .get(&neg.input())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
+                self.inst(Assign::new(var, Neg::new(value)));
+
+                self.values.insert(neg.value(), var.into());
+            }
+
             Node::Load(load) => {
                 let var = VarId::new(load.node().0);
 
-                let ptr = input_values[&load.ptr()].clone();
+                let ptr = input_values
+                    .get(&load.ptr())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
                 self.inst(Assign::new(
                     var,
                     Load::new(
@@ -162,8 +193,14 @@ impl IrBuilder {
             Node::Store(store) => {
                 let var = VarId::new(store.node().0);
 
-                let ptr = input_values[&store.ptr()].clone();
-                let value = input_values[&store.value()].clone();
+                let ptr = input_values
+                    .get(&store.ptr())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
+                let value = input_values
+                    .get(&store.value())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
                 self.inst(Store::new(
                     ptr,
                     value,
@@ -198,7 +235,10 @@ impl IrBuilder {
             Node::Output(output) => {
                 let var = VarId::new(output.node().0);
 
-                let value = input_values[&output.value()].clone();
+                let value = input_values
+                    .get(&output.value())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
                 self.inst(Call::new(
                     "output",
                     vec![value],
@@ -223,7 +263,7 @@ impl IrBuilder {
 
                 for (input, &param) in theta.inputs().iter().zip(theta.input_params()) {
                     let port = theta.body().outputs(param).next().unwrap().0;
-                    let value = input_values[input].clone();
+                    let value = input_values.get(input).cloned().unwrap_or(Value::Missing);
 
                     builder.values.insert(port, value);
                 }
@@ -231,8 +271,13 @@ impl IrBuilder {
                 let body = builder.translate(theta.body());
 
                 for (&output, &param) in theta.outputs().iter().zip(theta.output_params()) {
-                    let value =
-                        builder.values[&theta.body().inputs(param).next().unwrap().2].clone();
+                    let value = theta
+                        .body()
+                        .try_inputs(param)
+                        .find_map(|(_, data)| data)
+                        .map(|(_, output, _)| output)
+                        .and_then(|output| builder.values.get(&output).cloned())
+                        .unwrap_or(Value::Missing);
 
                     self.values.insert(output, value);
                 }
@@ -265,7 +310,10 @@ impl IrBuilder {
 
             Node::Phi(phi) => {
                 let var = VarId::new(phi.node().0);
-                let cond = input_values[&phi.condition()].clone();
+                let cond = input_values
+                    .get(&phi.condition())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
 
                 let mut truthy_builder = Self {
                     values: BTreeMap::new(),
@@ -277,7 +325,7 @@ impl IrBuilder {
 
                 for (input, &[param, _]) in phi.inputs().iter().zip(phi.input_params()) {
                     let port = phi.truthy().outputs(param).next().unwrap().0;
-                    let value = input_values[input].clone();
+                    let value = input_values.get(input).cloned().unwrap_or(Value::Missing);
 
                     truthy_builder.values.insert(port, value);
                 }
@@ -285,9 +333,11 @@ impl IrBuilder {
                 let truthy = truthy_builder.translate(phi.truthy());
 
                 for (&output, &[param, _]) in phi.outputs().iter().zip(phi.output_params()) {
-                    let value = truthy_builder.values
-                        [&phi.truthy().inputs(param).next().unwrap().2]
-                        .clone();
+                    let value = truthy_builder
+                        .values
+                        .get(&phi.truthy().inputs(param).next().unwrap().2)
+                        .cloned()
+                        .unwrap_or(Value::Missing);
 
                     self.values.insert(output, value);
                 }
@@ -302,7 +352,7 @@ impl IrBuilder {
 
                 for (input, &[_, param]) in phi.inputs().iter().zip(phi.input_params()) {
                     let port = phi.falsy().outputs(param).next().unwrap().0;
-                    let value = input_values[input].clone();
+                    let value = input_values.get(input).cloned().unwrap_or(Value::Missing);
 
                     falsy_builder.values.insert(port, value);
                 }
@@ -310,8 +360,14 @@ impl IrBuilder {
                 let falsy = falsy_builder.translate(phi.falsy());
 
                 for (&output, &[_, param]) in phi.outputs().iter().zip(phi.output_params()) {
-                    let value =
-                        falsy_builder.values[&phi.falsy().inputs(param).next().unwrap().2].clone();
+                    let value = phi
+                        .falsy()
+                        .try_inputs(param)
+                        .find_map(|(_, data)| {
+                            data.and_then(|(_, output, _)| falsy_builder.values.get(&output))
+                        })
+                        .cloned()
+                        .unwrap_or(Value::Missing);
 
                     self.values.insert(output, value);
                 }

@@ -1,5 +1,5 @@
 use crate::{
-    graph::{EdgeKind, Node, NodeId, Phi, Rvsdg, Theta},
+    graph::{Add, EdgeKind, Eq, Load, Neg, Node, NodeId, Not, Phi, Rvsdg, Store, Theta},
     passes::Pass,
 };
 use std::collections::{BTreeSet, VecDeque};
@@ -45,6 +45,16 @@ impl Pass for Dce {
         let nodes: Vec<_> = graph.nodes().collect();
 
         for node_id in nodes {
+            let node = graph.get_node(node_id);
+            // let input_descriptor = node.input_desc();
+            // let output_descriptor = node.output_desc();
+            //
+            // let value_inputs = graph.value_input_count(node_id);
+            // let effect_inputs = graph.effect_input_count(node_id);
+            //
+            // let value_outputs = graph.value_output_count(node_id);
+            // let effect_outputs = graph.effect_output_count(node_id);
+
             // If the node hasn't been visited then it's dead. `Pass` operates off of a
             // dfs, so any node not visited has no incoming or outgoing edges to it.
             // As an alternative for if the dependent nodes of a given node are removed,
@@ -53,12 +63,20 @@ impl Pass for Dce {
                 || (graph.incoming_count(node_id) == 0
                     && graph.outgoing_count(node_id) == 0
                     && !matches!(
-                        graph.get_node(node_id),
+                        node,
                         Node::Start(..)
                             | Node::End(..)
                             | Node::InputPort(..)
                             | Node::OutputPort(..)
                     ))
+            // || ((!input_descriptor.effect().contains(effect_inputs)
+            //     || !input_descriptor.value().contains(value_inputs)
+            //     || !output_descriptor.effect().contains(effect_outputs)
+            //     || !output_descriptor.value().contains(value_outputs))
+            //     && !node.is_start()
+            //     && !node.is_end()
+            //     && !node.is_input_port()
+            //     && !node.is_output_port())
             {
                 tracing::debug!(
                     visited = visited.contains(&node_id),
@@ -71,6 +89,92 @@ impl Pass for Dce {
                 graph.remove_node(node_id);
                 self.changed();
             }
+        }
+    }
+
+    fn visit_add(&mut self, graph: &mut Rvsdg, add: Add) {
+        if graph.get_output(add.value()).is_none()
+            || graph.try_input(add.lhs()).is_none()
+            || graph.try_input(add.rhs()).is_none()
+        {
+            tracing::debug!(
+                node = ?graph.get_node(add.node()),
+                "removed dead add {:?}",
+                add.node(),
+            );
+
+            graph.remove_node(add.node());
+        }
+    }
+
+    fn visit_eq(&mut self, graph: &mut Rvsdg, eq: Eq) {
+        if graph.get_output(eq.value()).is_none()
+            || graph.try_input(eq.lhs()).is_none()
+            || graph.try_input(eq.rhs()).is_none()
+        {
+            tracing::debug!(
+                node = ?graph.get_node(eq.node()),
+                "removed dead eq {:?}",
+                eq.node(),
+            );
+
+            graph.remove_node(eq.node());
+        }
+    }
+
+    fn visit_not(&mut self, graph: &mut Rvsdg, not: Not) {
+        if graph.get_output(not.value()).is_none() || graph.try_input(not.input()).is_none() {
+            tracing::debug!(
+                node = ?graph.get_node(not.node()),
+                "removed dead not {:?}",
+                not.node(),
+            );
+
+            graph.remove_node(not.node());
+        }
+    }
+
+    fn visit_neg(&mut self, graph: &mut Rvsdg, neg: Neg) {
+        if graph.get_output(neg.value()).is_none() || graph.try_input(neg.input()).is_none() {
+            tracing::debug!(
+                node = ?graph.get_node(neg.node()),
+                "removed dead neg {:?}",
+                neg.node(),
+            );
+
+            graph.remove_node(neg.node());
+        }
+    }
+
+    fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
+        if graph.get_output(store.effect()).is_none()
+            || graph.try_input(store.effect_in()).is_none()
+            || graph.try_input(store.ptr()).is_none()
+            || graph.try_input(store.value()).is_none()
+        {
+            tracing::debug!(
+                node = ?graph.get_node(store.node()),
+                "removed dead store {:?}",
+                store.node(),
+            );
+
+            graph.remove_node(store.node());
+        }
+    }
+
+    fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
+        if graph.get_output(load.effect()).is_none()
+            || graph.get_output(load.value()).is_none()
+            || graph.try_input(load.effect_in()).is_none()
+            || graph.try_input(load.ptr()).is_none()
+        {
+            tracing::debug!(
+                node = ?graph.get_node(load.node()),
+                "removed dead load {:?}",
+                load.node(),
+            );
+
+            graph.remove_node(load.node());
         }
     }
 

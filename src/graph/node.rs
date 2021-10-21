@@ -1,6 +1,6 @@
 use crate::graph::{
     Add, Bool, EdgeCount, EdgeDescriptor, EdgeKind, End, Eq, Input, InputParam, InputPort, Int,
-    Load, NodeId, Not, Output, OutputParam, OutputPort, Phi, Start, Store, Theta,
+    Load, Neg, NodeId, Not, Output, OutputParam, OutputPort, Phi, Start, Store, Theta,
 };
 
 #[derive(Debug, Clone)]
@@ -19,6 +19,7 @@ pub enum Node {
     OutputPort(OutputParam),
     Eq(Eq),
     Not(Not),
+    Neg(Neg),
     Phi(Phi),
 }
 
@@ -39,6 +40,7 @@ impl Node {
             | Self::OutputPort(OutputParam { node, .. })
             | Self::Eq(Eq { node, .. })
             | Self::Not(Not { node, .. })
+            | Self::Neg(Neg { node, .. })
             | Self::Phi(Phi { node, .. }) => node,
         }
     }
@@ -63,6 +65,7 @@ impl Node {
             Self::OutputPort(output) => vec![output.value],
             Self::Eq(eq) => vec![eq.lhs, eq.rhs],
             Self::Not(not) => vec![not.input],
+            Self::Neg(neg) => vec![neg.input],
             Self::Phi(phi) => {
                 let mut inputs = phi.inputs.to_vec();
                 inputs.push(phi.condition);
@@ -92,6 +95,7 @@ impl Node {
             Self::OutputPort(output) => vec![&mut output.value],
             Self::Eq(eq) => vec![&mut eq.lhs, &mut eq.rhs],
             Self::Not(not) => vec![&mut not.input],
+            Self::Neg(neg) => vec![&mut neg.input],
             Self::Phi(phi) => {
                 let mut inputs: Vec<_> = phi.inputs.iter_mut().collect();
                 inputs.push(&mut phi.condition);
@@ -122,6 +126,7 @@ impl Node {
             Self::OutputPort(_) => Vec::new(),
             Self::Eq(eq) => vec![eq.value],
             Self::Not(not) => vec![not.value],
+            Self::Neg(neg) => vec![neg.value],
             Self::Phi(phi) => {
                 let mut inputs = phi.outputs.to_vec();
                 inputs.push(phi.effect_out);
@@ -151,6 +156,7 @@ impl Node {
             Self::OutputPort(_) => Vec::new(),
             Self::Eq(eq) => vec![&mut eq.value],
             Self::Not(not) => vec![&mut not.value],
+            Self::Neg(neg) => vec![&mut neg.value],
             Self::Phi(phi) => {
                 let mut inputs: Vec<_> = phi.outputs.iter_mut().collect();
                 inputs.push(&mut phi.effect_out);
@@ -178,7 +184,7 @@ impl Node {
                 EdgeKind::Value => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
             },
             Self::Eq(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::two()),
-            Self::Not(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
+            Self::Not(_) | Self::Neg(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
             Self::Phi(phi) => {
                 EdgeDescriptor::new(EdgeCount::one(), EdgeCount::exact(phi.inputs().len() + 1))
             }
@@ -195,7 +201,7 @@ impl Node {
             Self::Start(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
             Self::End(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::zero()),
             Self::Input(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one()),
-            Self::Output(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one()),
+            Self::Output(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
             Self::Theta(theta) => EdgeDescriptor::new(
                 EdgeCount::one(),
                 EdgeCount::new(None, Some(theta.outputs().len())),
@@ -205,7 +211,7 @@ impl Node {
                 EdgeKind::Value => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
             },
             Self::Eq(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
-            Self::Not(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
+            Self::Not(_) | Self::Neg(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
             Self::Phi(phi) => {
                 EdgeDescriptor::new(EdgeCount::one(), EdgeCount::exact(phi.outputs().len()))
             }
@@ -406,6 +412,16 @@ impl Node {
 
     #[track_caller]
     #[allow(dead_code)]
+    pub fn to_int_value(&self) -> i32 {
+        if let Self::Int(_, int) = *self {
+            int
+        } else {
+            panic!("attempted to get int, got {:?}", self);
+        }
+    }
+
+    #[track_caller]
+    #[allow(dead_code)]
     pub fn to_bool(&self) -> Bool {
         if let Self::Bool(bool, _) = *self {
             bool
@@ -528,5 +544,221 @@ impl From<Not> for Node {
 impl From<Phi> for Node {
     fn from(phi: Phi) -> Self {
         Self::Phi(phi)
+    }
+}
+
+impl TryInto<InputParam> for Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<InputParam, Self::Error> {
+        if let Self::InputPort(input) = self {
+            Ok(input)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<InputParam> for &Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<InputParam, Self::Error> {
+        if let Node::InputPort(input) = *self {
+            Ok(input)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<OutputParam> for Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<OutputParam, Self::Error> {
+        if let Self::OutputPort(output) = self {
+            Ok(output)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<OutputParam> for &Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<OutputParam, Self::Error> {
+        if let Node::OutputPort(output) = *self {
+            Ok(output)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<Load> for Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<Load, Self::Error> {
+        if let Self::Load(load) = self {
+            Ok(load)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<Load> for &Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<Load, Self::Error> {
+        if let Node::Load(load) = *self {
+            Ok(load)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<Store> for Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<Store, Self::Error> {
+        if let Self::Store(store) = self {
+            Ok(store)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<Store> for &Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<Store, Self::Error> {
+        if let Node::Store(store) = *self {
+            Ok(store)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<Add> for Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<Add, Self::Error> {
+        if let Self::Add(add) = self {
+            Ok(add)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<Add> for &Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<Add, Self::Error> {
+        if let Node::Add(add) = *self {
+            Ok(add)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<Eq> for Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<Eq, Self::Error> {
+        if let Self::Eq(eq) = self {
+            Ok(eq)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<Eq> for &Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<Eq, Self::Error> {
+        if let Node::Eq(eq) = *self {
+            Ok(eq)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<Not> for Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<Not, Self::Error> {
+        if let Self::Not(not) = self {
+            Ok(not)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<Not> for &Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<Not, Self::Error> {
+        if let Node::Not(not) = *self {
+            Ok(not)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<Start> for Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<Start, Self::Error> {
+        if let Self::Start(start) = self {
+            Ok(start)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<Start> for &Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<Start, Self::Error> {
+        if let Node::Start(start) = *self {
+            Ok(start)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<End> for Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<End, Self::Error> {
+        if let Self::End(end) = self {
+            Ok(end)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl TryInto<End> for &Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<End, Self::Error> {
+        if let Node::End(end) = *self {
+            Ok(end)
+        } else {
+            Err(self)
+        }
     }
 }

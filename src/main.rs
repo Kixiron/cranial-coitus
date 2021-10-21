@@ -1,11 +1,13 @@
 #![feature(vec_into_raw_parts)]
 
 mod args;
+mod codegen;
 mod graph;
 mod ir;
 mod lower_tokens;
 mod parse;
 mod passes;
+mod patterns;
 
 use crate::{
     args::Args,
@@ -13,7 +15,7 @@ use crate::{
     ir::{IrBuilder, Pretty},
     parse::Token,
     passes::{
-        AssociativeAdd, ConstDedup, ConstFolding, ConstLoads, Dce, ElimConstPhi, Pass,
+        AddSubLoop, AssociativeAdd, ConstDedup, ConstFolding, Dce, ElimConstPhi, Mem2Reg, Pass,
         UnobservedStore, ZeroLoop,
     },
 };
@@ -28,6 +30,7 @@ use std::{
 };
 
 // TODO: Write an evaluator so that we can actually verify optimizations
+// TODO: Codegen via https://docs.rs/iced-x86/1.15.0/iced_x86/index.html
 fn main() {
     set_logger();
 
@@ -77,9 +80,11 @@ fn main() {
         Box::new(UnobservedStore::new()),
         Box::new(ConstFolding::new()),
         Box::new(AssociativeAdd::new()),
-        Box::new(ElimConstPhi::new()),
         Box::new(ZeroLoop::new()),
-        Box::new(ConstLoads::new(args.cells as usize)),
+        Box::new(Mem2Reg::new(args.cells as usize)),
+        Box::new(AddSubLoop::new()),
+        Box::new(Dce::new()),
+        Box::new(ElimConstPhi::new()),
         Box::new(ConstFolding::new()),
         Box::new(ConstDedup::new()),
     ];
@@ -131,22 +136,33 @@ fn main() {
 
                 if !diff.is_empty() {
                     fs::write(
-                        dump_dir.join(format!("{}-{}.cir", pass.pass_name(), pass_num)),
+                        dump_dir.join(format!(
+                            "{}-{}.{}.cir",
+                            pass.pass_name(),
+                            pass_num,
+                            pass_idx,
+                        )),
                         &current_graph,
                     )
                     .unwrap();
 
                     write!(
                         &mut evolution,
-                        ">>>>> {}-{}\n{}",
+                        ">>>>> {}-{}.{}\n{}",
                         pass.pass_name(),
                         pass_num,
+                        pass_idx,
                         diff,
                     )
                     .unwrap();
 
                     fs::write(
-                        dump_dir.join(format!("{}-{}.diff", pass.pass_name(), pass_num)),
+                        dump_dir.join(format!(
+                            "{}-{}.{}.diff",
+                            pass.pass_name(),
+                            pass_num,
+                            pass_idx,
+                        )),
                         diff,
                     )
                     .unwrap();
@@ -171,7 +187,7 @@ fn main() {
     let difference = input_stats.difference(output_stats);
     print!(
         "Optimized Program (took {} iterations and {:#?})\n\
-         Input Program Stats:\n  \
+         Input:\n  \
            instructions : {}\n  \
            branches     : {}\n  \
            loops        : {}\n  \
@@ -179,7 +195,7 @@ fn main() {
            stores       : {}\n  \
            constants    : {}\n  \
            io ops       : {}\n\
-         Output Program Stats:\n  \
+         Output:\n  \
            instructions : {}\n  \
            branches     : {}\n  \
            loops        : {}\n  \
@@ -234,7 +250,7 @@ fn diff_ir(old: &str, new: &str) -> String {
 
     let diff = TextDiff::configure()
         .algorithm(Algorithm::Patience)
-        .deadline(Instant::now() + Duration::from_secs(5))
+        .deadline(Instant::now() + Duration::from_secs(1))
         .diff_lines(old, new);
 
     let diff = format!("{}", diff.unified_diff());

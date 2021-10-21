@@ -133,10 +133,10 @@ impl Pass for AssociativeAdd {
                     // add node, removing the previous constant input from the dependency
                     let dependency_add = graph.get_node(dependency_add.node()).to_add();
                     if dependency_add.lhs() == dependency_unknown {
-                        graph.remove_input(dependency_add.rhs());
+                        graph.remove_input_edge(dependency_add.rhs());
                         graph.add_value_edge(int.value(), dependency_add.rhs());
                     } else if dependency_add.rhs() == dependency_unknown {
-                        graph.remove_input(dependency_add.lhs());
+                        graph.remove_input_edge(dependency_add.lhs());
                         graph.add_value_edge(int.value(), dependency_add.lhs());
                     } else {
                         unreachable!();

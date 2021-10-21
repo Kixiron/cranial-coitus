@@ -10,6 +10,7 @@ use petgraph::{
     Direction,
 };
 use std::{
+    cell::Cell,
     cmp,
     collections::{BTreeMap, BTreeSet},
     fmt::{self, Debug, Display, Write as _},
@@ -17,21 +18,26 @@ use std::{
     hash::Hash,
     panic::Location,
     path::Path,
+    rc::Rc,
 };
 
 #[derive(Debug, Clone)]
 pub struct Rvsdg {
     graph: StableGraph<PortData, EdgeKind>,
     nodes: BTreeMap<NodeId, Node>,
-    node_counter: u32,
+    counter: Rc<Cell<u32>>,
 }
 
 impl Rvsdg {
     pub fn new() -> Self {
+        Self::from_counter(Rc::new(Cell::new(0)))
+    }
+
+    fn from_counter(counter: Rc<Cell<u32>>) -> Self {
         Self {
             graph: StableGraph::new(),
             nodes: BTreeMap::new(),
-            node_counter: 0,
+            counter,
         }
     }
 
@@ -49,12 +55,13 @@ impl Rvsdg {
     }
 
     fn next_node(&mut self) -> NodeId {
-        let node = NodeId(self.node_counter);
-        self.node_counter += 1;
+        let node = NodeId(self.counter.get());
+        self.counter.set(node.0 + 1);
 
         node
     }
 
+    #[track_caller]
     pub fn add_edge(&mut self, src: OutputPort, dest: InputPort, kind: EdgeKind) {
         // TODO: Add some more invariant assertions here, ideally for
         //       ensuring that we're creating the expected edge type for
@@ -79,20 +86,22 @@ impl Rvsdg {
         debug_assert!(displaced.is_none());
     }
 
+    #[track_caller]
     pub fn add_value_edge(&mut self, src: OutputPort, dest: InputPort) {
         self.add_edge(src, dest, EdgeKind::Value);
     }
 
+    #[track_caller]
     pub fn add_effect_edge(&mut self, src: OutputPort, dest: InputPort) {
         self.add_edge(src, dest, EdgeKind::Effect);
     }
 
-    pub fn input_port(&mut self, parent: NodeId) -> InputPort {
-        InputPort(self.graph.add_node(PortData::input(parent)))
+    pub fn input_port(&mut self, parent: NodeId, edge: EdgeKind) -> InputPort {
+        InputPort(self.graph.add_node(PortData::input(parent, edge)))
     }
 
-    pub fn output_port(&mut self, parent: NodeId) -> OutputPort {
-        OutputPort(self.graph.add_node(PortData::output(parent)))
+    pub fn output_port(&mut self, parent: NodeId, edge: EdgeKind) -> OutputPort {
+        OutputPort(self.graph.add_node(PortData::output(parent, edge)))
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
@@ -192,6 +201,38 @@ impl Rvsdg {
             .sum()
     }
 
+    pub fn value_input_count(&self, node: NodeId) -> usize {
+        self.get_node(node)
+            .inputs()
+            .into_iter()
+            .map(|input| {
+                self.graph
+                    .edges_directed(input.0, Direction::Incoming)
+                    .filter(|edge| {
+                        *edge.weight() == EdgeKind::Value
+                            && self.nodes.contains_key(&self.graph[edge.source()].parent)
+                    })
+                    .count()
+            })
+            .sum()
+    }
+
+    pub fn effect_input_count(&self, node: NodeId) -> usize {
+        self.get_node(node)
+            .inputs()
+            .into_iter()
+            .map(|input| {
+                self.graph
+                    .edges_directed(input.0, Direction::Incoming)
+                    .filter(|edge| {
+                        *edge.weight() == EdgeKind::Effect
+                            && self.nodes.contains_key(&self.graph[edge.source()].parent)
+                    })
+                    .count()
+            })
+            .sum()
+    }
+
     pub fn outgoing_count(&self, node: NodeId) -> usize {
         self.get_node(node)
             .outputs()
@@ -200,6 +241,38 @@ impl Rvsdg {
                 self.graph
                     .edges_directed(output.0, Direction::Outgoing)
                     .filter(|edge| self.nodes.contains_key(&self.graph[edge.target()].parent))
+                    .count()
+            })
+            .sum()
+    }
+
+    pub fn value_output_count(&self, node: NodeId) -> usize {
+        self.get_node(node)
+            .outputs()
+            .into_iter()
+            .map(move |output| {
+                self.graph
+                    .edges_directed(output.0, Direction::Outgoing)
+                    .filter(|edge| {
+                        *edge.weight() == EdgeKind::Value
+                            && self.nodes.contains_key(&self.graph[edge.target()].parent)
+                    })
+                    .count()
+            })
+            .sum()
+    }
+
+    pub fn effect_output_count(&self, node: NodeId) -> usize {
+        self.get_node(node)
+            .outputs()
+            .into_iter()
+            .map(move |output| {
+                self.graph
+                    .edges_directed(output.0, Direction::Outgoing)
+                    .filter(|edge| {
+                        *edge.weight() == EdgeKind::Effect
+                            && self.nodes.contains_key(&self.graph[edge.target()].parent)
+                    })
                     .count()
             })
             .sum()
@@ -226,40 +299,85 @@ impl Rvsdg {
         })
     }
 
+    #[track_caller]
     pub fn get_input(&self, input: InputPort) -> (&Node, OutputPort, EdgeKind) {
-        self.try_input(input).unwrap_or_else(|| {
-            let port = self.graph[input.0];
+        match self.try_input(input) {
+            Some(input) => input,
+            None => {
+                let port = self.graph[input.0];
 
-            panic!(
-                "incorrect number of edges found for input port {:?} \
-                 (port data: {:?}, node: {:?})",
-                input, port, self.nodes[&port.parent],
-            );
-        })
+                panic!(
+                    "incorrect number of edges found for input port {:?} \
+                     (port data: {:?}, node: {:?})",
+                    input, port, self.nodes[&port.parent],
+                );
+            }
+        }
     }
 
     pub fn try_input(&self, input: InputPort) -> Option<(&Node, OutputPort, EdgeKind)> {
-        let port = self.graph[input.0];
-        debug_assert_eq!(port.kind, PortKind::Input);
+        if self.graph.contains_node(input.0) {
+            let port = self.graph[input.0];
+            debug_assert_eq!(port.kind, PortKind::Input);
 
-        let mut incoming = self.graph.edges_directed(input.0, Direction::Incoming);
-        // FIXME: debug_assert_matches!()
-        debug_assert!(
-            matches!(incoming.clone().count(), 0 | 1),
-            "incorrect number of edges found for input port {:?}, \
-             expected 0 or 1 but got {} (port data: {:?}, node: {:?})",
-            input,
-            incoming.clone().count(),
-            port,
-            self.nodes[&port.parent],
-        );
+            let mut incoming = self.graph.edges_directed(input.0, Direction::Incoming);
+            // FIXME: debug_assert_matches!()
+            // debug_assert!(
+            //     matches!(incoming.clone().count(), 0 | 1),
+            //     "incorrect number of edges found for input port {:?}, \
+            //      expected 0 or 1 but got {} (port data: {:?}, node: {:?})",
+            //     input,
+            //     incoming.clone().count(),
+            //     port,
+            //     self.nodes[&port.parent],
+            // );
 
-        incoming.next().map(|edge| {
-            let (src, kind) = (edge.source(), *edge.weight());
-            debug_assert_eq!(self.graph[src].kind, PortKind::Output);
+            incoming.find_map(|edge| {
+                let (src, kind) = (edge.source(), *edge.weight());
+                debug_assert_eq!(self.graph[src].kind, PortKind::Output);
 
-            (&self.nodes[&self.graph[src].parent], OutputPort(src), kind)
-        })
+                self.nodes
+                    .get(&self.graph[src].parent)
+                    .map(|node| (node, OutputPort(src), kind))
+            })
+        } else {
+            None
+        }
+    }
+
+    #[track_caller]
+    pub fn to_node<T>(&self, node: NodeId) -> T
+    where
+        for<'a> &'a Node: TryInto<T>,
+    {
+        if let Some(node) = self.cast_node::<T>(node) {
+            node
+        } else {
+            panic!("failed to cast node to {}", std::any::type_name::<T>())
+        }
+    }
+
+    pub fn cast_node<T>(&self, node: NodeId) -> Option<T>
+    where
+        for<'a> &'a Node: TryInto<T>,
+    {
+        self.try_node(node).and_then(|node| node.try_into().ok())
+    }
+
+    pub fn cast_source<T>(&self, target: InputPort) -> Option<T>
+    where
+        for<'a> &'a Node: TryInto<T>,
+    {
+        self.try_input(target)
+            .and_then(|(node, _, _)| node.try_into().ok())
+    }
+
+    pub fn cast_target<T>(&self, source: OutputPort) -> Option<T>
+    where
+        for<'a> &'a Node: TryInto<T>,
+    {
+        self.get_output(source)
+            .and_then(|(node, _, _)| node.try_into().ok())
     }
 
     pub fn get_output(&self, output: OutputPort) -> Option<(&Node, InputPort, EdgeKind)> {
@@ -271,6 +389,21 @@ impl Rvsdg {
         self.graph
             .edges_directed(output.0, Direction::Outgoing)
             .next()
+            .map(|edge| {
+                let dest = edge.target();
+                let node = &self.nodes[&self.graph[dest].parent];
+                debug_assert_eq!(self.graph[edge.target()].kind, PortKind::Input);
+
+                (node, InputPort(edge.target()), *edge.weight())
+            })
+    }
+
+    pub fn get_outputs(
+        &self,
+        output: OutputPort,
+    ) -> impl Iterator<Item = (&Node, InputPort, EdgeKind)> {
+        self.graph
+            .edges_directed(output.0, Direction::Outgoing)
             .map(|edge| {
                 let dest = edge.target();
                 let node = &self.nodes[&self.graph[dest].parent];
@@ -329,17 +462,17 @@ impl Rvsdg {
             .map(|output| (output, self.get_output(output)))
     }
 
-    pub fn remove_input(&mut self, input: InputPort) {
+    pub fn remove_input_edge(&mut self, input: InputPort) {
         debug_assert_eq!(self.graph[input.0].kind, PortKind::Input);
 
         let mut incoming = self.graph.edges_directed(input.0, Direction::Incoming);
-        debug_assert_eq!(incoming.clone().count(), 1);
+        // debug_assert_eq!(incoming.clone().count(), 1);
 
-        let edge = incoming.next().unwrap().id();
-        self.graph.remove_edge(edge);
+        if let Some(edge) = incoming.next().map(|edge| edge.id()) {
+            self.graph.remove_edge(edge);
+        }
     }
 
-    #[allow(dead_code)]
     pub fn remove_output_edge(&mut self, output: OutputPort) {
         let outgoing = self
             .graph
@@ -357,7 +490,30 @@ impl Rvsdg {
         }
     }
 
-    #[allow(dead_code)]
+    pub fn remove_output_edges(&mut self, output: OutputPort) {
+        if cfg!(debug_assertions) && self.graph.contains_node(output.0) {
+            debug_assert_eq!(self.graph[output.0].kind, PortKind::Output);
+        }
+
+        self.graph.retain_edges(|graph, edge| {
+            if let Some((source, target)) = graph.edge_endpoints(edge) {
+                if source == output.0 {
+                    tracing::trace!(
+                        "removing output port's edge {} (edge: {:?} from {:?}->{:?})",
+                        output,
+                        edge,
+                        output,
+                        InputPort(target),
+                    );
+
+                    return true;
+                }
+            }
+
+            false
+        });
+    }
+
     pub fn remove_output_port(&mut self, output: OutputPort) {
         self.remove_output_edge(output);
         self.graph.remove_node(output.0);
@@ -388,6 +544,7 @@ impl Rvsdg {
         self.nodes.remove(&node);
     }
 
+    #[track_caller]
     pub fn rewire_dependents(&mut self, old_port: OutputPort, rewire_to: OutputPort) {
         debug_assert_eq!(self.graph[old_port.0].kind, PortKind::Output);
         debug_assert_eq!(self.graph[rewire_to.0].kind, PortKind::Output);
@@ -405,20 +562,20 @@ impl Rvsdg {
                 old_port,
                 rewire_to,
             );
-        }
+        } else {
+            for (edge, dest, kind) in edges {
+                tracing::trace!(
+                    "rewiring {:?}->{:?} into {:?}->{:?}",
+                    old_port,
+                    InputPort(dest),
+                    rewire_to,
+                    InputPort(dest),
+                );
+                debug_assert_eq!(self.graph[dest].kind, PortKind::Input);
 
-        for (edge, dest, kind) in edges {
-            tracing::trace!(
-                "rewiring {:?}->{:?} into {:?}->{:?}",
-                old_port,
-                InputPort(dest),
-                rewire_to,
-                InputPort(dest),
-            );
-            debug_assert_eq!(self.graph[dest].kind, PortKind::Input);
-
-            self.graph.remove_edge(edge);
-            self.graph.add_edge(rewire_to.0, dest, kind);
+                self.graph.remove_edge(edge);
+                self.graph.add_edge(rewire_to.0, dest, kind);
+            }
         }
     }
 
@@ -460,10 +617,28 @@ impl Rvsdg {
         self.graph.remove_node(output.0);
     }
 
+    #[track_caller]
+    fn assert_value_port<P>(&self, port: P)
+    where
+        P: Port,
+    {
+        debug_assert!(self.graph.contains_node(port.index()));
+        debug_assert_eq!(self.graph[port.index()].edge, EdgeKind::Value);
+    }
+
+    #[track_caller]
+    fn assert_effect_port<P>(&self, port: P)
+    where
+        P: Port,
+    {
+        debug_assert!(self.graph.contains_node(port.index()));
+        debug_assert_eq!(self.graph[port.index()].edge, EdgeKind::Effect);
+    }
+
     pub fn start(&mut self) -> Start {
         let start_id = self.next_node();
 
-        let effect = self.output_port(start_id);
+        let effect = self.output_port(start_id, EdgeKind::Effect);
 
         let start = Start::new(start_id, effect);
         self.nodes.insert(start_id, Node::Start(start));
@@ -471,10 +646,13 @@ impl Rvsdg {
         start
     }
 
+    #[track_caller]
     pub fn end(&mut self, effect: OutputPort) -> End {
+        self.assert_effect_port(effect);
+
         let end_id = self.next_node();
 
-        let effect_port = self.input_port(end_id);
+        let effect_port = self.input_port(end_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_port);
 
         let end = End::new(end_id, effect_port);
@@ -486,7 +664,7 @@ impl Rvsdg {
     pub fn int(&mut self, value: i32) -> Int {
         let int_id = self.next_node();
 
-        let output = self.output_port(int_id);
+        let output = self.output_port(int_id, EdgeKind::Value);
 
         let int = Int::new(int_id, output);
         self.nodes.insert(int_id, Node::Int(int, value));
@@ -497,7 +675,7 @@ impl Rvsdg {
     pub fn bool(&mut self, value: bool) -> Bool {
         let bool_id = self.next_node();
 
-        let output = self.output_port(bool_id);
+        let output = self.output_port(bool_id, EdgeKind::Value);
 
         let bool = Bool::new(bool_id, output);
         self.nodes.insert(bool_id, Node::Bool(bool, value));
@@ -505,16 +683,20 @@ impl Rvsdg {
         bool
     }
 
+    #[track_caller]
     pub fn add(&mut self, lhs: OutputPort, rhs: OutputPort) -> Add {
+        self.assert_value_port(lhs);
+        self.assert_value_port(rhs);
+
         let add_id = self.next_node();
 
-        let lhs_port = self.input_port(add_id);
+        let lhs_port = self.input_port(add_id, EdgeKind::Value);
         self.add_value_edge(lhs, lhs_port);
 
-        let rhs_port = self.input_port(add_id);
+        let rhs_port = self.input_port(add_id, EdgeKind::Value);
         self.add_value_edge(rhs, rhs_port);
 
-        let output = self.output_port(add_id);
+        let output = self.output_port(add_id, EdgeKind::Value);
 
         let add = Add::new(add_id, lhs_port, rhs_port, output);
         self.nodes.insert(add_id, Node::Add(add));
@@ -522,17 +704,21 @@ impl Rvsdg {
         add
     }
 
+    #[track_caller]
     pub fn load(&mut self, ptr: OutputPort, effect: OutputPort) -> Load {
+        self.assert_value_port(ptr);
+        self.assert_effect_port(effect);
+
         let load_id = self.next_node();
 
-        let ptr_port = self.input_port(load_id);
+        let ptr_port = self.input_port(load_id, EdgeKind::Value);
         self.add_value_edge(ptr, ptr_port);
 
-        let effect_port = self.input_port(load_id);
+        let effect_port = self.input_port(load_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_port);
 
-        let loaded = self.output_port(load_id);
-        let effect_out = self.output_port(load_id);
+        let loaded = self.output_port(load_id, EdgeKind::Value);
+        let effect_out = self.output_port(load_id, EdgeKind::Effect);
 
         let load = Load::new(load_id, ptr_port, effect_port, loaded, effect_out);
         self.nodes.insert(load_id, Node::Load(load));
@@ -540,19 +726,24 @@ impl Rvsdg {
         load
     }
 
+    #[track_caller]
     pub fn store(&mut self, ptr: OutputPort, value: OutputPort, effect: OutputPort) -> Store {
+        self.assert_value_port(ptr);
+        self.assert_value_port(value);
+        self.assert_effect_port(effect);
+
         let store_id = self.next_node();
 
-        let ptr_port = self.input_port(store_id);
+        let ptr_port = self.input_port(store_id, EdgeKind::Value);
         self.add_value_edge(ptr, ptr_port);
 
-        let value_port = self.input_port(store_id);
+        let value_port = self.input_port(store_id, EdgeKind::Value);
         self.add_value_edge(value, value_port);
 
-        let effect_port = self.input_port(store_id);
+        let effect_port = self.input_port(store_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_port);
 
-        let effect_out = self.output_port(store_id);
+        let effect_out = self.output_port(store_id, EdgeKind::Effect);
 
         let store = Store::new(store_id, ptr_port, value_port, effect_port, effect_out);
         self.nodes.insert(store_id, Node::Store(store));
@@ -560,14 +751,17 @@ impl Rvsdg {
         store
     }
 
+    #[track_caller]
     pub fn input(&mut self, effect: OutputPort) -> Input {
+        self.assert_effect_port(effect);
+
         let input_id = self.next_node();
 
-        let effect_port = self.input_port(input_id);
+        let effect_port = self.input_port(input_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_port);
 
-        let value = self.output_port(input_id);
-        let effect_out = self.output_port(input_id);
+        let value = self.output_port(input_id, EdgeKind::Value);
+        let effect_out = self.output_port(input_id, EdgeKind::Effect);
 
         let input = Input::new(input_id, effect_port, value, effect_out);
         self.nodes.insert(input_id, Node::Input(input));
@@ -575,16 +769,20 @@ impl Rvsdg {
         input
     }
 
+    #[track_caller]
     pub fn output(&mut self, value: OutputPort, effect: OutputPort) -> Output {
+        self.assert_value_port(value);
+        self.assert_effect_port(effect);
+
         let output_id = self.next_node();
 
-        let value_port = self.input_port(output_id);
+        let value_port = self.input_port(output_id, EdgeKind::Value);
         self.add_value_edge(value, value_port);
 
-        let effect_port = self.input_port(output_id);
+        let effect_port = self.input_port(output_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_port);
 
-        let effect_out = self.output_port(output_id);
+        let effect_out = self.output_port(output_id, EdgeKind::Effect);
 
         let output = Output::new(output_id, value_port, effect_port, effect_out);
         self.nodes.insert(output_id, Node::Output(output));
@@ -595,7 +793,7 @@ impl Rvsdg {
     fn input_param(&mut self, kind: EdgeKind) -> InputParam {
         let input_id = self.next_node();
 
-        let port = self.output_port(input_id);
+        let port = self.output_port(input_id, EdgeKind::Value);
         let param = InputParam::new(input_id, port, kind);
         self.nodes.insert(input_id, Node::InputPort(param));
 
@@ -605,7 +803,7 @@ impl Rvsdg {
     fn output_param(&mut self, input: OutputPort, kind: EdgeKind) -> OutputParam {
         let output_id = self.next_node();
 
-        let port = self.input_port(output_id);
+        let port = self.input_port(output_id, EdgeKind::Value);
         self.add_edge(input, port, kind);
 
         let param = OutputParam::new(output_id, port, kind);
@@ -614,29 +812,33 @@ impl Rvsdg {
         param
     }
 
+    #[track_caller]
     pub fn theta<I, F>(&mut self, inputs: I, effect: OutputPort, theta: F) -> Theta
     where
         I: IntoIterator<Item = OutputPort>,
         F: FnOnce(&mut Rvsdg, OutputPort, &[OutputPort]) -> ThetaData,
     {
+        self.assert_effect_port(effect);
+
         let theta_id = self.next_node();
 
-        let effect_in = self.input_port(theta_id);
+        let effect_in = self.input_port(theta_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_in);
 
         // Wire up the external inputs to the theta node
         let outer_inputs: Vec<_> = inputs
             .into_iter()
             .map(|input| {
-                let port = self.input_port(theta_id);
+                self.assert_value_port(input);
+
+                let port = self.input_port(theta_id, EdgeKind::Value);
                 self.add_value_edge(input, port);
                 port
             })
             .collect();
 
         // Create the theta's subgraph
-        let mut subgraph = Rvsdg::new();
-        subgraph.node_counter = self.node_counter;
+        let mut subgraph = Rvsdg::from_counter(self.counter.clone());
 
         // Create the input ports within the subgraph
         let (input_params, inner_input_ports): (Vec<_>, Vec<_>) = (0..outer_inputs.len())
@@ -654,19 +856,23 @@ impl Rvsdg {
             effect,
         } = theta(&mut subgraph, start.effect(), &inner_input_ports);
 
+        subgraph.assert_effect_port(effect);
         let end = subgraph.end(effect);
 
+        subgraph.assert_value_port(condition);
         let condition_param = subgraph.output_param(condition, EdgeKind::Value);
+
         let output_params: Vec<_> = outputs
             .iter()
-            .map(|&output| subgraph.output_param(output, EdgeKind::Value).node())
+            .map(|&output| {
+                subgraph.assert_value_port(output);
+                subgraph.output_param(output, EdgeKind::Value).node()
+            })
             .collect();
 
-        self.node_counter = subgraph.node_counter;
-
-        let effect_out = self.output_port(theta_id);
+        let effect_out = self.output_port(theta_id, EdgeKind::Effect);
         let outer_outputs: Vec<_> = (0..output_params.len())
-            .map(|_| self.output_port(theta_id))
+            .map(|_| self.output_port(theta_id, EdgeKind::Value))
             .collect();
 
         let theta = Theta::new(
@@ -688,6 +894,7 @@ impl Rvsdg {
         theta
     }
 
+    #[track_caller]
     pub fn phi<I, T, F>(
         &mut self,
         inputs: I,
@@ -701,27 +908,31 @@ impl Rvsdg {
         T: FnOnce(&mut Rvsdg, OutputPort, &[OutputPort]) -> PhiData,
         F: FnOnce(&mut Rvsdg, OutputPort, &[OutputPort]) -> PhiData,
     {
+        self.assert_effect_port(effect);
+        self.assert_value_port(condition);
+
         let phi_id = self.next_node();
 
-        let effect_in = self.input_port(phi_id);
+        let effect_in = self.input_port(phi_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_in);
 
-        let cond_port = self.input_port(phi_id);
+        let cond_port = self.input_port(phi_id, EdgeKind::Value);
         self.add_value_edge(condition, cond_port);
 
         // Wire up the external inputs to the phi node
         let outer_inputs: Vec<_> = inputs
             .into_iter()
             .map(|input| {
-                let port = self.input_port(phi_id);
+                self.assert_value_port(input);
+
+                let port = self.input_port(phi_id, EdgeKind::Value);
                 self.add_value_edge(input, port);
                 port
             })
             .collect();
 
         // Create the phi's true branch
-        let mut truthy_subgraph = Rvsdg::new();
-        truthy_subgraph.node_counter = self.node_counter;
+        let mut truthy_subgraph = Rvsdg::from_counter(self.counter.clone());
 
         // Create the input ports within the subgraph
         let (truthy_input_params, truthy_inner_input_ports): (Vec<_>, Vec<_>) = (0..outer_inputs
@@ -743,18 +954,19 @@ impl Rvsdg {
             &truthy_inner_input_ports,
         );
 
+        truthy_subgraph.assert_effect_port(truthy_output_effect);
         let truthy_end = truthy_subgraph.end(truthy_output_effect);
 
         let truthy_output_params: Vec<_> = truthy_outputs
             .iter()
-            .map(|&output| truthy_subgraph.output_param(output, EdgeKind::Value).node())
+            .map(|&output| {
+                truthy_subgraph.assert_value_port(output);
+                truthy_subgraph.output_param(output, EdgeKind::Value).node()
+            })
             .collect();
 
-        self.node_counter = truthy_subgraph.node_counter;
-
         // Create the phi's true branch
-        let mut falsy_subgraph = Rvsdg::new();
-        falsy_subgraph.node_counter = self.node_counter;
+        let mut falsy_subgraph = Rvsdg::from_counter(self.counter.clone());
 
         // Create the input ports within the subgraph
         let (falsy_input_params, falsy_inner_input_ports): (Vec<_>, Vec<_>) = (0..outer_inputs
@@ -776,14 +988,16 @@ impl Rvsdg {
             &falsy_inner_input_ports,
         );
 
+        falsy_subgraph.assert_effect_port(falsy_output_effect);
         let falsy_end = falsy_subgraph.end(falsy_output_effect);
 
         let falsy_output_params: Vec<_> = falsy_outputs
             .iter()
-            .map(|&output| falsy_subgraph.output_param(output, EdgeKind::Value).node())
+            .map(|&output| {
+                falsy_subgraph.assert_value_port(output);
+                falsy_subgraph.output_param(output, EdgeKind::Value).node()
+            })
             .collect();
-
-        self.node_counter = falsy_subgraph.node_counter;
 
         // FIXME: I'd really like to be able to support variable numbers of inputs for each branch
         //        to allow some more flexible optimizations like removing effect flow from a branch
@@ -803,9 +1017,9 @@ impl Rvsdg {
             .map(|(truthy, falsy)| [truthy, falsy])
             .collect();
 
-        let effect_out = self.output_port(phi_id);
+        let effect_out = self.output_port(phi_id, EdgeKind::Effect);
         let outer_outputs: Vec<_> = (0..output_params.len())
-            .map(|_| self.output_port(phi_id))
+            .map(|_| self.output_port(phi_id, EdgeKind::Value))
             .collect();
 
         let phi = Phi::new(
@@ -828,16 +1042,20 @@ impl Rvsdg {
         phi
     }
 
+    #[track_caller]
     pub fn eq(&mut self, lhs: OutputPort, rhs: OutputPort) -> Eq {
+        self.assert_value_port(lhs);
+        self.assert_value_port(rhs);
+
         let eq_id = self.next_node();
 
-        let lhs_port = self.input_port(eq_id);
+        let lhs_port = self.input_port(eq_id, EdgeKind::Value);
         self.add_value_edge(lhs, lhs_port);
 
-        let rhs_port = self.input_port(eq_id);
+        let rhs_port = self.input_port(eq_id, EdgeKind::Value);
         self.add_value_edge(rhs, rhs_port);
 
-        let output = self.output_port(eq_id);
+        let output = self.output_port(eq_id, EdgeKind::Value);
 
         let eq = Eq::new(eq_id, lhs_port, rhs_port, output);
         self.nodes.insert(eq_id, Node::Eq(eq));
@@ -845,13 +1063,16 @@ impl Rvsdg {
         eq
     }
 
+    #[track_caller]
     pub fn not(&mut self, input: OutputPort) -> Not {
+        self.assert_value_port(input);
+
         let not_id = self.next_node();
 
-        let input_port = self.input_port(not_id);
+        let input_port = self.input_port(not_id, EdgeKind::Value);
         self.add_value_edge(input, input_port);
 
-        let output = self.output_port(not_id);
+        let output = self.output_port(not_id, EdgeKind::Value);
 
         let not = Not::new(not_id, input_port, output);
         self.nodes.insert(not_id, Node::Not(not));
@@ -859,9 +1080,36 @@ impl Rvsdg {
         not
     }
 
+    #[track_caller]
+    pub fn neg(&mut self, input: OutputPort) -> Neg {
+        self.assert_value_port(input);
+
+        let neg_id = self.next_node();
+
+        let input_port = self.input_port(neg_id, EdgeKind::Value);
+        self.add_value_edge(input, input_port);
+
+        let output = self.output_port(neg_id, EdgeKind::Value);
+
+        let neg = Neg::new(neg_id, input_port, output);
+        self.nodes.insert(neg_id, Node::Neg(neg));
+
+        neg
+    }
+
+    #[track_caller]
     pub fn neq(&mut self, lhs: OutputPort, rhs: OutputPort) -> Not {
+        self.assert_value_port(lhs);
+        self.assert_value_port(rhs);
+
         let eq = self.eq(lhs, rhs);
         self.not(eq.value())
+    }
+}
+
+impl Default for Rvsdg {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -925,7 +1173,7 @@ impl EdgeCount {
         match (self.min, self.max) {
             (Some(min), None) => value >= min,
             (None, Some(max)) => value <= max,
-            (Some(min), Some(max)) => value >= min && value <= max,
+            (Some(min), Some(max)) => min <= value && value <= max,
             (None, None) => true,
         }
     }
@@ -942,20 +1190,25 @@ impl EdgeCount {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PortData {
     kind: PortKind,
+    edge: EdgeKind,
     parent: NodeId,
 }
 
 impl PortData {
-    const fn new(kind: PortKind, node: NodeId) -> Self {
-        Self { kind, parent: node }
+    const fn new(kind: PortKind, edge: EdgeKind, node: NodeId) -> Self {
+        Self {
+            kind,
+            edge,
+            parent: node,
+        }
     }
 
-    const fn input(node: NodeId) -> Self {
-        Self::new(PortKind::Input, node)
+    const fn input(node: NodeId, edge: EdgeKind) -> Self {
+        Self::new(PortKind::Input, edge, node)
     }
 
-    const fn output(node: NodeId) -> Self {
-        Self::new(PortKind::Output, node)
+    const fn output(node: NodeId, edge: EdgeKind) -> Self {
+        Self::new(PortKind::Output, edge, node)
     }
 }
 
@@ -1684,6 +1937,32 @@ pub struct Not {
 }
 
 impl Not {
+    const fn new(node: NodeId, input: InputPort, value: OutputPort) -> Self {
+        Self { node, input, value }
+    }
+
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
+    /// Get the not's input
+    pub const fn input(&self) -> InputPort {
+        self.input
+    }
+
+    pub const fn value(&self) -> OutputPort {
+        self.value
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Neg {
+    node: NodeId,
+    input: InputPort,
+    value: OutputPort,
+}
+
+impl Neg {
     const fn new(node: NodeId, input: InputPort, value: OutputPort) -> Self {
         Self { node, input, value }
     }

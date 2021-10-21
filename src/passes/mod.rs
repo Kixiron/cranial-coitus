@@ -1,24 +1,26 @@
+mod add_sub_loop;
 mod associative_add;
 mod const_dedup;
 mod const_folding;
-mod const_loads;
 mod dce;
 mod eliminate_const_phi;
+mod mem2reg;
 mod unobserved_store;
 mod zero_loop;
 
+pub use add_sub_loop::AddSubLoop;
 pub use associative_add::AssociativeAdd;
 pub use const_dedup::ConstDedup;
 pub use const_folding::ConstFolding;
-pub use const_loads::ConstLoads;
 pub use dce::Dce;
 pub use eliminate_const_phi::ElimConstPhi;
+pub use mem2reg::Mem2Reg;
 pub use unobserved_store::UnobservedStore;
 pub use zero_loop::ZeroLoop;
 
 use crate::graph::{
-    Add, Bool, End, Eq, Input, InputParam, Int, Load, Node, NodeId, Not, Output, OutputParam, Phi,
-    Rvsdg, Start, Store, Theta,
+    Add, Bool, End, Eq, Input, InputParam, Int, Load, Neg, Node, NodeId, Not, Output, OutputParam,
+    Phi, Rvsdg, Start, Store, Theta,
 };
 use std::collections::{BTreeSet, VecDeque};
 
@@ -185,6 +187,7 @@ pub trait Pass {
                 Node::Theta(theta) => self.visit_theta(graph, theta),
                 Node::Eq(eq) => self.visit_eq(graph, eq),
                 Node::Not(not) => self.visit_not(graph, not),
+                Node::Neg(neg) => self.visit_neg(graph, neg),
                 Node::Phi(phi) => self.visit_phi(graph, phi),
                 Node::InputPort(input_param) => self.visit_input_param(graph, input_param),
                 Node::OutputPort(output_param) => self.visit_output_param(graph, output_param),
@@ -206,6 +209,7 @@ pub trait Pass {
     fn visit_theta(&mut self, _graph: &mut Rvsdg, _theta: Theta) {}
     fn visit_eq(&mut self, _graph: &mut Rvsdg, _eq: Eq) {}
     fn visit_not(&mut self, _graph: &mut Rvsdg, _not: Not) {}
+    fn visit_neg(&mut self, _graph: &mut Rvsdg, _neg: Neg) {}
     fn visit_phi(&mut self, _graph: &mut Rvsdg, _phi: Phi) {}
     fn visit_input_param(&mut self, _graph: &mut Rvsdg, _input_param: InputParam) {}
     fn visit_output_param(&mut self, _graph: &mut Rvsdg, _output_param: OutputParam) {}

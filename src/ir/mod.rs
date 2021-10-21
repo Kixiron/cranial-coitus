@@ -357,6 +357,7 @@ pub enum Expr {
     Eq(Eq),
     Add(Add),
     Not(Not),
+    Neg(Neg),
     Const(Const),
     Load(Load),
     Call(Call),
@@ -373,6 +374,7 @@ impl Pretty for Expr {
             Self::Eq(eq) => eq.pretty(allocator),
             Self::Add(add) => add.pretty(allocator),
             Self::Not(not) => not.pretty(allocator),
+            Self::Neg(neg) => neg.pretty(allocator),
             Self::Const(constant) => constant.pretty(allocator),
             Self::Load(load) => load.pretty(allocator),
             Self::Call(call) => call.pretty(allocator),
@@ -381,20 +383,26 @@ impl Pretty for Expr {
 }
 
 impl From<Call> for Expr {
-    fn from(v: Call) -> Self {
-        Self::Call(v)
+    fn from(call: Call) -> Self {
+        Self::Call(call)
     }
 }
 
 impl From<Load> for Expr {
-    fn from(v: Load) -> Self {
-        Self::Load(v)
+    fn from(load: Load) -> Self {
+        Self::Load(load)
     }
 }
 
 impl From<Not> for Expr {
-    fn from(v: Not) -> Self {
-        Self::Not(v)
+    fn from(not: Not) -> Self {
+        Self::Not(not)
+    }
+}
+
+impl From<Neg> for Expr {
+    fn from(neg: Neg) -> Self {
+        Self::Neg(neg)
     }
 }
 
@@ -477,6 +485,36 @@ impl Pretty for Not {
     {
         allocator
             .text("not")
+            .append(allocator.space())
+            .append(self.value.pretty(allocator))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Neg {
+    value: Value,
+}
+
+impl Neg {
+    pub fn new<V>(value: V) -> Self
+    where
+        V: Into<Value>,
+    {
+        Self {
+            value: value.into(),
+        }
+    }
+}
+
+impl Pretty for Neg {
+    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+    {
+        allocator
+            .text("neg")
             .append(allocator.space())
             .append(self.value.pretty(allocator))
     }
@@ -603,6 +641,7 @@ impl Pretty for Store {
 pub enum Value {
     Var(VarId),
     Const(Const),
+    Missing,
 }
 
 impl Value {
@@ -625,6 +664,7 @@ impl Pretty for Value {
         match self {
             Self::Var(var) => var.pretty(allocator),
             Self::Const(constant) => constant.pretty(allocator),
+            Self::Missing => allocator.text("???"),
         }
     }
 }

@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Bool, EdgeKind, Int, Load, Node, NodeId, Phi, Rvsdg, Store, Theta},
+    graph::{Bool, EdgeKind, Int, Load, Node, NodeId, OutputPort, Phi, Rvsdg, Store, Theta},
     ir::Const,
     passes::Pass,
 };
@@ -9,19 +9,20 @@ use std::{
 };
 
 /// Evaluates constant loads within the program
-pub struct ConstLoads {
-    values: BTreeMap<NodeId, Const>,
-    tape: Vec<Option<i32>>,
+pub struct Mem2Reg {
+    values: BTreeMap<NodeId, Place>,
+    tape: Vec<Place>,
     changed: bool,
     buffer: Vec<&'static Node>,
     visited_buf: BTreeSet<NodeId>,
 }
 
-impl ConstLoads {
+// TODO: Propagate port places into subgraphs by adding input ports
+impl Mem2Reg {
     pub fn new(tape_len: usize) -> Self {
         Self {
             values: BTreeMap::new(),
-            tape: vec![Some(0); tape_len],
+            tape: vec![Place::Const(Const::Int(0)); tape_len],
             changed: false,
             buffer: Vec::new(),
             visited_buf: BTreeSet::new(),
@@ -31,7 +32,7 @@ impl ConstLoads {
     pub fn unknown(tape_len: usize) -> Self {
         Self {
             values: BTreeMap::new(),
-            tape: vec![None; tape_len],
+            tape: vec![Place::Const(Const::Int(0)); tape_len],
             changed: false,
             buffer: Vec::new(),
             visited_buf: BTreeSet::new(),
@@ -63,9 +64,11 @@ impl ConstLoads {
     }
 }
 
-impl Pass for ConstLoads {
+// TODO: Better analyze stores on the outs from thetas & phis for fine-grained
+//       tape invalidation
+impl Pass for Mem2Reg {
     fn pass_name(&self) -> &str {
-        "constant-loads"
+        "mem2reg"
     }
 
     fn did_change(&self) -> bool {
@@ -77,47 +80,58 @@ impl Pass for ConstLoads {
         self.changed = false;
 
         for cell in &mut self.tape {
-            *cell = Some(0);
+            *cell = Place::Const(Const::Int(0));
         }
     }
 
     fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
         let ptr = graph.get_input(load.ptr()).0;
-        let ptr = ptr
-            .as_int()
-            .map(|(_, ptr)| ptr)
-            .or_else(|| self.values.get(&ptr.node_id()).and_then(Const::as_int));
+        let ptr = ptr.as_int().map(|(_, ptr)| ptr).or_else(|| {
+            self.values
+                .get(&ptr.node_id())
+                .and_then(Place::convert_to_i32)
+        });
 
         if let Some(offset) = ptr {
             let offset = offset.rem_euclid(self.tape.len() as i32) as usize;
 
-            if let Some(value) = self.tape[offset] {
-                tracing::debug!(
-                    "replacing load at {} with value {:#04X}: {:?}",
-                    offset,
-                    value,
-                    load,
-                );
+            let mut done = false;
+            if let Place::Const(value) = &self.tape[offset] {
+                if let Some(value) = value.convert_to_i32() {
+                    tracing::debug!(
+                        "replacing load from {} with value {:#04X}: {:?}",
+                        offset,
+                        value,
+                        load,
+                    );
 
-                let int = graph.int(value);
-                self.values.insert(int.node(), (value as i32).into());
+                    let int = graph.int(value);
+                    self.values.insert(int.node(), value.into());
 
-                tracing::debug!("created int node {:?} with value {}", int.node(), value);
-                tracing::debug!(
-                    "rewiring effect edge bridging from {:?}-{:?} into {:?}->{:?} ({:?} to {:?})",
-                    load.effect_in(),
-                    load.effect(),
-                    graph.get_input(load.effect_in()).1,
-                    graph.get_output(load.effect()).unwrap().1,
-                    graph.get_input(load.effect_in()).0.node_id(),
-                    graph.get_output(load.effect()).unwrap().0.node_id(),
-                );
+                    graph.splice_ports(load.effect_in(), load.effect());
+                    graph.rewire_dependents(load.value(), int.value());
+                    graph.remove_node(load.node());
 
-                graph.splice_ports(load.effect_in(), load.effect());
-                graph.rewire_dependents(load.value(), int.value());
-                graph.remove_node(load.node());
+                    self.changed();
+                    done = true;
+                }
+            }
 
-                self.changed();
+            if !done {
+                if let Place::Port(output_port) = self.tape[offset] {
+                    tracing::debug!(
+                        "replacing load from {} with port {:?}: {:?}",
+                        offset,
+                        output_port,
+                        load,
+                    );
+
+                    graph.splice_ports(load.effect_in(), load.effect());
+                    graph.rewire_dependents(load.value(), output_port);
+                    graph.remove_node(load.node());
+
+                    self.changed();
+                }
             }
         }
     }
@@ -127,17 +141,17 @@ impl Pass for ConstLoads {
         let ptr = ptr.as_int().map(|(_, ptr)| ptr).or_else(|| {
             self.values
                 .get(&ptr.node_id())
-                .and_then(Const::convert_to_i32)
+                .and_then(Place::convert_to_i32)
         });
 
         if let Some(offset) = ptr {
             let offset = offset.rem_euclid(self.tape.len() as i32) as usize;
 
-            let stored_value = graph.get_input(store.value()).0;
+            let (stored_value, output_port, _) = graph.get_input(store.value());
             let stored_value = stored_value.as_int().map(|(_, value)| value).or_else(|| {
                 self.values
                     .get(&stored_value.node_id())
-                    .and_then(Const::convert_to_i32)
+                    .and_then(Place::convert_to_i32)
             });
 
             if let Some(value) = stored_value {
@@ -154,20 +168,23 @@ impl Pass for ConstLoads {
                     let int = graph.int(value);
                     self.values.insert(int.node(), (value as i32).into());
 
-                    graph.remove_input(store.value());
+                    graph.remove_input_edge(store.value());
                     graph.add_value_edge(int.value(), store.value());
 
                     self.changed();
                 }
             }
 
-            self.tape[offset] = stored_value;
+            self.tape[offset] = match stored_value {
+                Some(value) => value.into(),
+                None => Place::Port(output_port),
+            };
         } else {
             tracing::debug!("unknown store {:?}, invalidating tape", store);
 
             // Invalidate the whole tape
             for cell in self.tape.iter_mut() {
-                *cell = None;
+                *cell = Place::Unknown;
             }
         }
 
@@ -230,24 +247,34 @@ impl Pass for ConstLoads {
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
         let replaced = self.values.insert(bool.node(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Bool(value)));
+        debug_assert!(replaced.is_none() || replaced == Some(value.into()));
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
         let replaced = self.values.insert(int.node(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
+        debug_assert!(replaced.is_none() || replaced == Some(value.into()));
     }
 
     fn visit_phi(&mut self, graph: &mut Rvsdg, mut phi: Phi) {
+        // We don't propagate port places into subgraphs
+        let tape: Vec<_> = self
+            .tape
+            .iter()
+            .map(|place| match place {
+                Place::Const(constant) => Place::Const(constant.clone()),
+                _ => Place::Unknown,
+            })
+            .collect();
+
         // Both branches of the phi node get the previous context, the changes they
         // create within it just are trickier to propagate
         let (mut truthy_visitor, mut falsy_visitor) = (
             Self {
-                tape: self.tape.clone(),
+                tape: tape.clone(),
                 ..Self::unknown(self.tape.len())
             },
             Self {
-                tape: self.tape.clone(),
+                tape,
                 ..Self::unknown(self.tape.len())
             },
         );
@@ -258,7 +285,12 @@ impl Pass for ConstLoads {
             let (input_node, _, _) = graph.get_input(input);
             let input_node_id = input_node.node_id();
 
-            if let Some(constant) = self.values.get(&input_node_id).cloned() {
+            if let Some(constant) = self
+                .values
+                .get(&input_node_id)
+                .filter(|place| place.is_const())
+                .cloned()
+            {
                 let replaced = truthy_visitor.values.insert(truthy_param, constant.clone());
                 debug_assert!(replaced.is_none());
 
@@ -302,7 +334,7 @@ impl Pass for ConstLoads {
             );
 
             for cell in self.tape.iter_mut() {
-                *cell = None;
+                *cell = Place::Unknown;
             }
         } else {
             tracing::debug!("phi node does no stores, not invalidating program tape");
@@ -325,9 +357,15 @@ impl Pass for ConstLoads {
         //        stored to and only fall back to the pessimistic case in the
         //        event that we find a store to an unknown pointer
         let tape = if body_stores != 0 {
-            vec![None; self.tape.len()]
+            vec![Place::Unknown; self.tape.len()]
         } else {
-            self.tape.clone()
+            self.tape
+                .iter()
+                .map(|place| match place {
+                    Place::Const(constant) => Place::Const(constant.clone()),
+                    _ => Place::Unknown,
+                })
+                .collect()
         };
 
         let mut visitor = Self {
@@ -341,7 +379,12 @@ impl Pass for ConstLoads {
             let (input_node, _, _) = graph.get_input(input);
             let input_node_id = input_node.node_id();
 
-            if let Some(constant) = self.values.get(&input_node_id).cloned() {
+            if let Some(constant) = self
+                .values
+                .get(&input_node_id)
+                .filter(|place| place.is_const())
+                .cloned()
+            {
                 let replaced = visitor.values.insert(param, constant);
                 debug_assert!(replaced.is_none());
             }
@@ -364,12 +407,54 @@ impl Pass for ConstLoads {
             );
 
             for cell in self.tape.iter_mut() {
-                *cell = None;
+                *cell = Place::Unknown;
             }
         } else {
             tracing::debug!("theta body does no stores, not invalidating program tape");
         }
 
         graph.replace_node(theta.node(), theta);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Place {
+    Unknown,
+    Const(Const),
+    Port(OutputPort),
+}
+
+impl Place {
+    pub fn convert_to_i32(&self) -> Option<i32> {
+        if let Self::Const(constant) = self {
+            constant.as_int()
+        } else {
+            None
+        }
+    }
+
+    /// Returns `true` if the place is [`Const`].
+    ///
+    /// [`Const`]: Place::Const
+    pub const fn is_const(&self) -> bool {
+        matches!(self, Self::Const(..))
+    }
+}
+
+impl From<i32> for Place {
+    fn from(int: i32) -> Self {
+        Self::Const(Const::Int(int))
+    }
+}
+
+impl From<bool> for Place {
+    fn from(bool: bool) -> Self {
+        Self::Const(Const::Bool(bool))
+    }
+}
+
+impl From<OutputPort> for Place {
+    fn from(port: OutputPort) -> Self {
+        Self::Port(port)
     }
 }

@@ -71,7 +71,7 @@ impl Rvsdg {
         for node in self.transitive_nodes() {
             match node {
                 Node::Int(_, _) | Node::Bool(_, _) => stats.constants += 1,
-                Node::Add(_) | Node::Eq(_) | Node::Not(_) => stats.instructions += 1,
+                Node::Add(_) | Node::Eq(_) | Node::Not(_) | Node::Neg(_) => stats.instructions += 1,
                 Node::Load(_) => {
                     stats.instructions += 1;
                     stats.loads += 1

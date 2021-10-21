@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{self, Write};
 
 #[derive(Debug)]
 pub enum Token {
@@ -8,28 +8,49 @@ pub enum Token {
     Dec,
     Output,
     Input,
-    Loop(Vec<Self>),
+    Loop(Box<[Self]>),
 }
+
+struct CloseLoop;
 
 impl Token {
     pub fn debug_tokens(tokens: &[Self], mut output: impl Write) {
-        Self::debug_tokens_inner(tokens, &mut output, 0);
+        let mut stack = tokens.iter().map(|token| (Ok(token), 0)).collect();
+        Self::debug_tokens_inner(&mut stack, &mut output).expect("failed to debug tokens");
     }
 
-    fn debug_tokens_inner(tokens: &[Self], output: &mut dyn Write, level: usize) {
-        let padding = " ".repeat(level * 2);
+    fn debug_tokens_inner(
+        stack: &mut Vec<(Result<&Token, CloseLoop>, usize)>,
+        output: &mut dyn Write,
+    ) -> io::Result<()> {
+        while let Some((token, level)) = stack.pop() {
+            // Write the leading padding
+            for _ in 0..level {
+                output.write_all(b" ")?;
+            }
 
-        for token in tokens {
             match token {
-                Token::Loop(body) => {
-                    writeln!(output, "{}Loop {{", padding).unwrap();
-                    Self::debug_tokens_inner(body, output, level + 1);
-                    writeln!(output, "{}}}", padding).unwrap();
-                }
+                Ok(token) => match token {
+                    Token::Loop(body) => {
+                        // Start loops
+                        writeln!(output, "Loop {{")?;
 
-                other => writeln!(output, "{}{:?}", padding, other).unwrap(),
+                        // Push all tokens from the loop onto the stack in reverse order
+                        stack.reserve(body.len() + 1);
+                        stack.push((Err(CloseLoop), level));
+                        stack.extend(body.iter().rev().map(|token| (Ok(token), level + 1)));
+                    }
+
+                    // All other token kinds just get print out alone
+                    other => writeln!(output, "{:?}", other)?,
+                },
+
+                // Close loops
+                Err(CloseLoop) => writeln!(output, "}}")?,
             }
         }
+
+        Ok(())
     }
 }
 
@@ -44,7 +65,7 @@ enum RawToken {
     JumpEnd,
 }
 
-pub fn parse(source: &str) -> Vec<Token> {
+pub fn parse(source: &str) -> Box<[Token]> {
     let tokens = source.chars().flat_map(|token| {
         Some(match token {
             '>' => RawToken::IncPtr,
@@ -71,11 +92,14 @@ pub fn parse(source: &str) -> Vec<Token> {
             RawToken::JumpStart => scopes.push(Vec::new()),
             RawToken::JumpEnd => {
                 let body = scopes.pop().unwrap();
-                scopes.last_mut().unwrap().push(Token::Loop(body));
+                scopes
+                    .last_mut()
+                    .unwrap()
+                    .push(Token::Loop(body.into_boxed_slice()));
             }
         }
     }
 
     assert_eq!(scopes.len(), 1);
-    scopes.remove(0)
+    scopes.remove(0).into_boxed_slice()
 }

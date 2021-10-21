@@ -1,5 +1,5 @@
 use crate::{
-    graph::{OutputPort, PhiData, Rvsdg, ThetaData},
+    graph::{GammaData, OutputPort, Rvsdg, ThetaData},
     parse::Token,
 };
 
@@ -72,7 +72,7 @@ pub fn lower_tokens(
                 // Compare the cell's value to zero
                 let cmp = graph.eq(load.value(), zero);
 
-                // Create a phi node to decide whether or not to drop into the loop
+                // Create a gamma node to decide whether or not to drop into the loop
                 // Brainfuck loops are equivalent to this general structure:
                 //
                 // ```rust
@@ -81,9 +81,9 @@ pub fn lower_tokens(
                 // }
                 // ```
                 //
-                // So we translate that into our node structure using a phi
+                // So we translate that into our node structure using a gamma
                 // node as the outer `if` and a theta as the inner tail controlled loop
-                let phi = graph.phi(
+                let gamma = graph.gamma(
                     [ptr],
                     effect,
                     cmp.value(),
@@ -91,7 +91,7 @@ pub fn lower_tokens(
                     // if the cell's value is already zero
                     |_graph, effect, inputs| {
                         let ptr = inputs[0];
-                        PhiData::new([ptr], effect)
+                        GammaData::new([ptr], effect)
                     },
                     // The falsy branch where `*ptr != 0`, this is where we run the loop's actual body!
                     |graph, mut effect, inputs| {
@@ -112,12 +112,12 @@ pub fn lower_tokens(
                         ptr = theta.outputs()[0];
                         effect = theta.effect_out();
 
-                        PhiData::new([ptr], effect)
+                        GammaData::new([ptr], effect)
                     },
                 );
 
-                ptr = phi.outputs()[0];
-                effect = phi.effect_out();
+                ptr = gamma.outputs()[0];
+                effect = gamma.effect_out();
             }
         }
     }

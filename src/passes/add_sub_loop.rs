@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Add, End, Eq, InputParam, Int, Load, Node, Not, OutputParam, OutputPort, Phi, Rvsdg, Start,
-        Store, Theta,
+        Add, End, Eq, Gamma, InputParam, Int, Load, Node, Not, OutputParam, OutputPort, Rvsdg,
+        Start, Store, Theta,
     },
     ir::Const,
     passes::Pass,
@@ -236,33 +236,34 @@ impl Pass for AddSubLoop {
         debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
     }
 
-    fn visit_phi(&mut self, graph: &mut Rvsdg, mut phi: Phi) {
+    fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
 
-        // For each input into the phi region, if the input value is a known constant
+        // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &[true_param, false_param]) in phi.inputs().iter().zip(phi.input_params()) {
+        for (&input, &[true_param, false_param]) in gamma.inputs().iter().zip(gamma.input_params())
+        {
             let (_, source, _) = graph.get_input(input);
 
             if let Some(constant) = self.values.get(&source).cloned() {
-                let true_param = phi.truthy().get_node(true_param).to_input_param();
+                let true_param = gamma.true_branch().get_node(true_param).to_input_param();
                 let replaced = truthy_visitor
                     .values
                     .insert(true_param.value(), constant.clone());
                 debug_assert!(replaced.is_none());
 
-                let false_param = phi.falsy().get_node(false_param).to_input_param();
+                let false_param = gamma.false_branch().get_node(false_param).to_input_param();
                 let replaced = falsy_visitor.values.insert(false_param.value(), constant);
                 debug_assert!(replaced.is_none());
             }
         }
 
-        truthy_visitor.visit_graph(phi.truthy_mut());
-        falsy_visitor.visit_graph(phi.falsy_mut());
+        truthy_visitor.visit_graph(gamma.truthy_mut());
+        falsy_visitor.visit_graph(gamma.falsy_mut());
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 
-        graph.replace_node(phi.node(), phi);
+        graph.replace_node(gamma.node(), gamma);
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {

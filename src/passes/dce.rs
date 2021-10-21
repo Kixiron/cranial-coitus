@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Add, EdgeKind, Eq, Load, Neg, Node, NodeId, Not, Phi, Rvsdg, Store, Theta},
+    graph::{Add, EdgeKind, Eq, Gamma, Load, Neg, Node, NodeId, Not, Rvsdg, Store, Theta},
     passes::Pass,
 };
 use std::collections::{BTreeSet, VecDeque};
@@ -178,20 +178,21 @@ impl Pass for Dce {
         }
     }
 
-    // TODO: Remove the phi node if it's unused?
-    // TODO: Remove unused ports & effects from phi nodes
-    // TODO: Collapse identical phi branches?
-    fn visit_phi(&mut self, graph: &mut Rvsdg, mut phi: Phi) {
+    // TODO: Remove the gamma node if it's unused?
+    // TODO: Remove unused ports & effects from gamma nodes
+    // TODO: Collapse identical gamma branches?
+    fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
 
         self.stack_buf.extend(
-            phi.input_params()
+            gamma
+                .input_params()
                 .iter()
-                .chain(phi.output_params())
+                .chain(gamma.output_params())
                 .map(|&[truthy, _]| truthy),
         );
         truthy_visitor.visit_graph_inner(
-            phi.truthy_mut(),
+            gamma.truthy_mut(),
             &mut self.stack_buf,
             &mut self.visited_buf,
             &mut self.buffer_buf,
@@ -199,13 +200,14 @@ impl Pass for Dce {
         self.changed |= truthy_visitor.did_change();
 
         self.stack_buf.extend(
-            phi.input_params()
+            gamma
+                .input_params()
                 .iter()
-                .chain(phi.output_params())
+                .chain(gamma.output_params())
                 .map(|&[_, falsy]| falsy),
         );
         falsy_visitor.visit_graph_inner(
-            phi.falsy_mut(),
+            gamma.falsy_mut(),
             &mut self.stack_buf,
             &mut self.visited_buf,
             &mut self.buffer_buf,
@@ -220,28 +222,28 @@ impl Pass for Dce {
                 .map_or(false, |(consumer, _, _)| consumer.is_end())
         };
 
-        let true_is_empty = branch_is_empty(phi.truthy(), phi.starts()[0]);
-        let false_is_empty = branch_is_empty(phi.falsy(), phi.starts()[1]);
+        let true_is_empty = branch_is_empty(gamma.true_branch(), gamma.starts()[0]);
+        let false_is_empty = branch_is_empty(gamma.false_branch(), gamma.starts()[1]);
 
         if true_is_empty && false_is_empty {
-            tracing::debug!("removing an empty phi {:?}", phi.node());
+            tracing::debug!("removing an empty gamma {:?}", gamma.node());
 
-            graph.splice_ports(phi.effect_in(), phi.effect_out());
+            graph.splice_ports(gamma.effect_in(), gamma.effect_out());
 
-            for (&input_port, &param) in phi.inputs().iter().zip(phi.input_params()) {
-                let truthy_param = phi.truthy().get_node(param[0]).to_input_param();
-                let falsy_param = phi.falsy().get_node(param[1]).to_input_param();
+            for (&input_port, &param) in gamma.inputs().iter().zip(gamma.input_params()) {
+                let truthy_param = gamma.true_branch().get_node(param[0]).to_input_param();
+                let falsy_param = gamma.false_branch().get_node(param[1]).to_input_param();
 
                 if let Some((Node::OutputPort(output), _, EdgeKind::Value)) =
-                    phi.truthy().get_output(truthy_param.value())
+                    gamma.true_branch().get_output(truthy_param.value())
                 {
-                    let output_port = phi.outputs().iter().zip(phi.output_params()).find_map(
+                    let output_port = gamma.outputs().iter().zip(gamma.output_params()).find_map(
                         |(&output_port, &param)| (param[0] == output.node()).then(|| output_port),
                     );
 
                     if let Some(output_port) = output_port {
                         tracing::debug!(
-                            "splicing phi input to output passthrough {:?}->{:?}",
+                            "splicing gamma input to output passthrough {:?}->{:?}",
                             input_port,
                             output_port,
                         );
@@ -249,15 +251,15 @@ impl Pass for Dce {
                         graph.splice_ports(input_port, output_port);
                     }
                 } else if let Some((Node::OutputPort(output), _, EdgeKind::Value)) =
-                    phi.falsy().get_output(falsy_param.value())
+                    gamma.false_branch().get_output(falsy_param.value())
                 {
-                    let output_port = phi.outputs().iter().zip(phi.output_params()).find_map(
+                    let output_port = gamma.outputs().iter().zip(gamma.output_params()).find_map(
                         |(&output_port, &param)| (param[1] == output.node()).then(|| output_port),
                     );
 
                     if let Some(output_port) = output_port {
                         tracing::debug!(
-                            "splicing phi input to output passthrough {:?}->{:?}",
+                            "splicing gamma input to output passthrough {:?}->{:?}",
                             input_port,
                             output_port,
                         );
@@ -267,10 +269,10 @@ impl Pass for Dce {
                 }
             }
 
-            graph.remove_node(phi.node());
+            graph.remove_node(gamma.node());
             self.changed();
         } else {
-            graph.replace_node(phi.node(), phi);
+            graph.replace_node(gamma.node(), gamma);
         }
     }
 

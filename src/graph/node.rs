@@ -1,7 +1,8 @@
 use crate::graph::{
-    Add, Bool, EdgeCount, EdgeDescriptor, EdgeKind, End, Eq, Input, InputParam, InputPort, Int,
-    Load, Neg, NodeId, Not, Output, OutputParam, OutputPort, Phi, Start, Store, Theta,
+    Add, Bool, EdgeCount, EdgeDescriptor, EdgeKind, End, Eq, Gamma, Input, InputParam, InputPort,
+    Int, Load, Neg, NodeId, Not, Output, OutputParam, OutputPort, Start, Store, Theta,
 };
+use tinyvec::{tiny_vec, TinyVec};
 
 #[derive(Debug, Clone)]
 pub enum Node {
@@ -20,7 +21,7 @@ pub enum Node {
     Eq(Eq),
     Not(Not),
     Neg(Neg),
-    Phi(Phi),
+    Gamma(Gamma),
 }
 
 impl Node {
@@ -41,41 +42,42 @@ impl Node {
             | Self::Eq(Eq { node, .. })
             | Self::Not(Not { node, .. })
             | Self::Neg(Neg { node, .. })
-            | Self::Phi(Phi { node, .. }) => node,
+            | Self::Gamma(Gamma { node, .. }) => node,
         }
     }
 
     // FIXME: TinyVec?
-    pub fn inputs(&self) -> Vec<InputPort> {
+    pub fn inputs(&self) -> TinyVec<[InputPort; 4]> {
         match self {
-            Self::Int(_, _) | Self::Bool(_, _) => Vec::new(),
-            Self::Add(add) => vec![add.lhs, add.rhs],
-            Self::Load(load) => vec![load.ptr, load.effect_in],
-            Self::Store(store) => vec![store.ptr, store.value, store.effect_in],
-            Self::Start(_) => Vec::new(),
-            Self::End(end) => vec![end.effect],
-            Self::Input(input) => vec![input.effect_in],
-            Self::Output(output) => vec![output.value, output.effect_in],
+            Self::Int(_, _) | Self::Bool(_, _) => TinyVec::new(),
+            Self::Add(add) => tiny_vec![add.lhs, add.rhs],
+            Self::Load(load) => tiny_vec![load.ptr, load.effect_in],
+            Self::Store(store) => tiny_vec![store.ptr, store.value, store.effect_in],
+            Self::Start(_) => TinyVec::new(),
+            Self::End(end) => tiny_vec![end.effect],
+            Self::Input(input) => tiny_vec![input.effect_in],
+            Self::Output(output) => tiny_vec![output.value, output.effect_in],
             Self::Theta(theta) => {
-                let mut inputs = theta.inputs.to_vec();
+                let mut inputs = TinyVec::with_capacity(theta.inputs.len() + 1);
+                inputs.extend(theta.inputs.iter().copied());
                 inputs.push(theta.effect_in);
                 inputs
             }
-            Self::InputPort(_) => Vec::new(),
-            Self::OutputPort(output) => vec![output.value],
-            Self::Eq(eq) => vec![eq.lhs, eq.rhs],
-            Self::Not(not) => vec![not.input],
-            Self::Neg(neg) => vec![neg.input],
-            Self::Phi(phi) => {
-                let mut inputs = phi.inputs.to_vec();
-                inputs.push(phi.condition);
-                inputs.push(phi.effect_in);
+            Self::InputPort(_) => TinyVec::new(),
+            Self::OutputPort(output) => tiny_vec![output.value],
+            Self::Eq(eq) => tiny_vec![eq.lhs, eq.rhs],
+            Self::Not(not) => tiny_vec![not.input],
+            Self::Neg(neg) => tiny_vec![neg.input],
+            Self::Gamma(gamma) => {
+                let mut inputs = TinyVec::with_capacity(gamma.inputs.len() + 2);
+                inputs.extend(gamma.inputs.iter().copied());
+                inputs.push(gamma.condition);
+                inputs.push(gamma.effect_in);
                 inputs
             }
         }
     }
 
-    // FIXME: TinyVec?
     pub fn inputs_mut(&mut self) -> Vec<&mut InputPort> {
         match self {
             Self::Int(_, _) | Self::Bool(_, _) => Vec::new(),
@@ -96,10 +98,10 @@ impl Node {
             Self::Eq(eq) => vec![&mut eq.lhs, &mut eq.rhs],
             Self::Not(not) => vec![&mut not.input],
             Self::Neg(neg) => vec![&mut neg.input],
-            Self::Phi(phi) => {
-                let mut inputs: Vec<_> = phi.inputs.iter_mut().collect();
-                inputs.push(&mut phi.condition);
-                inputs.push(&mut phi.effect_in);
+            Self::Gamma(gamma) => {
+                let mut inputs: Vec<_> = gamma.inputs.iter_mut().collect();
+                inputs.push(&mut gamma.condition);
+                inputs.push(&mut gamma.effect_in);
                 inputs
             }
         }
@@ -127,15 +129,14 @@ impl Node {
             Self::Eq(eq) => vec![eq.value],
             Self::Not(not) => vec![not.value],
             Self::Neg(neg) => vec![neg.value],
-            Self::Phi(phi) => {
-                let mut inputs = phi.outputs.to_vec();
-                inputs.push(phi.effect_out);
+            Self::Gamma(gamma) => {
+                let mut inputs = gamma.outputs.to_vec();
+                inputs.push(gamma.effect_out);
                 inputs
             }
         }
     }
 
-    // FIXME: TinyVec?
     pub fn outputs_mut(&mut self) -> Vec<&mut OutputPort> {
         match self {
             Self::Int(int, _) => vec![&mut int.value],
@@ -157,9 +158,9 @@ impl Node {
             Self::Eq(eq) => vec![&mut eq.value],
             Self::Not(not) => vec![&mut not.value],
             Self::Neg(neg) => vec![&mut neg.value],
-            Self::Phi(phi) => {
-                let mut inputs: Vec<_> = phi.outputs.iter_mut().collect();
-                inputs.push(&mut phi.effect_out);
+            Self::Gamma(gamma) => {
+                let mut inputs: Vec<_> = gamma.outputs.iter_mut().collect();
+                inputs.push(&mut gamma.effect_out);
                 inputs
             }
         }
@@ -185,8 +186,8 @@ impl Node {
             },
             Self::Eq(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::two()),
             Self::Not(_) | Self::Neg(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
-            Self::Phi(phi) => {
-                EdgeDescriptor::new(EdgeCount::one(), EdgeCount::exact(phi.inputs().len() + 1))
+            Self::Gamma(gamma) => {
+                EdgeDescriptor::new(EdgeCount::one(), EdgeCount::exact(gamma.inputs().len() + 1))
             }
         }
     }
@@ -212,8 +213,8 @@ impl Node {
             },
             Self::Eq(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
             Self::Not(_) | Self::Neg(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
-            Self::Phi(phi) => {
-                EdgeDescriptor::new(EdgeCount::one(), EdgeCount::exact(phi.outputs().len()))
+            Self::Gamma(gamma) => {
+                EdgeDescriptor::new(EdgeCount::one(), EdgeCount::exact(gamma.outputs().len()))
             }
         }
     }
@@ -382,11 +383,11 @@ impl Node {
 
     #[track_caller]
     #[allow(dead_code)]
-    pub fn to_phi_mut(&mut self) -> &mut Phi {
-        if let Self::Phi(phi) = self {
-            phi
+    pub fn to_gamma_mut(&mut self) -> &mut Gamma {
+        if let Self::Gamma(gamma) = self {
+            gamma
         } else {
-            panic!("attempted to get phi, got {:?}", self);
+            panic!("attempted to get gamma, got {:?}", self);
         }
     }
 
@@ -541,9 +542,9 @@ impl From<Not> for Node {
     }
 }
 
-impl From<Phi> for Node {
-    fn from(phi: Phi) -> Self {
-        Self::Phi(phi)
+impl From<Gamma> for Node {
+    fn from(gamma: Gamma) -> Self {
+        Self::Gamma(gamma)
     }
 }
 

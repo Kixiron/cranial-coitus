@@ -1,8 +1,8 @@
 use crate::{
     graph::{Node, NodeId, OutputPort, Rvsdg},
     ir::{
-        Add, Assign, Block, Call, Const, Eq, Instruction, Load, Neg, Not, Phi, Store, Theta, Value,
-        VarId,
+        Add, Assign, Block, Call, Const, Eq, Gamma, Instruction, Load, Neg, Not, Store, Theta,
+        Value, VarId,
     },
 };
 use std::{
@@ -308,10 +308,10 @@ impl IrBuilder {
                 self.values.insert(theta.effect_out(), var.into());
             }
 
-            Node::Phi(phi) => {
-                let var = VarId::new(phi.node().0);
+            Node::Gamma(gamma) => {
+                let var = VarId::new(gamma.node().0);
                 let cond = input_values
-                    .get(&phi.condition())
+                    .get(&gamma.condition())
                     .cloned()
                     .unwrap_or(Value::Missing);
 
@@ -323,19 +323,19 @@ impl IrBuilder {
                     top_level: false,
                 };
 
-                for (input, &[param, _]) in phi.inputs().iter().zip(phi.input_params()) {
-                    let port = phi.truthy().outputs(param).next().unwrap().0;
+                for (input, &[param, _]) in gamma.inputs().iter().zip(gamma.input_params()) {
+                    let port = gamma.true_branch().outputs(param).next().unwrap().0;
                     let value = input_values.get(input).cloned().unwrap_or(Value::Missing);
 
                     truthy_builder.values.insert(port, value);
                 }
 
-                let truthy = truthy_builder.translate(phi.truthy());
+                let truthy = truthy_builder.translate(gamma.true_branch());
 
-                for (&output, &[param, _]) in phi.outputs().iter().zip(phi.output_params()) {
+                for (&output, &[param, _]) in gamma.outputs().iter().zip(gamma.output_params()) {
                     let value = truthy_builder
                         .values
-                        .get(&phi.truthy().inputs(param).next().unwrap().2)
+                        .get(&gamma.true_branch().inputs(param).next().unwrap().2)
                         .cloned()
                         .unwrap_or(Value::Missing);
 
@@ -350,18 +350,18 @@ impl IrBuilder {
                     top_level: false,
                 };
 
-                for (input, &[_, param]) in phi.inputs().iter().zip(phi.input_params()) {
-                    let port = phi.falsy().outputs(param).next().unwrap().0;
+                for (input, &[_, param]) in gamma.inputs().iter().zip(gamma.input_params()) {
+                    let port = gamma.false_branch().outputs(param).next().unwrap().0;
                     let value = input_values.get(input).cloned().unwrap_or(Value::Missing);
 
                     falsy_builder.values.insert(port, value);
                 }
 
-                let falsy = falsy_builder.translate(phi.falsy());
+                let falsy = falsy_builder.translate(gamma.false_branch());
 
-                for (&output, &[_, param]) in phi.outputs().iter().zip(phi.output_params()) {
-                    let value = phi
-                        .falsy()
+                for (&output, &[_, param]) in gamma.outputs().iter().zip(gamma.output_params()) {
+                    let value = gamma
+                        .false_branch()
                         .try_inputs(param)
                         .find_map(|(_, data)| {
                             data.and_then(|(_, output, _)| falsy_builder.values.get(&output))
@@ -372,17 +372,17 @@ impl IrBuilder {
                     self.values.insert(output, value);
                 }
 
-                self.inst(Phi::new(
+                self.inst(Gamma::new(
                     cond,
                     truthy.into_inner(),
                     falsy.into_inner(),
                     graph
-                        .try_input(phi.effect_in())
+                        .try_input(gamma.effect_in())
                         .and_then(|(_, output, _)| self.values.get(&output))
                         .and_then(Value::as_var),
                 ));
 
-                self.values.insert(phi.effect_out(), var.into());
+                self.values.insert(gamma.effect_out(), var.into());
             }
 
             Node::Start(start) => {

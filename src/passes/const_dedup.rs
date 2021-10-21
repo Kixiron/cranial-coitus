@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Bool, Int, NodeId, Phi, Rvsdg, Theta},
+    graph::{Bool, Gamma, Int, NodeId, Rvsdg, Theta},
     ir::Const,
     passes::Pass,
 };
@@ -101,12 +101,14 @@ impl Pass for ConstDedup {
         }
     }
 
-    fn visit_phi(&mut self, graph: &mut Rvsdg, mut phi: Phi) {
+    fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
 
-        // For each input into the phi region, if the input value is a known constant
+        // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &[truthy_param, falsy_param]) in phi.inputs().iter().zip(phi.input_params()) {
+        for (&input, &[truthy_param, falsy_param]) in
+            gamma.inputs().iter().zip(gamma.input_params())
+        {
             let (input_node, _, _) = graph.get_input(input);
             let input_node_id = input_node.node_id();
 
@@ -121,14 +123,14 @@ impl Pass for ConstDedup {
             }
         }
 
-        truthy_visitor.visit_graph(phi.truthy_mut());
-        falsy_visitor.visit_graph(phi.falsy_mut());
+        truthy_visitor.visit_graph(gamma.truthy_mut());
+        falsy_visitor.visit_graph(gamma.falsy_mut());
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 
-        // TODO: Propagate constants out of phi bodies?
+        // TODO: Propagate constants out of gamma bodies?
 
-        graph.replace_node(phi.node(), phi);
+        graph.replace_node(gamma.node(), gamma);
     }
 
     // TODO: There's some push/pull-based things we should do for routing constant values

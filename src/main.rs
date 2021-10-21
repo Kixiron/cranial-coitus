@@ -15,7 +15,7 @@ use crate::{
     ir::{IrBuilder, Pretty},
     parse::Token,
     passes::{
-        AddSubLoop, AssociativeAdd, ConstDedup, ConstFolding, Dce, ElimConstPhi, Mem2Reg, Pass,
+        AddSubLoop, AssociativeAdd, ConstDedup, ConstFolding, Dce, ElimConstGamma, Mem2Reg, Pass,
         UnobservedStore, ZeroLoop,
     },
 };
@@ -49,14 +49,29 @@ fn main() {
         tracing::info!("started parsing {}", args.file.display());
 
         let tokens = parse::parse(&contents);
-        if cfg!(debug_assertions) {
-            Token::debug_tokens(&tokens, File::create(dump_dir.join("tokens")).unwrap());
-        }
-        let elapsed = start_time.elapsed();
 
+        let elapsed = start_time.elapsed();
         tracing::info!("finished parsing {} in {:#?}", args.file.display(), elapsed);
+
+        if cfg!(debug_assertions) {
+            let start_time = Instant::now();
+
+            let token_file = BufWriter::new(File::create(dump_dir.join("tokens")).unwrap());
+            Token::debug_tokens(&tokens, token_file);
+
+            let elapsed = start_time.elapsed();
+            tracing::info!(
+                "finished debugging tokens for {} in {:#?}",
+                args.file.display(),
+                elapsed,
+            );
+        }
+
         tokens
     });
+
+    tracing::info!("finished building rvsdg");
+    let graph_building_start = Instant::now();
 
     let mut graph = Rvsdg::new();
     let start = graph.start();
@@ -66,6 +81,10 @@ fn main() {
 
     let (effect, _ptr) = lower_tokens::lower_tokens(&mut graph, ptr, effect, &tokens);
     graph.end(effect);
+
+    let elapsed = graph_building_start.elapsed();
+    tracing::info!("finished building rvsdg in {:#?}", elapsed);
+
     validate(&graph);
 
     let input_stats = graph.stats();
@@ -84,7 +103,7 @@ fn main() {
         Box::new(Mem2Reg::new(args.cells as usize)),
         Box::new(AddSubLoop::new()),
         Box::new(Dce::new()),
-        Box::new(ElimConstPhi::new()),
+        Box::new(ElimConstGamma::new()),
         Box::new(ConstFolding::new()),
         Box::new(ConstDedup::new()),
     ];
@@ -287,9 +306,9 @@ fn validate_inner(graph: &Rvsdg) {
     {
         if let Node::Theta(theta) = node {
             validate_inner(theta.body());
-        } else if let Node::Phi(phi) = node {
-            validate_inner(phi.truthy());
-            validate_inner(phi.falsy());
+        } else if let Node::Gamma(gamma) = node {
+            validate_inner(gamma.true_branch());
+            validate_inner(gamma.false_branch());
         }
 
         let input_desc = node.input_desc();

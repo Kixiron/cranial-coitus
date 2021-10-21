@@ -69,7 +69,7 @@ pub enum Instruction {
     Call(Call),
     Assign(Assign),
     Theta(Theta),
-    Phi(Phi),
+    Gamma(Gamma),
     Store(Store),
 }
 
@@ -84,7 +84,7 @@ impl Pretty for Instruction {
             Self::Call(call) => call.pretty(allocator),
             Self::Assign(assign) => assign.pretty(allocator),
             Self::Theta(theta) => theta.pretty(allocator),
-            Self::Phi(phi) => phi.pretty(allocator),
+            Self::Gamma(gamma) => gamma.pretty(allocator),
             Self::Store(store) => store.pretty(allocator),
         }
     }
@@ -102,9 +102,9 @@ impl From<Theta> for Instruction {
     }
 }
 
-impl From<Phi> for Instruction {
-    fn from(phi: Phi) -> Self {
-        Self::Phi(phi)
+impl From<Gamma> for Instruction {
+    fn from(gamma: Gamma) -> Self {
+        Self::Gamma(gamma)
     }
 }
 
@@ -193,14 +193,14 @@ impl Pretty for Theta {
 }
 
 #[derive(Debug, Clone)]
-pub struct Phi {
+pub struct Gamma {
     cond: Value,
     truthy: Vec<Instruction>,
     falsy: Vec<Instruction>,
     pred_effect: Option<VarId>,
 }
 
-impl Phi {
+impl Gamma {
     pub fn new<C, E>(
         cond: C,
         truthy: Vec<Instruction>,
@@ -220,7 +220,7 @@ impl Phi {
     }
 }
 
-impl Pretty for Phi {
+impl Pretty for Gamma {
     fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,

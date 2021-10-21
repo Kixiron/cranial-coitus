@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Bool, EdgeKind, InputPort, Int, Node, NodeId, Phi, Rvsdg, Theta},
+    graph::{Bool, EdgeKind, Gamma, InputPort, Int, Node, NodeId, Rvsdg, Theta},
     ir::Const,
     passes::Pass,
 };
@@ -177,12 +177,14 @@ impl Pass for ZeroLoop {
         debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
     }
 
-    fn visit_phi(&mut self, graph: &mut Rvsdg, mut phi: Phi) {
+    fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
 
-        // For each input into the phi region, if the input value is a known constant
+        // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &[truthy_param, falsy_param]) in phi.inputs().iter().zip(phi.input_params()) {
+        for (&input, &[truthy_param, falsy_param]) in
+            gamma.inputs().iter().zip(gamma.input_params())
+        {
             let (input_node, _, _) = graph.get_input(input);
             let input_node_id = input_node.node_id();
 
@@ -195,12 +197,12 @@ impl Pass for ZeroLoop {
             }
         }
 
-        truthy_visitor.visit_graph(phi.truthy_mut());
-        falsy_visitor.visit_graph(phi.falsy_mut());
+        truthy_visitor.visit_graph(gamma.truthy_mut());
+        falsy_visitor.visit_graph(gamma.falsy_mut());
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 
-        // TODO: If a phi is equivalent to this
+        // TODO: If a gamma is equivalent to this
         // ```
         // _value = load _ptr
         // _eq = eq _value, int 0
@@ -218,7 +220,7 @@ impl Pass for ZeroLoop {
         // store _ptr, int 0
         // ```
 
-        graph.replace_node(phi.node(), phi);
+        graph.replace_node(gamma.node(), gamma);
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {

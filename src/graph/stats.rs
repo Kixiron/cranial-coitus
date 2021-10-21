@@ -29,7 +29,7 @@ impl Stats {
         let diff = |old, new| {
             let diff = (((old as f64 - new as f64) / old as f64) * 100.0).neg();
 
-            if diff == -0.0 {
+            if diff.is_nan() || diff == -0.0 {
                 0.0
             } else {
                 diff
@@ -88,7 +88,7 @@ impl Rvsdg {
                     stats.instructions += 1;
                     stats.loops += 1;
                 }
-                Node::Phi(_) => {
+                Node::Gamma(_) => {
                     stats.instructions += 1;
                     stats.branches += 1;
                 }

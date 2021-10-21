@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Add, Int, NodeId, Phi, Rvsdg, Theta},
+    graph::{Add, Gamma, InputPort, Int, OutputPort, Rvsdg, Theta},
     ir::Const,
     passes::Pass,
 };
@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 // TODO: Equality is also associative but it's unclear whether or not
 //       that situation can actually arise within brainfuck programs
 pub struct AssociativeAdd {
-    values: BTreeMap<NodeId, Const>,
+    values: BTreeMap<OutputPort, Const>,
     changed: bool,
 }
 
@@ -23,6 +23,16 @@ impl AssociativeAdd {
 
     fn changed(&mut self) {
         self.changed = true;
+    }
+
+    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (InputPort, Option<i32>) {
+        let (operand, output, _) = graph.get_input(input);
+        let value = operand
+            .as_int()
+            .map(|(_, value)| value)
+            .or_else(|| self.values.get(&output).and_then(Const::convert_to_i32));
+
+        (input, value)
     }
 }
 
@@ -54,19 +64,10 @@ impl Pass for AssociativeAdd {
     fn visit_add(&mut self, graph: &mut Rvsdg, add: Add) {
         debug_assert_eq!(graph.incoming_count(add.node()), 2);
 
-        let inputs = {
-            let mut inputs = graph.inputs(add.node()).map(|(input, operand, _, _)| {
-                let value = operand.as_int().map(|(_, value)| value).or_else(|| {
-                    self.values
-                        .get(&operand.node_id())
-                        .and_then(Const::convert_to_i32)
-                });
-
-                (input, value)
-            });
-
-            [inputs.next().unwrap(), inputs.next().unwrap()]
-        };
+        let inputs = [
+            self.operand(graph, add.lhs()),
+            self.operand(graph, add.rhs()),
+        ];
 
         // If one operand is constant and one is an un-evaluated expression
         if let [(_, Some(known)), (unknown, None)] | [(unknown, None), (_, Some(known))] = inputs {
@@ -76,26 +77,10 @@ impl Pass for AssociativeAdd {
             // If the un-evaluated expression is an add node
             if let Some(dependency_add) = input_node.as_add() {
                 // Get the inputs of the dependency add
-                let dependency_inputs = {
-                    let mut dependency_inputs =
-                        graph
-                            .inputs(dependency_add.node())
-                            .map(|(input, operand, _, _)| {
-                                (
-                                    input,
-                                    operand.as_int().map(|(_, value)| value).or_else(|| {
-                                        self.values
-                                            .get(&operand.node_id())
-                                            .and_then(Const::convert_to_i32)
-                                    }),
-                                )
-                            });
-
-                    [
-                        dependency_inputs.next().unwrap(),
-                        dependency_inputs.next().unwrap(),
-                    ]
-                };
+                let dependency_inputs = [
+                    self.operand(graph, dependency_add.lhs()),
+                    self.operand(graph, dependency_add.rhs()),
+                ];
 
                 // If one of the dependency add's inputs are unevaluated and one is constant
                 if let [(_, Some(dependency_known)), (dependency_unknown, None)]
@@ -103,11 +88,11 @@ impl Pass for AssociativeAdd {
                 {
                     tracing::debug!(
                         "found dependency of add ({:?}: {:?}->{:?} + {:?}), fusing it with ({:?}: {:?}->{:?} + {:?})",
-                        add.node(), 
+                        add.node(),
                         unknown,
                         graph.port_parent(graph.input_source(unknown)),
                         known,
-                        dependency_add.node(), 
+                        dependency_add.node(),
                         dependency_unknown,
                         graph.port_parent(graph.input_source(dependency_unknown)),
                         dependency_known,
@@ -127,7 +112,7 @@ impl Pass for AssociativeAdd {
                     );
 
                     let int = graph.int(sum);
-                    self.values.insert(int.node(), sum.into());
+                    self.values.insert(int.value(), sum.into());
 
                     // Make a value edge between the newly fused operand and the dependency
                     // add node, removing the previous constant input from the dependency
@@ -148,6 +133,7 @@ impl Pass for AssociativeAdd {
                     graph.rewire_dependents(add.value(), dependency_add.value());
                     // Remove the now-replaced dependency add
                     graph.remove_node(add.node());
+
                     self.changed();
                 }
             }
@@ -155,38 +141,42 @@ impl Pass for AssociativeAdd {
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
-        let replaced = self.values.insert(int.node(), value.into());
+        let replaced = self.values.insert(int.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
     }
 
-    fn visit_phi(&mut self, graph: &mut Rvsdg, mut phi: Phi) {
+    fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
 
-        // For each input into the phi region, if the input value is a known constant
+        // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &[truthy_param, falsy_param]) in phi.inputs().iter().zip(phi.input_params()) {
-            let (input_node, _, _) = graph.get_input(input);
-            let input_node_id = input_node.node_id();
+        for (&input, &[true_param, false_param]) in gamma.inputs().iter().zip(gamma.input_params())
+        {
+            let (_, source, _) = graph.get_input(input);
 
-            if let Some(constant) = self.values.get(&input_node_id).cloned() {
-                let replaced = truthy_visitor.values.insert(truthy_param, constant.clone());
+            if let Some(constant) = self.values.get(&source).cloned() {
+                let true_param = gamma.true_branch().get_node(true_param).to_input_param();
+                let replaced = truthy_visitor
+                    .values
+                    .insert(true_param.value(), constant.clone());
                 debug_assert!(replaced.is_none());
 
-                let replaced = falsy_visitor.values.insert(falsy_param, constant);
+                let false_param = gamma.false_branch().get_node(false_param).to_input_param();
+                let replaced = falsy_visitor.values.insert(false_param.value(), constant);
                 debug_assert!(replaced.is_none());
             }
         }
 
-        // TODO: Eliminate phi branches based on phi condition
+        // TODO: Eliminate gamma branches based on gamma condition
 
-        truthy_visitor.visit_graph(phi.truthy_mut());
-        falsy_visitor.visit_graph(phi.falsy_mut());
+        truthy_visitor.visit_graph(gamma.truthy_mut());
+        falsy_visitor.visit_graph(gamma.falsy_mut());
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 
-        // TODO: Propagate constants out of phi bodies?
+        // TODO: Propagate constants out of gamma bodies?
 
-        graph.replace_node(phi.node(), phi);
+        graph.replace_node(gamma.node(), gamma);
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
@@ -195,11 +185,11 @@ impl Pass for AssociativeAdd {
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
         for (&input, &param) in theta.inputs().iter().zip(theta.input_params()) {
-            let (input_node, _, _) = graph.get_input(input);
-            let input_node_id = input_node.node_id();
+            let (_, source, _) = graph.get_input(input);
 
-            if let Some(constant) = self.values.get(&input_node_id).cloned() {
-                let replaced = visitor.values.insert(param, constant);
+            if let Some(constant) = self.values.get(&source).cloned() {
+                let param = theta.body().get_node(param).to_input_param();
+                let replaced = visitor.values.insert(param.value(), constant);
                 debug_assert!(replaced.is_none());
             }
         }

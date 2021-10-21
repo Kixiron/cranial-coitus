@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Bool, EdgeKind, Int, Load, Node, NodeId, OutputPort, Phi, Rvsdg, Store, Theta},
+    graph::{Bool, EdgeKind, Gamma, Int, Load, Node, NodeId, OutputPort, Rvsdg, Store, Theta},
     ir::Const,
     passes::Pass,
 };
@@ -64,7 +64,7 @@ impl Mem2Reg {
     }
 }
 
-// TODO: Better analyze stores on the outs from thetas & phis for fine-grained
+// TODO: Better analyze stores on the outs from thetas & gammas for fine-grained
 //       tape invalidation
 impl Pass for Mem2Reg {
     fn pass_name(&self) -> &str {
@@ -255,7 +255,7 @@ impl Pass for Mem2Reg {
         debug_assert!(replaced.is_none() || replaced == Some(value.into()));
     }
 
-    fn visit_phi(&mut self, graph: &mut Rvsdg, mut phi: Phi) {
+    fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         // We don't propagate port places into subgraphs
         let tape: Vec<_> = self
             .tape
@@ -266,7 +266,7 @@ impl Pass for Mem2Reg {
             })
             .collect();
 
-        // Both branches of the phi node get the previous context, the changes they
+        // Both branches of the gamma node get the previous context, the changes they
         // create within it just are trickier to propagate
         let (mut truthy_visitor, mut falsy_visitor) = (
             Self {
@@ -279,9 +279,11 @@ impl Pass for Mem2Reg {
             },
         );
 
-        // For each input into the phi region, if the input value is a known constant
+        // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &[truthy_param, falsy_param]) in phi.inputs().iter().zip(phi.input_params()) {
+        for (&input, &[truthy_param, falsy_param]) in
+            gamma.inputs().iter().zip(gamma.input_params())
+        {
             let (input_node, _, _) = graph.get_input(input);
             let input_node_id = input_node.node_id();
 
@@ -299,22 +301,22 @@ impl Pass for Mem2Reg {
             }
         }
 
-        // TODO: Eliminate phi branches based on phi condition
+        // TODO: Eliminate gamma branches based on gamma condition
 
-        truthy_visitor.visit_graph(phi.truthy_mut());
-        falsy_visitor.visit_graph(phi.falsy_mut());
+        truthy_visitor.visit_graph(gamma.truthy_mut());
+        falsy_visitor.visit_graph(gamma.falsy_mut());
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 
-        // TODO: Propagate constants out of phi bodies?
+        // TODO: Propagate constants out of gamma bodies?
 
-        // Figure out if there's any stores within either of the phi branches
+        // Figure out if there's any stores within either of the gamma branches
         let (truthy_stores, falsy_stores) = self.with_buffer(|buffer, visited| {
-            phi.truthy().transitive_nodes_into(buffer, visited);
+            gamma.true_branch().transitive_nodes_into(buffer, visited);
             visited.clear();
             let truthy_stores = buffer.drain(..).filter(|node| node.is_store()).count();
 
-            phi.falsy().transitive_nodes_into(buffer, visited);
+            gamma.false_branch().transitive_nodes_into(buffer, visited);
             let falsy_stores = buffer.drain(..).filter(|node| node.is_store()).count();
 
             (truthy_stores, falsy_stores)
@@ -327,7 +329,7 @@ impl Pass for Mem2Reg {
         //        event that we find a store to an unknown pointer
         if truthy_stores != 0 || falsy_stores != 0 {
             tracing::debug!(
-                "phi node does {} stores ({} in true branch, {} in false branch), invalidating program tape",
+                "gamma node does {} stores ({} in true branch, {} in false branch), invalidating program tape",
                 truthy_stores + falsy_stores,
                 truthy_stores,
                 falsy_stores,
@@ -337,10 +339,10 @@ impl Pass for Mem2Reg {
                 *cell = Place::Unknown;
             }
         } else {
-            tracing::debug!("phi node does no stores, not invalidating program tape");
+            tracing::debug!("gamma node does no stores, not invalidating program tape");
         }
 
-        graph.replace_node(phi.node(), phi);
+        graph.replace_node(gamma.node(), gamma);
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {

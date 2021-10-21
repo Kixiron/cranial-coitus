@@ -1,16 +1,16 @@
 use crate::{
-    graph::{Bool, EdgeKind, InputParam, OutputParam, OutputPort, Phi, Rvsdg, Theta},
+    graph::{Bool, EdgeKind, Gamma, InputParam, OutputParam, OutputPort, Rvsdg, Theta},
     passes::Pass,
 };
 use std::collections::{BTreeMap, HashMap};
 
 /// Evaluates constant operations within the program
-pub struct ElimConstPhi {
+pub struct ElimConstGamma {
     values: BTreeMap<OutputPort, bool>,
     changed: bool,
 }
 
-impl ElimConstPhi {
+impl ElimConstGamma {
     pub fn new() -> Self {
         Self {
             values: BTreeMap::new(),
@@ -23,9 +23,9 @@ impl ElimConstPhi {
     }
 }
 
-impl Pass for ElimConstPhi {
+impl Pass for ElimConstGamma {
     fn pass_name(&self) -> &str {
-        "eliminate-const-phi"
+        "eliminate-const-gamma"
     }
 
     fn did_change(&self) -> bool {
@@ -42,20 +42,21 @@ impl Pass for ElimConstPhi {
         debug_assert!(replaced.is_none());
     }
 
-    fn visit_phi(&mut self, graph: &mut Rvsdg, mut phi: Phi) {
+    fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
 
-        // For each input into the phi region, if the input value is a known constant
+        // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &[true_param, false_param]) in phi.inputs().iter().zip(phi.input_params()) {
+        for (&input, &[true_param, false_param]) in gamma.inputs().iter().zip(gamma.input_params())
+        {
             let (_, source, _) = graph.get_input(input);
 
             if let Some(constant) = self.values.get(&source).cloned() {
-                let true_param = phi.truthy().to_node::<InputParam>(true_param);
+                let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
                 let replaced = truthy_visitor.values.insert(true_param.value(), constant);
                 debug_assert!(replaced.is_none());
 
-                let false_param = phi.truthy().to_node::<InputParam>(false_param);
+                let false_param = gamma.true_branch().to_node::<InputParam>(false_param);
                 let replaced = falsy_visitor.values.insert(false_param.value(), constant);
                 debug_assert!(replaced.is_none());
             }
@@ -64,15 +65,19 @@ impl Pass for ElimConstPhi {
         // If a constant condition is found, inline the chosen branch
         // Note that we don't actually visit the inlined subgraph in this iteration,
         // we leave that for successive passes to take care of
-        if let Some(&condition) = self.values.get(&graph.get_input(phi.condition()).1) {
+        if let Some(&condition) = self.values.get(&graph.get_input(gamma.condition()).1) {
             tracing::debug!(
-                "eliminated phi with constant conditional, inlining the {} branch of {:?}",
+                "eliminated gamma with constant conditional, inlining the {} branch of {:?}",
                 condition,
-                phi.node(),
+                gamma.node(),
             );
 
             // Choose which branch to inline into the outside graph
-            let chosen_branch = if condition { phi.truthy() } else { phi.falsy() };
+            let chosen_branch = if condition {
+                gamma.true_branch()
+            } else {
+                gamma.false_branch()
+            };
 
             // TODO: Reuse this buffer
             let nodes: Vec<_> = chosen_branch
@@ -87,7 +92,7 @@ impl Pass for ElimConstPhi {
                 HashMap::with_capacity(nodes.len()),
             );
 
-            for (&input, &params) in phi.inputs().iter().zip(phi.input_params()) {
+            for (&input, &params) in gamma.inputs().iter().zip(gamma.input_params()) {
                 let param = if condition { params[0] } else { params[1] };
                 let inner_output = chosen_branch.outputs(param).next().unwrap().0;
                 let inlined_output = graph.input_source(input);
@@ -95,7 +100,7 @@ impl Pass for ElimConstPhi {
                 output_map.insert(inner_output, inlined_output);
             }
 
-            for (&output, &params) in phi.outputs().iter().zip(phi.output_params()) {
+            for (&output, &params) in gamma.outputs().iter().zip(gamma.output_params()) {
                 let param = if condition { params[0] } else { params[1] };
                 let inner_input = chosen_branch.inputs(param).next().unwrap().0;
 
@@ -108,26 +113,26 @@ impl Pass for ElimConstPhi {
 
             // Inline the graph nodes, create the inlined ports and build the input/output maps
             for (node_id, mut node) in nodes {
-                // Replace start nodes with the phi's input effect
+                // Replace start nodes with the gamma's input effect
                 if node.is_start() {
-                    let starts = phi.starts();
+                    let starts = gamma.starts();
                     let start_node = if condition { starts[0] } else { starts[1] };
 
                     let branch_effect = chosen_branch.outputs(start_node).next().unwrap().0;
-                    let output_effect = graph.input_source(phi.effect_in());
+                    let output_effect = graph.input_source(gamma.effect_in());
 
                     output_map.insert(branch_effect, output_effect);
 
-                // Replace end nodes with the phi's output effect
+                // Replace end nodes with the gamma's output effect
                 } else if node.is_end() {
-                    let ends = phi.ends();
+                    let ends = gamma.ends();
                     let end_node = if condition { ends[0] } else { ends[1] };
 
                     let branch_effect = chosen_branch.inputs(end_node).next().unwrap().0;
-                    if let Some(input_effect) = graph.output_dest(phi.effect_out()) {
+                    if let Some(input_effect) = graph.output_dest(gamma.effect_out()) {
                         input_map.insert(branch_effect, input_effect);
                     } else {
-                        tracing::warn!("missing output for {:?}", phi.effect_out());
+                        tracing::warn!("missing output for {:?}", gamma.effect_out());
                     }
 
                 // Ignore input and output ports
@@ -166,7 +171,7 @@ impl Pass for ElimConstPhi {
                         graph.add_edge(output, input, kind);
                     } else {
                         tracing::error!(
-                            "failed to add edge while inlining phi branch {:?}->{:?} = {:?}",
+                            "failed to add edge while inlining gamma branch {:?}->{:?} = {:?}",
                             branch_input,
                             branch_output,
                             ports,
@@ -185,7 +190,7 @@ impl Pass for ElimConstPhi {
                             graph.add_edge(output, input, kind);
                         } else {
                             tracing::error!(
-                                "failed to add edge while inlining phi branch {:?}->{:?} = {:?}",
+                                "failed to add edge while inlining gamma branch {:?}->{:?} = {:?}",
                                 branch_input,
                                 branch_output,
                                 ports,
@@ -195,21 +200,21 @@ impl Pass for ElimConstPhi {
                 }
             }
 
-            graph.remove_node(phi.node());
+            graph.remove_node(gamma.node());
             self.changed();
 
-        // If we can't find a constant condition for this phi, just visit all of its branches
+        // If we can't find a constant condition for this gamma, just visit all of its branches
         } else {
-            truthy_visitor.visit_graph(phi.truthy_mut());
-            falsy_visitor.visit_graph(phi.falsy_mut());
+            truthy_visitor.visit_graph(gamma.truthy_mut());
+            falsy_visitor.visit_graph(gamma.falsy_mut());
 
             self.changed |= truthy_visitor.did_change();
             self.changed |= falsy_visitor.did_change();
 
-            graph.replace_node(phi.node(), phi);
+            graph.replace_node(gamma.node(), gamma);
         }
 
-        // TODO: Propagate constants out of phi bodies?
+        // TODO: Propagate constants out of gamma bodies?
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
@@ -360,7 +365,7 @@ impl Pass for ElimConstPhi {
     }
 }
 
-impl Default for ElimConstPhi {
+impl Default for ElimConstGamma {
     fn default() -> Self {
         Self::new()
     }

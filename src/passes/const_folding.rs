@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Add, Bool, EdgeKind, Eq, InputPort, Int, Not, OutputPort, Phi, Rvsdg, Theta},
+    graph::{Add, Bool, EdgeKind, Eq, Gamma, InputPort, Int, Not, OutputPort, Rvsdg, Theta},
     ir::Const,
     passes::Pass,
 };
@@ -152,46 +152,58 @@ impl Pass for ConstFolding {
         debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
     }
 
-    fn visit_phi(&mut self, graph: &mut Rvsdg, mut phi: Phi) {
+    fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
 
-        // For each input into the phi region, if the input value is a known constant
+        // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &[truthy_param, falsy_param]) in phi.inputs().iter().zip(phi.input_params()) {
+        for (&input, &[truthy_param, falsy_param]) in
+            gamma.inputs().iter().zip(gamma.input_params())
+        {
             let (_, output, _) = graph.get_input(input);
 
             if let Some(constant) = self.values.get(&output).cloned() {
-                let replaced = truthy_visitor.values.insert(
-                    phi.truthy().get_node(truthy_param).to_input_param().value(),
-                    constant.clone(),
-                );
+                let true_param = gamma.true_branch().get_node(truthy_param).to_input_param();
+                let replaced = truthy_visitor
+                    .values
+                    .insert(true_param.value(), constant.clone());
                 debug_assert!(replaced.is_none());
 
-                let replaced = falsy_visitor.values.insert(
-                    phi.falsy().get_node(falsy_param).to_input_param().value(),
-                    constant,
-                );
+                let false_param = gamma.false_branch().get_node(falsy_param).to_input_param();
+                let replaced = falsy_visitor.values.insert(false_param.value(), constant);
                 debug_assert!(replaced.is_none());
             }
         }
 
-        // TODO: Eliminate phi branches based on phi condition
+        // TODO: Eliminate gamma branches based on gamma condition
 
-        truthy_visitor.visit_graph(phi.truthy_mut());
-        falsy_visitor.visit_graph(phi.falsy_mut());
+        truthy_visitor.visit_graph(gamma.truthy_mut());
+        falsy_visitor.visit_graph(gamma.falsy_mut());
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 
-        // TODO: Propagate constants out of phi bodies?
-        for (&port, &param) in phi.outputs().iter().zip(phi.output_params()) {
-            let true_output = phi
-                .truthy()
-                .get_input(phi.truthy().get_node(param[0]).to_output_param().value())
+        // TODO: Propagate constants out of gamma bodies?
+        for (&port, &param) in gamma.outputs().iter().zip(gamma.output_params()) {
+            let true_output = gamma
+                .true_branch()
+                .get_input(
+                    gamma
+                        .true_branch()
+                        .get_node(param[0])
+                        .to_output_param()
+                        .value(),
+                )
                 .1;
 
-            let false_output = phi
-                .falsy()
-                .get_input(phi.falsy().get_node(param[1]).to_output_param().value())
+            let false_output = gamma
+                .false_branch()
+                .get_input(
+                    gamma
+                        .false_branch()
+                        .get_node(param[1])
+                        .to_output_param()
+                        .value(),
+                )
                 .1;
 
             if let (Some(truthy), Some(falsy)) = (
@@ -199,11 +211,11 @@ impl Pass for ConstFolding {
                 falsy_visitor.values.get(&false_output).cloned(),
             ) {
                 if truthy == falsy {
-                    tracing::trace!("propagating {:?} out of phi node", truthy);
+                    tracing::trace!("propagating {:?} out of gamma node", truthy);
                     self.values.insert(port, truthy);
                 } else {
                     tracing::debug!(
-                        "failed to propagate value out of phi node, branches disagree ({:?} vs. {:?})",
+                        "failed to propagate value out of gamma node, branches disagree ({:?} vs. {:?})",
                         truthy,
                         falsy,
                     );
@@ -211,7 +223,7 @@ impl Pass for ConstFolding {
             }
         }
 
-        graph.replace_node(phi.node(), phi);
+        graph.replace_node(gamma.node(), gamma);
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {

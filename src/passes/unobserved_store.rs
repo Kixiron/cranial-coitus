@@ -1,5 +1,5 @@
 use crate::{
-    graph::{EdgeKind, Phi, Rvsdg, Store, Theta},
+    graph::{EdgeKind, Gamma, Rvsdg, Store, Theta},
     passes::Pass,
 };
 
@@ -9,7 +9,7 @@ pub struct UnobservedStore {
     // TODO: This is also a bit ham-fisted, but a more complex analysis of
     //       loop invariant cells would be required for anything better
     within_theta: bool,
-    within_phi: bool,
+    within_gamma: bool,
 }
 
 impl UnobservedStore {
@@ -17,7 +17,7 @@ impl UnobservedStore {
         Self {
             changed: false,
             within_theta: false,
-            within_phi: false,
+            within_gamma: false,
         }
     }
 
@@ -77,7 +77,7 @@ impl Pass for UnobservedStore {
                 graph.get_input(consumer.ptr()).1 == graph.get_input(store.ptr()).1
             });
 
-            let consumer_is_end = consumer.is_end() && !self.within_theta && !self.within_phi;
+            let consumer_is_end = consumer.is_end() && !self.within_theta && !self.within_gamma;
             let consumer_is_infinite = consumer.as_theta().map_or(false, Theta::is_infinite);
 
             if consumer_is_end || stores_to_identical_cell || consumer_is_infinite {
@@ -96,25 +96,25 @@ impl Pass for UnobservedStore {
         }
     }
 
-    fn visit_phi(&mut self, graph: &mut Rvsdg, mut phi: Phi) {
+    fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
-        truthy_visitor.within_phi = true;
-        falsy_visitor.within_phi = true;
+        truthy_visitor.within_gamma = true;
+        falsy_visitor.within_gamma = true;
         truthy_visitor.within_theta = self.within_theta;
         falsy_visitor.within_theta = self.within_theta;
 
-        truthy_visitor.visit_graph(phi.truthy_mut());
-        falsy_visitor.visit_graph(phi.falsy_mut());
+        truthy_visitor.visit_graph(gamma.truthy_mut());
+        falsy_visitor.visit_graph(gamma.falsy_mut());
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 
-        graph.replace_node(phi.node(), phi);
+        graph.replace_node(gamma.node(), gamma);
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut visitor = Self::new();
         visitor.within_theta = true;
-        visitor.within_phi = self.within_phi;
+        visitor.within_gamma = self.within_gamma;
 
         visitor.visit_graph(theta.body_mut());
         self.changed |= visitor.did_change();

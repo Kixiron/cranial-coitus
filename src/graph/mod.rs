@@ -143,9 +143,9 @@ impl Rvsdg {
 
                 // Add the nodes from any subgraphs to the buffer
                 match node {
-                    Node::Phi(phi) => {
-                        phi.truthy().transitive_nodes_into(buffer, visited);
-                        phi.falsy().transitive_nodes_into(buffer, visited);
+                    Node::Gamma(gamma) => {
+                        gamma.true_branch().transitive_nodes_into(buffer, visited);
+                        gamma.false_branch().transitive_nodes_into(buffer, visited);
                     }
                     Node::Theta(theta) => theta.body().transitive_nodes_into(buffer, visited),
 
@@ -895,43 +895,43 @@ impl Rvsdg {
     }
 
     #[track_caller]
-    pub fn phi<I, T, F>(
+    pub fn gamma<I, T, F>(
         &mut self,
         inputs: I,
         effect: OutputPort,
         condition: OutputPort,
         truthy: T,
         falsy: F,
-    ) -> Phi
+    ) -> Gamma
     where
         I: IntoIterator<Item = OutputPort>,
-        T: FnOnce(&mut Rvsdg, OutputPort, &[OutputPort]) -> PhiData,
-        F: FnOnce(&mut Rvsdg, OutputPort, &[OutputPort]) -> PhiData,
+        T: FnOnce(&mut Rvsdg, OutputPort, &[OutputPort]) -> GammaData,
+        F: FnOnce(&mut Rvsdg, OutputPort, &[OutputPort]) -> GammaData,
     {
         self.assert_effect_port(effect);
         self.assert_value_port(condition);
 
-        let phi_id = self.next_node();
+        let gamma_id = self.next_node();
 
-        let effect_in = self.input_port(phi_id, EdgeKind::Effect);
+        let effect_in = self.input_port(gamma_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_in);
 
-        let cond_port = self.input_port(phi_id, EdgeKind::Value);
+        let cond_port = self.input_port(gamma_id, EdgeKind::Value);
         self.add_value_edge(condition, cond_port);
 
-        // Wire up the external inputs to the phi node
+        // Wire up the external inputs to the gamma node
         let outer_inputs: Vec<_> = inputs
             .into_iter()
             .map(|input| {
                 self.assert_value_port(input);
 
-                let port = self.input_port(phi_id, EdgeKind::Value);
+                let port = self.input_port(gamma_id, EdgeKind::Value);
                 self.add_value_edge(input, port);
                 port
             })
             .collect();
 
-        // Create the phi's true branch
+        // Create the gamma's true branch
         let mut truthy_subgraph = Rvsdg::from_counter(self.counter.clone());
 
         // Create the input ports within the subgraph
@@ -945,7 +945,7 @@ impl Rvsdg {
 
         // Create the branch's start node
         let truthy_start = truthy_subgraph.start();
-        let PhiData {
+        let GammaData {
             outputs: truthy_outputs,
             effect: truthy_output_effect,
         } = truthy(
@@ -965,7 +965,7 @@ impl Rvsdg {
             })
             .collect();
 
-        // Create the phi's true branch
+        // Create the gamma's true branch
         let mut falsy_subgraph = Rvsdg::from_counter(self.counter.clone());
 
         // Create the input ports within the subgraph
@@ -979,7 +979,7 @@ impl Rvsdg {
 
         // Create the branch's start node
         let falsy_start = falsy_subgraph.start();
-        let PhiData {
+        let GammaData {
             outputs: falsy_outputs,
             effect: falsy_output_effect,
         } = falsy(
@@ -1017,13 +1017,13 @@ impl Rvsdg {
             .map(|(truthy, falsy)| [truthy, falsy])
             .collect();
 
-        let effect_out = self.output_port(phi_id, EdgeKind::Effect);
+        let effect_out = self.output_port(gamma_id, EdgeKind::Effect);
         let outer_outputs: Vec<_> = (0..output_params.len())
-            .map(|_| self.output_port(phi_id, EdgeKind::Value))
+            .map(|_| self.output_port(gamma_id, EdgeKind::Value))
             .collect();
 
-        let phi = Phi::new(
-            phi_id,                                      // node
+        let gamma = Gamma::new(
+            gamma_id,                                    // node
             outer_inputs,                                // inputs
             effect_in,                                   // effect_in
             input_params,                                // input_params
@@ -1037,9 +1037,9 @@ impl Rvsdg {
             Box::new([truthy_subgraph, falsy_subgraph]), // body
             cond_port,                                   // condition
         );
-        self.nodes.insert(phi_id, Node::Phi(phi.clone()));
+        self.nodes.insert(gamma_id, Node::Gamma(gamma.clone()));
 
-        phi
+        gamma
     }
 
     #[track_caller]
@@ -1680,7 +1680,7 @@ impl ThetaData {
 }
 
 #[derive(Debug, Clone)]
-pub struct Phi {
+pub struct Gamma {
     node: NodeId,
     inputs: Vec<InputPort>,
     // TODO: Make optional
@@ -1698,7 +1698,7 @@ pub struct Phi {
     condition: InputPort,
 }
 
-impl Phi {
+impl Gamma {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         node: NodeId,
@@ -1777,7 +1777,7 @@ impl Phi {
         &self.output_params
     }
 
-    pub const fn truthy(&self) -> &Rvsdg {
+    pub const fn true_branch(&self) -> &Rvsdg {
         &self.bodies[0]
     }
 
@@ -1785,7 +1785,7 @@ impl Phi {
         &mut self.bodies[0]
     }
 
-    pub const fn falsy(&self) -> &Rvsdg {
+    pub const fn false_branch(&self) -> &Rvsdg {
         &self.bodies[1]
     }
 
@@ -1795,12 +1795,12 @@ impl Phi {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct PhiData {
+pub struct GammaData {
     outputs: Box<[OutputPort]>,
     effect: OutputPort,
 }
 
-impl PhiData {
+impl GammaData {
     pub fn new<O>(outputs: O, effect: OutputPort) -> Self
     where
         O: IntoIterator<Item = OutputPort>,
@@ -2003,7 +2003,7 @@ pub trait Port: Debug + Clone + Copy + PartialEq + cmp::Eq + Hash {
     fn index(&self) -> NodeIndex;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
 pub struct InputPort(NodeIndex);
 
@@ -2027,7 +2027,7 @@ impl Display for InputPort {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
 pub struct OutputPort(NodeIndex);
 

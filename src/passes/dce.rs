@@ -42,7 +42,7 @@ impl Pass for Dce {
     }
 
     fn post_visit_graph(&mut self, graph: &mut Rvsdg, visited: &BTreeSet<NodeId>) {
-        let nodes: Vec<_> = graph.nodes().collect();
+        let nodes: Vec<_> = graph.node_ids().collect();
 
         for node_id in nodes {
             let node = graph.get_node(node_id);

@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Bool, EdgeKind, Gamma, InputPort, Int, Node, NodeId, Rvsdg, Theta},
+    graph::{Bool, EdgeKind, End, Gamma, InputPort, Int, Node, OutputPort, Rvsdg, Start, Theta},
     ir::Const,
     passes::Pass,
 };
@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 pub struct ZeroLoop {
     changed: bool,
-    values: BTreeMap<NodeId, Const>,
+    values: BTreeMap<OutputPort, Const>,
 }
 
 impl ZeroLoop {
@@ -57,7 +57,7 @@ impl ZeroLoop {
     fn is_zero_loop(
         &self,
         theta: &Theta,
-        body_values: &BTreeMap<NodeId, Const>,
+        body_values: &BTreeMap<OutputPort, Const>,
     ) -> Option<Result<i32, InputPort>> {
         let graph = theta.body();
 
@@ -67,10 +67,10 @@ impl ZeroLoop {
         // The node after the effect must be a load
         let load = graph.get_output(start.effect())?.0.as_load()?;
 
-        let target_node = graph.get_input(load.ptr()).0;
+        let (target_node, source, _) = graph.get_input(load.ptr());
 
-        // We can zero out constant addresses or a dynamically generated one
-        let target_ptr = if let Some(ptr) = body_values.get(&target_node.node_id()).cloned() {
+        // We can zero out constant addresses or a dynamically generated ones
+        let target_ptr = if let Some(ptr) = body_values.get(&source) {
             Ok(ptr.convert_to_i32()?)
         } else {
             // FIXME: We're pretty strict right now and only take inputs as "dynamic addresses",
@@ -94,14 +94,14 @@ impl ZeroLoop {
 
         // Make sure that one of the add's operands is the loaded cell and the other is 1 or -1
         if lhs.1 == load.value() {
-            let value = body_values.get(&rhs.0.node_id())?.convert_to_i32()?;
+            let value = body_values.get(&rhs.1)?.convert_to_i32()?;
 
             if !matches!(value, 1 | -1) {
                 // TODO: If `value == 0` this loop is infinite
                 return None;
             }
         } else if rhs.1 == load.value() {
-            let value = body_values.get(&lhs.0.node_id())?.convert_to_i32()?;
+            let value = body_values.get(&lhs.1)?.convert_to_i32()?;
 
             if !matches!(value, 1 | -1) {
                 // TODO: If `value == 0` this loop is infinite
@@ -125,13 +125,13 @@ impl ZeroLoop {
 
         // Make sure that one of the eq's operands is the added val and the other is 0
         if lhs.1 == add.value() {
-            let value = body_values.get(&rhs.0.node_id())?.convert_to_i32()?;
+            let value = body_values.get(&rhs.1)?.convert_to_i32()?;
 
             if value != 0 {
                 return None;
             }
         } else if rhs.1 == add.value() {
-            let value = body_values.get(&lhs.0.node_id())?.convert_to_i32()?;
+            let value = body_values.get(&lhs.1)?.convert_to_i32()?;
 
             if value != 0 {
                 return None;
@@ -151,6 +151,207 @@ impl ZeroLoop {
 
         Some(target_ptr)
     }
+
+    /// If a gamma node is equivalent to one of our motifs,
+    /// transform it into an unconditional zero store
+    ///
+    /// ```
+    /// store _ptr, int 0
+    /// ```
+    fn is_zero_gamma_store(
+        &self,
+        graph: &Rvsdg,
+        false_values: &BTreeMap<OutputPort, Const>,
+        gamma: &Gamma,
+    ) -> Option<Result<i32, OutputPort>> {
+        self.gamma_store_motif_1(graph, false_values, gamma)
+            .or_else(|| self.gamma_store_motif_2(graph, false_values, gamma))
+    }
+
+    /// ```
+    /// _value = load _ptr
+    /// _eq = eq _value, int 0
+    /// if _eq {
+    ///
+    /// } else {
+    ///   store _ptr, int 0
+    /// }
+    /// ```
+    #[allow(clippy::logic_bug)]
+    fn gamma_store_motif_1(
+        &self,
+        graph: &Rvsdg,
+        false_values: &BTreeMap<OutputPort, Const>,
+        gamma: &Gamma,
+    ) -> Option<Result<i32, OutputPort>> {
+        // _eq = eq _value, int 0
+        let eq_zero = graph.get_input(gamma.condition()).0.as_eq()?;
+        let [lhs, rhs] = [
+            graph.get_input(eq_zero.lhs()),
+            graph.get_input(eq_zero.rhs()),
+        ];
+
+        let (lhs_zero, rhs_zero) = (
+            self.values.get(&lhs.1).and_then(Const::convert_to_i32) == Some(0),
+            self.values.get(&rhs.1).and_then(Const::convert_to_i32) == Some(0),
+        );
+
+        // If the eq doesn't fit the pattern of `_eq = eq _value, int 0` this isn't a candidate
+        let value = if lhs_zero && rhs_zero || !lhs_zero && rhs_zero {
+            lhs.0
+        } else if lhs_zero && !rhs_zero {
+            rhs.0
+        } else {
+            return None;
+        }
+        .as_load()?;
+
+        let source = graph.input_source(value.ptr());
+        let target_ptr = self
+            .values
+            .get(&source)
+            .and_then(Const::convert_to_i32)
+            .ok_or(source);
+
+        let start_effect = gamma
+            .true_branch()
+            .to_node::<Start>(gamma.starts()[0])
+            .effect();
+        let end_effect = gamma
+            .true_branch()
+            .to_node::<End>(gamma.ends()[0])
+            .effect_in();
+
+        // Make sure the true branch is empty
+        let true_branch_is_empty =
+            gamma.true_branch().output_dest(start_effect) == Some(end_effect);
+        if !true_branch_is_empty {
+            return None;
+        }
+
+        let start = gamma.false_branch().to_node::<Start>(gamma.starts()[1]);
+
+        // store _ptr, int 0
+        let store = gamma
+            .false_branch()
+            .get_output(start.effect())?
+            .0
+            .as_store()?;
+
+        // If the stored value isn't zero this isn't a candidate
+        if false_values
+            .get(&gamma.false_branch().input_source(store.value()))
+            .and_then(Const::convert_to_i32)
+            != Some(0)
+        {
+            return None;
+        }
+
+        // Store should be the only/last thing in the branch
+        let _end = gamma
+            .false_branch()
+            .get_output(store.effect())?
+            .0
+            .as_end()?;
+
+        tracing::debug!("gamma store motif 1 matched");
+        Some(target_ptr)
+    }
+
+    /// ```
+    /// _eq = eq _value, int 0
+    /// store _ptr, _value
+    /// if _eq {
+    ///
+    /// } else {
+    ///   store _ptr, int 0
+    /// }
+    /// ```
+    #[allow(clippy::logic_bug)]
+    fn gamma_store_motif_2(
+        &self,
+        graph: &Rvsdg,
+        false_values: &BTreeMap<OutputPort, Const>,
+        gamma: &Gamma,
+    ) -> Option<Result<i32, OutputPort>> {
+        // _eq = eq _value, int 0
+        let eq_zero = graph.get_input(gamma.condition()).0.as_eq()?;
+        let [lhs, rhs] = [
+            graph.get_input(eq_zero.lhs()),
+            graph.get_input(eq_zero.rhs()),
+        ];
+
+        let (lhs_zero, rhs_zero) = (
+            self.values.get(&lhs.1).and_then(Const::convert_to_i32) == Some(0),
+            self.values.get(&rhs.1).and_then(Const::convert_to_i32) == Some(0),
+        );
+
+        // If the eq doesn't fit the pattern of `_eq = eq _value, int 0` this isn't a candidate
+        let value = if lhs_zero && rhs_zero || !lhs_zero && rhs_zero {
+            lhs.1
+        } else if lhs_zero && !rhs_zero {
+            rhs.1
+        } else {
+            return None;
+        };
+
+        // store _ptr, _value
+        let store = graph.get_input(gamma.effect_in()).0.as_store()?;
+        if graph.input_source(store.value()) != value {
+            return None;
+        }
+
+        let source = graph.input_source(store.ptr());
+        let target_ptr = self
+            .values
+            .get(&source)
+            .and_then(Const::convert_to_i32)
+            .ok_or(source);
+
+        let start_effect = gamma
+            .true_branch()
+            .to_node::<Start>(gamma.starts()[0])
+            .effect();
+        let end_effect = gamma
+            .true_branch()
+            .to_node::<End>(gamma.ends()[0])
+            .effect_in();
+
+        // Make sure the true branch is empty
+        let true_branch_is_empty =
+            gamma.true_branch().output_dest(start_effect) == Some(end_effect);
+        if !true_branch_is_empty {
+            return None;
+        }
+
+        let start = gamma.false_branch().to_node::<Start>(gamma.starts()[1]);
+
+        // store _ptr, int 0
+        let store = gamma
+            .false_branch()
+            .get_output(start.effect())?
+            .0
+            .as_store()?;
+
+        // If the stored value isn't zero this isn't a candidate
+        if false_values
+            .get(&gamma.false_branch().input_source(store.value()))
+            .and_then(Const::convert_to_i32)
+            != Some(0)
+        {
+            return None;
+        }
+
+        // Store should be the only/last thing in the branch
+        let _end = gamma
+            .false_branch()
+            .get_output(store.effect())?
+            .0
+            .as_end()?;
+
+        tracing::debug!("gamma store motif 2 matched");
+        Some(target_ptr)
+    }
 }
 
 impl Pass for ZeroLoop {
@@ -168,59 +369,73 @@ impl Pass for ZeroLoop {
     }
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
-        let replaced = self.values.insert(bool.node(), value.into());
+        let replaced = self.values.insert(bool.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(Const::Bool(value)));
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
-        let replaced = self.values.insert(int.node(), value.into());
+        let replaced = self.values.insert(int.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
-        let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &[truthy_param, falsy_param]) in
-            gamma.inputs().iter().zip(gamma.input_params())
+        for (&input, &[true_param, false_param]) in gamma.inputs().iter().zip(gamma.input_params())
         {
-            let (input_node, _, _) = graph.get_input(input);
-            let input_node_id = input_node.node_id();
+            let (_, source, _) = graph.get_input(input);
 
-            if let Some(constant) = self.values.get(&input_node_id).cloned() {
-                let replaced = truthy_visitor.values.insert(truthy_param, constant.clone());
+            if let Some(constant) = self.values.get(&source).cloned() {
+                let true_param = gamma.true_branch().get_node(true_param).to_input_param();
+                let replaced = true_visitor
+                    .values
+                    .insert(true_param.value(), constant.clone());
                 debug_assert!(replaced.is_none());
 
-                let replaced = falsy_visitor.values.insert(falsy_param, constant);
+                let false_param = gamma.false_branch().get_node(false_param).to_input_param();
+                let replaced = false_visitor.values.insert(false_param.value(), constant);
                 debug_assert!(replaced.is_none());
             }
         }
 
-        truthy_visitor.visit_graph(gamma.truthy_mut());
-        falsy_visitor.visit_graph(gamma.falsy_mut());
-        self.changed |= truthy_visitor.did_change();
-        self.changed |= falsy_visitor.did_change();
+        true_visitor.visit_graph(gamma.truthy_mut());
+        false_visitor.visit_graph(gamma.falsy_mut());
+        self.changed |= true_visitor.did_change();
+        self.changed |= false_visitor.did_change();
 
-        // TODO: If a gamma is equivalent to this
-        // ```
-        // _value = load _ptr
-        // _eq = eq _value, int 0
-        // _neq = not _eq
-        // if _eq {
-        //
-        // } else {
-        //   store _ptr, int 0
-        // }
-        // ```
-        //
-        // Transform it into an unconditional zero store
-        //
-        // ```
-        // store _ptr, int 0
-        // ```
+        if let Some(target_ptr) = self.is_zero_gamma_store(graph, &false_visitor.values, &gamma) {
+            let zero = graph.int(0);
+            let effect = graph.input_source(gamma.effect_in());
+            let target_ptr = match target_ptr {
+                Ok(0) => zero.value(),
+                Ok(ptr) => graph.int(ptr).value(),
+                Err(port) => port,
+            };
 
-        graph.replace_node(gamma.node(), gamma);
+            tracing::debug!(
+                "detected that gamma {:?} is a zero store, replacing with a store of 0 to {:?}",
+                gamma.node(),
+                target_ptr,
+            );
+
+            let store = graph.store(target_ptr, zero.value(), effect);
+            graph.rewire_dependents(gamma.effect_out(), store.effect());
+
+            if gamma.outputs().len() == 1 {
+                tracing::warn!("write comprehensive parameter rerouting for gamma nodes");
+                graph.rewire_dependents(gamma.outputs()[0], target_ptr);
+            } else {
+                tracing::error!("write comprehensive parameter rerouting for gamma nodes");
+            }
+
+            graph.remove_node(gamma.node());
+
+            self.changed();
+        } else {
+            graph.replace_node(gamma.node(), gamma);
+        }
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
@@ -229,11 +444,11 @@ impl Pass for ZeroLoop {
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
         for (&input, &param) in theta.inputs().iter().zip(theta.input_params()) {
-            let (input_node, _, _) = graph.get_input(input);
-            let input_node_id = input_node.node_id();
+            let (_, source, _) = graph.get_input(input);
 
-            if let Some(constant) = self.values.get(&input_node_id).cloned() {
-                let replaced = visitor.values.insert(param, constant);
+            if let Some(constant) = self.values.get(&source).cloned() {
+                let param = theta.body().get_node(param).to_input_param();
+                let replaced = visitor.values.insert(param.value(), constant);
                 debug_assert!(replaced.is_none());
             }
         }

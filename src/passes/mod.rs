@@ -91,7 +91,7 @@ pub trait Pass {
         // The reason we do this weird pushing thing is to make sure that the start nodes
         // are to the end of the queue so that they'll be the first ones to be popped and
         // processed
-        for node_id in graph.nodes() {
+        for node_id in graph.node_ids() {
             let node = graph.get_node(node_id);
 
             if node.is_start() || node.is_input_port() {

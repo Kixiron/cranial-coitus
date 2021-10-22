@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Bool, EdgeKind, Gamma, InputParam, OutputParam, OutputPort, Rvsdg, Theta},
+    graph::{Bool, EdgeKind, End, Gamma, InputParam, OutputParam, OutputPort, Rvsdg, Start, Theta},
     passes::Pass,
 };
 use std::collections::{BTreeMap, HashMap};
@@ -94,20 +94,20 @@ impl Pass for ElimConstGamma {
 
             for (&input, &params) in gamma.inputs().iter().zip(gamma.input_params()) {
                 let param = if condition { params[0] } else { params[1] };
-                let inner_output = chosen_branch.outputs(param).next().unwrap().0;
+                let input_param = chosen_branch.to_node::<InputParam>(param);
                 let inlined_output = graph.input_source(input);
 
-                output_map.insert(inner_output, inlined_output);
+                output_map.insert((param, input_param.value()), inlined_output);
             }
 
             for (&output, &params) in gamma.outputs().iter().zip(gamma.output_params()) {
                 let param = if condition { params[0] } else { params[1] };
-                let inner_input = chosen_branch.inputs(param).next().unwrap().0;
+                let output_param = chosen_branch.to_node::<OutputParam>(param);
 
                 if let Some(inlined_input) = graph.output_dest(output) {
-                    input_map.insert(inner_input, inlined_input);
+                    input_map.insert((param, output_param.value()), inlined_input);
                 } else {
-                    tracing::warn!("missing output for {:?}", output);
+                    tracing::warn!("missing output destination for output param {:?}", output);
                 }
             }
 
@@ -116,33 +116,38 @@ impl Pass for ElimConstGamma {
                 // Replace start nodes with the gamma's input effect
                 if node.is_start() {
                     let starts = gamma.starts();
-                    let start_node = if condition { starts[0] } else { starts[1] };
+                    let start_id = if condition { starts[0] } else { starts[1] };
+                    let start = chosen_branch.to_node::<Start>(start_id);
 
-                    let branch_effect = chosen_branch.outputs(start_node).next().unwrap().0;
                     let output_effect = graph.input_source(gamma.effect_in());
-
-                    output_map.insert(branch_effect, output_effect);
+                    output_map.insert((start.node(), start.effect()), output_effect);
 
                 // Replace end nodes with the gamma's output effect
                 } else if node.is_end() {
                     let ends = gamma.ends();
-                    let end_node = if condition { ends[0] } else { ends[1] };
+                    let end_id = if condition { ends[0] } else { ends[1] };
+                    let end = chosen_branch.to_node::<End>(end_id);
 
-                    let branch_effect = chosen_branch.inputs(end_node).next().unwrap().0;
                     if let Some(input_effect) = graph.output_dest(gamma.effect_out()) {
-                        input_map.insert(branch_effect, input_effect);
+                        input_map.insert((end.node(), end.effect_in()), input_effect);
                     } else {
                         tracing::warn!("missing output for {:?}", gamma.effect_out());
                     }
 
                 // Ignore input and output ports
                 // Otherwise just create the required ports & inline the node
-                } else {
+                } else if !node.is_input_port() && !node.is_output_port() {
                     for input in node.inputs_mut() {
                         let inlined = graph.input_port(node_id, EdgeKind::Value);
 
-                        let displaced = input_map.insert(*input, inlined);
-                        debug_assert!(displaced.is_none() || displaced == Some(*input));
+                        let displaced = input_map.insert((node_id, *input), inlined);
+                        debug_assert!(
+                            displaced.is_none() || displaced == Some(inlined),
+                            "displaced value {:?} for input port {:?} with {:?}",
+                            displaced,
+                            input,
+                            inlined,
+                        );
 
                         *input = inlined;
                     }
@@ -150,8 +155,16 @@ impl Pass for ElimConstGamma {
                     for output in node.outputs_mut() {
                         let inlined = graph.output_port(node_id, EdgeKind::Value);
 
-                        let displaced = output_map.insert(*output, inlined);
-                        debug_assert!(displaced.is_none() || displaced == Some(*output));
+                        let displaced = output_map.insert((node_id, *output), inlined);
+                        debug_assert!(
+                            displaced.is_none() || displaced == Some(inlined),
+                            "displaced value {:?} for output port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                            displaced,
+                            output,
+                            inlined,
+                            input_map,
+                            output_map,
+                        );
 
                         *output = inlined;
                     }
@@ -160,11 +173,11 @@ impl Pass for ElimConstGamma {
                 }
             }
 
-            for node_id in chosen_branch.nodes() {
+            for node_id in chosen_branch.node_ids() {
                 for (branch_input, _, branch_output, kind) in chosen_branch.inputs(node_id) {
                     let ports = (
-                        input_map.get(&branch_input).copied(),
-                        output_map.get(&branch_output).copied(),
+                        input_map.get(&(node_id, branch_input)).copied(),
+                        output_map.get(&(node_id, branch_output)).copied(),
                     );
 
                     if let (Some(input), Some(output)) = ports {
@@ -182,8 +195,8 @@ impl Pass for ElimConstGamma {
                 for (branch_output, data) in chosen_branch.outputs(node_id) {
                     if let Some((_, branch_input, kind)) = data {
                         let ports = (
-                            input_map.get(&branch_input).copied(),
-                            output_map.get(&branch_output).copied(),
+                            input_map.get(&(node_id, branch_input)).copied(),
+                            output_map.get(&(node_id, branch_output)).copied(),
                         );
 
                         if let (Some(input), Some(output)) = ports {
@@ -257,17 +270,17 @@ impl Pass for ElimConstGamma {
             );
 
             for (&input, &param) in theta.inputs().iter().zip(theta.input_params()) {
-                let inner_output = theta.body().outputs(param).next().unwrap().0;
+                let input_param = theta.body().to_node::<InputParam>(param);
                 let inlined_output = graph.input_source(input);
 
-                output_map.insert(inner_output, inlined_output);
+                output_map.insert((param, input_param.value()), inlined_output);
             }
 
             for (&output, &param) in theta.outputs().iter().zip(theta.output_params()) {
-                let inner_input = theta.body().inputs(param).next().unwrap().0;
+                let output_param = theta.body().to_node::<OutputParam>(param);
 
                 if let Some(inlined_input) = graph.output_dest(output) {
-                    input_map.insert(inner_input, inlined_input);
+                    input_map.insert((param, output_param.value()), inlined_input);
                 } else {
                     tracing::warn!("missing output for {:?}", output);
                 }
@@ -277,28 +290,29 @@ impl Pass for ElimConstGamma {
             for (node_id, mut node) in nodes {
                 // Replace start nodes with the theta's input effect
                 if node.is_start() {
-                    let branch_effect = theta.body().outputs(theta.start()).next().unwrap().0;
+                    let start = theta.body().to_node::<Start>(theta.start());
+
                     let output_effect = graph.input_source(theta.effect_in());
+                    output_map.insert((node_id, start.effect()), output_effect);
 
-                    output_map.insert(branch_effect, output_effect);
-
-                // Replace end nodes with the theta's output effect
+                // Replace end nodes with the gamma's output effect
                 } else if node.is_end() {
-                    let branch_effect = theta.body().inputs(theta.end()).next().unwrap().0;
+                    let end = theta.body().to_node::<End>(theta.end());
+
                     if let Some(input_effect) = graph.output_dest(theta.effect_out()) {
-                        input_map.insert(branch_effect, input_effect);
+                        input_map.insert((node_id, end.effect_in()), input_effect);
                     } else {
-                        tracing::warn!("missing output for {:?}", theta.effect_out());
+                        tracing::warn!("missing output effect for theta {:?}", theta.effect_out());
                     }
 
                 // Ignore input and output ports
                 // Otherwise just create the required ports & inline the node
-                } else {
+                } else if !node.is_input_port() && !node.is_output_port() {
                     for input in node.inputs_mut() {
                         let inlined = graph.input_port(node_id, EdgeKind::Value);
 
-                        let displaced = input_map.insert(*input, inlined);
-                        debug_assert!(displaced.is_none() || displaced == Some(*input));
+                        let displaced = input_map.insert((node_id, *input), inlined);
+                        debug_assert!(displaced.is_none() || displaced == Some(inlined));
 
                         *input = inlined;
                     }
@@ -306,8 +320,8 @@ impl Pass for ElimConstGamma {
                     for output in node.outputs_mut() {
                         let inlined = graph.output_port(node_id, EdgeKind::Value);
 
-                        let displaced = output_map.insert(*output, inlined);
-                        debug_assert!(displaced.is_none() || displaced == Some(*output));
+                        let displaced = output_map.insert((node_id, *output), inlined);
+                        debug_assert!(displaced.is_none() || displaced == Some(inlined));
 
                         *output = inlined;
                     }
@@ -316,11 +330,11 @@ impl Pass for ElimConstGamma {
                 }
             }
 
-            for node_id in theta.body().nodes() {
+            for node_id in theta.body().node_ids() {
                 for (input, _, output, kind) in theta.body().inputs(node_id) {
                     let ports = (
-                        input_map.get(&input).copied(),
-                        output_map.get(&output).copied(),
+                        input_map.get(&(node_id, input)).copied(),
+                        output_map.get(&(node_id, output)).copied(),
                     );
 
                     if let (Some(input), Some(output)) = ports {
@@ -338,8 +352,8 @@ impl Pass for ElimConstGamma {
                 for (output, data) in theta.body().outputs(node_id) {
                     if let Some((_, input, kind)) = data {
                         let ports = (
-                            input_map.get(&input).copied(),
-                            output_map.get(&output).copied(),
+                            input_map.get(&(node_id, input)).copied(),
+                            output_map.get(&(node_id, output)).copied(),
                         );
 
                         if let (Some(input), Some(output)) = ports {

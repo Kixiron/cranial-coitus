@@ -301,7 +301,7 @@ fn validate(graph: &Rvsdg) {
 
 fn validate_inner(graph: &Rvsdg) {
     for (node_id, node) in graph
-        .nodes()
+        .node_ids()
         .map(|node_id| (node_id, graph.get_node(node_id)))
     {
         if let Node::Theta(theta) = node {

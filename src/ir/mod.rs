@@ -652,6 +652,13 @@ impl Value {
             None
         }
     }
+
+    /// Returns `true` if the value is [`Missing`].
+    ///
+    /// [`Missing`]: Value::Missing
+    pub const fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
 }
 
 impl Pretty for Value {

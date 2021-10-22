@@ -316,9 +316,11 @@ impl Pass for AddSubLoop {
                         }
                     })
                     .or_else(|| {
-                        let node = theta.body().get_node(theta.body().port_parent(output));
-
-                        dbg!(node).as_int().map(|(_, int)| graph.int(int).value())
+                        theta
+                            .body()
+                            .get_node(theta.body().port_parent(output))
+                            .as_int()
+                            .map(|(_, int)| graph.int(int).value())
                     })
                     .unwrap()
             };

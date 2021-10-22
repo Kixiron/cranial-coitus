@@ -104,7 +104,7 @@ impl Rvsdg {
         OutputPort(self.graph.add_node(PortData::output(parent, edge)))
     }
 
-    pub fn nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.nodes.keys().copied()
     }
 

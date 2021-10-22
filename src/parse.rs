@@ -25,7 +25,7 @@ impl Token {
     ) -> io::Result<()> {
         while let Some((token, level)) = stack.pop() {
             // Write the leading padding
-            for _ in 0..level {
+            for _ in 0..level * 2 {
                 output.write_all(b" ")?;
             }
 

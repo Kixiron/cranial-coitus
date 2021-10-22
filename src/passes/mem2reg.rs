@@ -175,10 +175,23 @@ impl Pass for Mem2Reg {
                 }
             }
 
-            self.tape[offset] = match stored_value {
-                Some(value) => value.into(),
-                None => Place::Port(output_port),
-            };
+            match (self.tape[offset].convert_to_i32(), stored_value) {
+                (Some(old), Some(new)) if old == new => {
+                    tracing::debug!("removing identical store {:?}", store);
+
+                    graph.splice_ports(store.effect_in(), store.effect());
+                    graph.remove_node(store.node());
+
+                    self.changed();
+                }
+
+                _ => {
+                    self.tape[offset] = match stored_value {
+                        Some(value) => value.into(),
+                        None => Place::Port(output_port),
+                    };
+                }
+            }
         } else {
             tracing::debug!("unknown store {:?}, invalidating tape", store);
 

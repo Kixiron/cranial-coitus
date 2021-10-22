@@ -41,7 +41,7 @@ impl IrBuilder {
         let old_level = self.top_level;
         self.top_level = false;
 
-        self.evaluation_stack.extend(graph.nodes());
+        self.evaluation_stack.extend(graph.node_ids());
         self.evaluation_stack.sort_unstable();
 
         while let Some(node) = self.evaluation_stack.pop() {
@@ -283,12 +283,14 @@ impl IrBuilder {
                 }
 
                 let cond = theta.body().get_node(theta.condition()).to_output_param();
-                let cond = builder
-                    .values
-                    .get(&theta.body().get_input(cond.value()).1)
-                    .cloned();
+                let cond = theta
+                    .body()
+                    .try_input(cond.value())
+                    .map(|(_, port, _)| port)
+                    .and_then(|cond| builder.values.get(&cond).cloned())
+                    .unwrap_or(Value::Missing);
 
-                if cond.is_none() {
+                if cond.is_missing() {
                     tracing::error!(
                         "failed to get condition for theta {:?} (cond: {:?})",
                         theta.node(),

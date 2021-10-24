@@ -128,8 +128,6 @@ impl Pass for ConstDedup {
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 
-        // TODO: Propagate constants out of gamma bodies?
-
         graph.replace_node(gamma.node(), gamma);
     }
 
@@ -156,8 +154,6 @@ impl Pass for ConstDedup {
 
         visitor.visit_graph(theta.body_mut());
         self.changed |= visitor.did_change();
-
-        // TODO: Propagate constants out of theta bodies?
 
         graph.replace_node(theta.node(), theta);
     }

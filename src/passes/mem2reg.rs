@@ -168,7 +168,7 @@ impl Pass for Mem2Reg {
                     let int = graph.int(value);
                     self.values.insert(int.node(), (value as i32).into());
 
-                    graph.remove_input_edge(store.value());
+                    graph.remove_input_edges(store.value());
                     graph.add_value_edge(int.value(), store.value());
 
                     self.changed();

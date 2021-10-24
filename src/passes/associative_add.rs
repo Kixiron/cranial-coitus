@@ -1,15 +1,16 @@
 use crate::{
-    graph::{Add, Gamma, InputPort, Int, OutputPort, Rvsdg, Theta},
+    graph::{Add, Gamma, InputPort, Int, NodeId, OutputPort, Rvsdg, Theta},
     ir::Const,
     passes::Pass,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Fuses chained additions based on the law of associative addition
 // TODO: Equality is also associative but it's unclear whether or not
 //       that situation can actually arise within brainfuck programs
 pub struct AssociativeAdd {
     values: BTreeMap<OutputPort, Const>,
+    to_be_removed: HashSet<NodeId>,
     changed: bool,
 }
 
@@ -17,6 +18,7 @@ impl AssociativeAdd {
     pub fn new() -> Self {
         Self {
             values: BTreeMap::new(),
+            to_be_removed: HashSet::new(),
             changed: false,
         }
     }
@@ -47,7 +49,12 @@ impl Pass for AssociativeAdd {
 
     fn reset(&mut self) {
         self.values.clear();
+        self.to_be_removed.clear();
         self.changed = false;
+    }
+
+    fn post_visit_graph(&mut self, graph: &mut Rvsdg, _visited: &BTreeSet<NodeId>) {
+        graph.bulk_remove_nodes(&self.to_be_removed);
     }
 
     // TODO: Arithmetic folding
@@ -118,10 +125,10 @@ impl Pass for AssociativeAdd {
                     // add node, removing the previous constant input from the dependency
                     let dependency_add = graph.get_node(dependency_add.node()).to_add();
                     if dependency_add.lhs() == dependency_unknown {
-                        graph.remove_input_edge(dependency_add.rhs());
+                        graph.remove_input_edges(dependency_add.rhs());
                         graph.add_value_edge(int.value(), dependency_add.rhs());
                     } else if dependency_add.rhs() == dependency_unknown {
-                        graph.remove_input_edge(dependency_add.lhs());
+                        graph.remove_input_edges(dependency_add.lhs());
                         graph.add_value_edge(int.value(), dependency_add.lhs());
                     } else {
                         unreachable!();
@@ -132,7 +139,8 @@ impl Pass for AssociativeAdd {
                     // operands to
                     graph.rewire_dependents(add.value(), dependency_add.value());
                     // Remove the now-replaced dependency add
-                    graph.remove_node(add.node());
+                    // graph.remove_node(add.node());
+                    self.to_be_removed.insert(add.node());
 
                     self.changed();
                 }

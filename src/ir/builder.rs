@@ -78,9 +78,12 @@ impl IrBuilder {
         inputs.sort_unstable_by_key(|(_, input, _, _)| input.node_id());
 
         let mut input_values = BTreeMap::new();
-        for (input, input_node, output, _) in inputs {
+        for &(input, input_node, output, _) in &inputs {
             if !self.evaluated.contains(&input_node.node_id()) {
                 self.evaluation_stack.push(input_node.node_id());
+                self.evaluation_stack
+                    .extend(inputs.iter().map(|(_, node, ..)| node.node_id()));
+
                 return;
             }
 
@@ -99,17 +102,17 @@ impl IrBuilder {
 
         match node {
             &Node::Int(int, value) => {
-                let var = VarId::new(int.node().0);
-                self.inst(crate::ir::Assign::new(var, Const::Int(value)));
+                // let var = VarId::new(int.node().0);
+                // self.inst(crate::ir::Assign::new(var, Const::Int(value)));
 
-                self.values.insert(int.value(), var.into());
+                self.values.insert(int.value(), Const::Int(value).into());
             }
 
             &Node::Bool(bool, value) => {
-                let var = VarId::new(bool.node().0);
-                self.inst(Assign::new(var, Const::Bool(value)));
+                // let var = VarId::new(bool.node().0);
+                // self.inst(Assign::new(var, Const::Bool(value)));
 
-                self.values.insert(bool.value(), var.into());
+                self.values.insert(bool.value(), Const::Bool(value).into());
             }
 
             Node::Add(add) => {
@@ -179,6 +182,7 @@ impl IrBuilder {
                     var,
                     Load::new(
                         ptr,
+                        var,
                         graph
                             .try_input(load.effect_in())
                             .and_then(|(_, output, _)| self.values.get(&output))
@@ -204,6 +208,7 @@ impl IrBuilder {
                 self.inst(Store::new(
                     ptr,
                     value,
+                    var,
                     graph
                         .try_input(store.effect_in())
                         .and_then(|(_, output, _)| self.values.get(&output))
@@ -221,6 +226,7 @@ impl IrBuilder {
                     Call::new(
                         "input",
                         Vec::new(),
+                        var,
                         graph
                             .try_input(input.effect_in())
                             .and_then(|(_, output, _)| self.values.get(&output))
@@ -242,6 +248,7 @@ impl IrBuilder {
                 self.inst(Call::new(
                     "output",
                     vec![value],
+                    var,
                     graph
                         .try_input(output.effect_in())
                         .and_then(|(_, output, _)| self.values.get(&output))
@@ -285,7 +292,7 @@ impl IrBuilder {
                 let cond = theta.body().get_node(theta.condition()).to_output_param();
                 let cond = theta
                     .body()
-                    .try_input(cond.value())
+                    .try_input(cond.input())
                     .map(|(_, port, _)| port)
                     .and_then(|cond| builder.values.get(&cond).cloned())
                     .unwrap_or(Value::Missing);
@@ -301,6 +308,7 @@ impl IrBuilder {
                 self.inst(Theta::new(
                     body.into_inner(),
                     cond,
+                    var,
                     graph
                         .try_input(theta.effect_in())
                         .and_then(|(_, output, _)| self.values.get(&output))
@@ -374,14 +382,25 @@ impl IrBuilder {
                     self.values.insert(output, value);
                 }
 
+                let prev_effect = graph
+                    .try_input(gamma.effect_in())
+                    .and_then(|(_, output, _)| self.values.get(&output))
+                    .and_then(Value::as_var);
+
+                if prev_effect.is_none() {
+                    tracing::warn!(
+                        "failed to get previous effect {:?} for gamma node {:?}",
+                        gamma.effect_in(),
+                        gamma.node(),
+                    );
+                }
+
                 self.inst(Gamma::new(
                     cond,
                     truthy.into_inner(),
                     falsy.into_inner(),
-                    graph
-                        .try_input(gamma.effect_in())
-                        .and_then(|(_, output, _)| self.values.get(&output))
-                        .and_then(Value::as_var),
+                    var,
+                    prev_effect,
                 ));
 
                 self.values.insert(gamma.effect_out(), var.into());

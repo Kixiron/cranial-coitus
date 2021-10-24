@@ -124,11 +124,12 @@ impl From<Call> for Instruction {
 pub struct Theta {
     body: Vec<Instruction>,
     cond: Option<Value>,
-    pred_effect: Option<VarId>,
+    effect: VarId,
+    prev_effect: Option<VarId>,
 }
 
 impl Theta {
-    pub fn new<C, E>(body: Vec<Instruction>, cond: C, pred_effect: E) -> Self
+    pub fn new<C, E>(body: Vec<Instruction>, cond: C, effect: VarId, prev_effect: E) -> Self
     where
         C: Into<Option<Value>>,
         E: Into<Option<VarId>>,
@@ -136,7 +137,8 @@ impl Theta {
         Self {
             body,
             cond: cond.into(),
-            pred_effect: pred_effect.into(),
+            effect,
+            prev_effect: prev_effect.into(),
         }
     }
 }
@@ -149,10 +151,10 @@ impl Pretty for Theta {
         A: Clone,
     {
         allocator
-            .text(if let Some(effect) = self.pred_effect {
-                Cow::Owned(format!("// pred: {}", effect))
+            .text(if let Some(prev_effect) = self.prev_effect {
+                format!("// eff: {}, pred: {}", self.effect, prev_effect)
             } else {
-                Cow::Borrowed("// pred: ???")
+                format!("// eff: {}, pred: ???", self.effect)
             })
             .append(allocator.hardline())
             .append(allocator.text("do"))
@@ -197,7 +199,8 @@ pub struct Gamma {
     cond: Value,
     truthy: Vec<Instruction>,
     falsy: Vec<Instruction>,
-    pred_effect: Option<VarId>,
+    effect: VarId,
+    prev_effect: Option<VarId>,
 }
 
 impl Gamma {
@@ -205,7 +208,8 @@ impl Gamma {
         cond: C,
         truthy: Vec<Instruction>,
         falsy: Vec<Instruction>,
-        pred_effect: E,
+        effect: VarId,
+        prev_effect: E,
     ) -> Self
     where
         C: Into<Value>,
@@ -215,7 +219,8 @@ impl Gamma {
             cond: cond.into(),
             truthy,
             falsy,
-            pred_effect: pred_effect.into(),
+            effect,
+            prev_effect: prev_effect.into(),
         }
     }
 }
@@ -228,10 +233,10 @@ impl Pretty for Gamma {
         A: Clone,
     {
         allocator
-            .text(if let Some(effect) = self.pred_effect {
-                Cow::Owned(format!("// pred: {}", effect))
+            .text(if let Some(prev_effect) = self.prev_effect {
+                format!("// eff: {}, pred: {}", self.effect, prev_effect)
             } else {
-                Cow::Borrowed("// pred: ???")
+                format!("// eff: {}, pred: ???", self.effect)
             })
             .append(allocator.hardline())
             .append(allocator.text("if"))
@@ -272,11 +277,12 @@ impl Pretty for Gamma {
 pub struct Call {
     function: Cow<'static, str>,
     args: Vec<Value>,
-    pred_effect: Option<VarId>,
+    effect: VarId,
+    prev_effect: Option<VarId>,
 }
 
 impl Call {
-    pub fn new<F, E>(function: F, args: Vec<Value>, pred_effect: E) -> Self
+    pub fn new<F, E>(function: F, args: Vec<Value>, effect: VarId, prev_effect: E) -> Self
     where
         F: Into<Cow<'static, str>>,
         E: Into<Option<VarId>>,
@@ -284,7 +290,8 @@ impl Call {
         Self {
             function: function.into(),
             args,
-            pred_effect: pred_effect.into(),
+            effect,
+            prev_effect: prev_effect.into(),
         }
     }
 }
@@ -310,10 +317,10 @@ impl Pretty for Call {
                 ),
             )
             .append(allocator.space())
-            .append(allocator.text(if let Some(effect) = self.pred_effect {
-                Cow::Owned(format!("// pred: {}", effect))
+            .append(allocator.text(if let Some(prev_effect) = self.prev_effect {
+                format!("// eff: {}, pred: {}", self.effect, prev_effect)
             } else {
-                Cow::Borrowed("// pred: ???")
+                format!("// eff: {}, pred: ???", self.effect)
             }))
     }
 }
@@ -559,17 +566,19 @@ impl Pretty for Eq {
 #[derive(Debug, Clone)]
 pub struct Load {
     ptr: Value,
-    pred_effect: Option<VarId>,
+    effect: VarId,
+    prev_effect: Option<VarId>,
 }
 
 impl Load {
-    pub fn new<E>(ptr: Value, pred_effect: E) -> Self
+    pub fn new<E>(ptr: Value, effect: VarId, prev_effect: E) -> Self
     where
         E: Into<Option<VarId>>,
     {
         Self {
             ptr,
-            pred_effect: pred_effect.into(),
+            effect,
+            prev_effect: prev_effect.into(),
         }
     }
 }
@@ -586,10 +595,10 @@ impl Pretty for Load {
             .append(allocator.space())
             .append(self.ptr.pretty(allocator))
             .append(allocator.space())
-            .append(allocator.text(if let Some(effect) = self.pred_effect {
-                Cow::Owned(format!("// pred: {}", effect))
+            .append(allocator.text(if let Some(prev_effect) = self.prev_effect {
+                format!("// eff: {}, pred: {}", self.effect, prev_effect)
             } else {
-                Cow::Borrowed("// pred: ???")
+                format!("// eff: {}, pred: ???", self.effect)
             }))
     }
 }
@@ -598,18 +607,20 @@ impl Pretty for Load {
 pub struct Store {
     ptr: Value,
     value: Value,
-    pred_effect: Option<VarId>,
+    effect: VarId,
+    prev_effect: Option<VarId>,
 }
 
 impl Store {
-    pub fn new<E>(ptr: Value, value: Value, pred_effect: E) -> Self
+    pub fn new<E>(ptr: Value, value: Value, effect: VarId, prev_effect: E) -> Self
     where
         E: Into<Option<VarId>>,
     {
         Self {
             ptr,
             value,
-            pred_effect: pred_effect.into(),
+            effect,
+            prev_effect: prev_effect.into(),
         }
     }
 }
@@ -629,10 +640,10 @@ impl Pretty for Store {
             .append(allocator.space())
             .append(self.value.pretty(allocator))
             .append(allocator.space())
-            .append(allocator.text(if let Some(effect) = self.pred_effect {
-                Cow::Owned(format!("// pred: {}", effect))
+            .append(allocator.text(if let Some(prev_effect) = self.prev_effect {
+                format!("// eff: {}, pred: {}", self.effect, prev_effect)
             } else {
-                Cow::Borrowed("// pred: ???")
+                format!("// eff: {}, pred: ???", self.effect)
             }))
     }
 }

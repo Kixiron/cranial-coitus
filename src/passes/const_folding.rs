@@ -50,7 +50,7 @@ impl Pass for ConstFolding {
     }
 
     fn visit_add(&mut self, graph: &mut Rvsdg, add: Add) {
-        debug_assert_eq!(graph.incoming_count(add.node()), 2);
+        // debug_assert_eq!(graph.incoming_count(add.node()), 2);
 
         let inputs @ [(_, lhs), (_, rhs)] = [
             self.operand(graph, add.lhs()),
@@ -87,7 +87,7 @@ impl Pass for ConstFolding {
     }
 
     fn visit_eq(&mut self, graph: &mut Rvsdg, eq: Eq) {
-        debug_assert_eq!(graph.incoming_count(eq.node()), 2);
+        // debug_assert_eq!(graph.incoming_count(eq.node()), 2);
 
         let [(lhs_node, lhs), (rhs_node, rhs)] =
             [self.operand(graph, eq.lhs()), self.operand(graph, eq.rhs())];
@@ -128,7 +128,7 @@ impl Pass for ConstFolding {
     }
 
     fn visit_not(&mut self, graph: &mut Rvsdg, not: Not) {
-        debug_assert_eq!(graph.incoming_count(not.node()), 1);
+        // debug_assert_eq!(graph.incoming_count(not.node()), 1);
 
         let (_, output, edge) = graph.get_input(not.input());
         debug_assert_eq!(edge, EdgeKind::Value);
@@ -139,6 +139,8 @@ impl Pass for ConstFolding {
             let inverted = graph.bool(!value);
             graph.rewire_dependents(not.value(), inverted.value());
             graph.remove_node(not.node());
+
+            self.changed();
         }
     }
 
@@ -182,7 +184,6 @@ impl Pass for ConstFolding {
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 
-        // TODO: Propagate constants out of gamma bodies?
         for (&port, &param) in gamma.outputs().iter().zip(gamma.output_params()) {
             let true_output = gamma
                 .true_branch()
@@ -191,7 +192,7 @@ impl Pass for ConstFolding {
                         .true_branch()
                         .get_node(param[0])
                         .to_output_param()
-                        .value(),
+                        .input(),
                 )
                 .1;
 
@@ -202,7 +203,7 @@ impl Pass for ConstFolding {
                         .false_branch()
                         .get_node(param[1])
                         .to_output_param()
-                        .value(),
+                        .input(),
                 )
                 .1;
 
@@ -247,7 +248,7 @@ impl Pass for ConstFolding {
         self.changed |= visitor.did_change();
 
         for (&port, &param) in theta.outputs().iter().zip(theta.output_params()) {
-            let param_input = theta.body().get_node(param).to_output_param().value();
+            let param_input = theta.body().get_node(param).to_output_param().input();
 
             if let Some(value) = self
                 .values

@@ -193,7 +193,7 @@ impl AddSubLoop {
 
         // Invert the `_dec_counter == 0` to make it `_dec_counter != 0`
         // _counter_not_zero := not _counter_is_zero
-        let cond_neg = graph.cast_source::<Not>(cond_output.value())?;
+        let cond_neg = graph.cast_source::<Not>(cond_output.input())?;
 
         // The check if the counter's decremented value is zero
         // _counter_is_zero := eq _dec_counter, int 0
@@ -359,7 +359,7 @@ impl Pass for AddSubLoop {
             for (&port, &param) in theta.outputs().iter().zip(theta.output_params()) {
                 let param = theta.body().to_node::<OutputParam>(param);
 
-                if let Some((input_node, ..)) = theta.body().try_input(param.value()) {
+                if let Some((input_node, ..)) = theta.body().try_input(param.input()) {
                     match *input_node {
                         Node::Int(_, value) => {
                             let int = graph.int(value);

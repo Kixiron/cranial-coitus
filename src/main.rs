@@ -1,4 +1,4 @@
-#![feature(vec_into_raw_parts)]
+#![feature(vec_into_raw_parts, hash_drain_filter)]
 
 mod args;
 mod codegen;
@@ -8,6 +8,7 @@ mod lower_tokens;
 mod parse;
 mod passes;
 mod patterns;
+mod utils;
 
 use crate::{
     args::Args,
@@ -70,7 +71,7 @@ fn main() {
         tokens
     });
 
-    tracing::info!("finished building rvsdg");
+    tracing::info!("started building rvsdg");
     let graph_building_start = Instant::now();
 
     let mut graph = Rvsdg::new();
@@ -356,8 +357,10 @@ fn validate_inner(graph: &Rvsdg) {
 
         let output_desc = node.output_desc();
         let (output_effects, _output_values) = graph
-            .outputs(node_id)
-            .flat_map(|(_, data)| data)
+            .get_node(node_id)
+            .outputs()
+            .into_iter()
+            .flat_map(|output| graph.get_outputs(output))
             .fold((0, 0), |(effect, value), (_, _, edge)| match edge {
                 EdgeKind::Effect => (effect + 1, value),
                 EdgeKind::Value => (effect, value + 1),

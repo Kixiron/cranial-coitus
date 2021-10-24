@@ -146,10 +146,12 @@ pub trait Pass {
                 // Add all the current node's outputs to the stack
                 buffer.extend(
                     graph
-                        .outputs(node_id)
-                        .filter_map(|(_, data)| data)
-                        .filter_map(|(output, _, _)| {
-                            let output_id = output.node_id();
+                        .get_node(node_id)
+                        .outputs()
+                        .into_iter()
+                        .flat_map(|output| graph.get_outputs(output))
+                        .filter_map(|(output_node, ..)| {
+                            let output_id = output_node.node_id();
 
                             // At first glance it may seem like `visited.contains(&output_id)` should always return
                             // true, it won't in the case of two identical edges to the same node

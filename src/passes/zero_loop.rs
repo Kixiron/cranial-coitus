@@ -95,33 +95,44 @@ impl ZeroLoop {
         // Make sure that one of the add's operands is the loaded cell and the other is 1 or -1
         if lhs.1 == load.value() {
             let value = body_values.get(&rhs.1)?.convert_to_i32()?;
+            dbg!(value, value.rem_euclid(2));
 
-            if !matches!(value, 1 | -1) {
-                // TODO: If `value == 0` this loop is infinite
+            // Any odd integer will eventually converge to zero
+            if value.rem_euclid(2) == 0 {
+                // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
+                //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
+                //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
+                //       loop and we can remove it entirely for nothing, not even a store
                 return None;
             }
         } else if rhs.1 == load.value() {
             let value = body_values.get(&lhs.1)?.convert_to_i32()?;
+            dbg!(value);
 
-            if !matches!(value, 1 | -1) {
-                // TODO: If `value == 0` this loop is infinite
+            // Any odd integer will eventually converge to zero
+            if value.rem_euclid(2) == 0 {
+                // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
+                //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
+                //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
+                //       loop and we can remove it entirely for nothing, not even a store
                 return None;
             }
         } else {
             return None;
         }
 
-        let store = graph.get_output(load.effect())?.0.as_store()?;
+        let store = dbg!(graph.get_output(load.effect()))?.0.as_store()?;
         if graph.get_input(store.value()).1 != add.value() {
             return None;
         }
 
         let eq = graph
-            .outputs(add.node())
-            .find_map(|(_, data)| data.and_then(|(node, _, _)| node.is_eq().then(|| node)))?
-            .as_eq()?;
+            .get_outputs(add.value())
+            .find_map(|(node, ..)| node.as_eq())?;
+        dbg!(eq);
 
         let [lhs, rhs] = [graph.get_input(eq.lhs()), graph.get_input(eq.rhs())];
+        dbg!(lhs, rhs);
 
         // Make sure that one of the eq's operands is the added val and the other is 0
         if lhs.1 == add.value() {
@@ -141,6 +152,7 @@ impl ZeroLoop {
         }
 
         let not = graph.get_output(eq.value())?.0.as_not()?;
+        dbg!(not);
 
         // Make sure the `(value + 1) != 0` expression is the theta's condition
         if graph.get_output(not.value())?.0.node_id() != theta.condition() {
@@ -148,6 +160,7 @@ impl ZeroLoop {
         }
 
         let _end = graph.get_output(store.effect())?.0.as_end()?;
+        dbg!(_end);
 
         Some(target_ptr)
     }
@@ -224,7 +237,7 @@ impl ZeroLoop {
 
         // Make sure the true branch is empty
         let true_branch_is_empty =
-            gamma.true_branch().output_dest(start_effect) == Some(end_effect);
+            gamma.true_branch().output_dest(start_effect).next() == Some(end_effect);
         if !true_branch_is_empty {
             return None;
         }
@@ -296,7 +309,7 @@ impl ZeroLoop {
         };
 
         // store _ptr, _value
-        let store = graph.get_input(gamma.effect_in()).0.as_store()?;
+        let store = graph.try_input(gamma.effect_in())?.0.as_store()?;
         if graph.input_source(store.value()) != value {
             return None;
         }
@@ -319,7 +332,7 @@ impl ZeroLoop {
 
         // Make sure the true branch is empty
         let true_branch_is_empty =
-            gamma.true_branch().output_dest(start_effect) == Some(end_effect);
+            gamma.true_branch().output_dest(start_effect).next() == Some(end_effect);
         if !true_branch_is_empty {
             return None;
         }
@@ -407,7 +420,6 @@ impl Pass for ZeroLoop {
 
         if let Some(target_ptr) = self.is_zero_gamma_store(graph, &false_visitor.values, &gamma) {
             let zero = graph.int(0);
-            let effect = graph.input_source(gamma.effect_in());
             let target_ptr = match target_ptr {
                 Ok(0) => zero.value(),
                 Ok(ptr) => graph.int(ptr).value(),
@@ -420,6 +432,7 @@ impl Pass for ZeroLoop {
                 target_ptr,
             );
 
+            let effect = graph.input_source(gamma.effect_in());
             let store = graph.store(target_ptr, zero.value(), effect);
             graph.rewire_dependents(gamma.effect_out(), store.effect());
 

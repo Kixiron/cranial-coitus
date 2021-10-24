@@ -4,6 +4,7 @@ use crate::graph::{
 };
 use tinyvec::{tiny_vec, TinyVec};
 
+// TODO: derive_more?
 #[derive(Debug, Clone)]
 pub enum Node {
     Int(Int, i32),
@@ -108,29 +109,31 @@ impl Node {
     }
 
     // FIXME: TinyVec?
-    pub fn outputs(&self) -> Vec<OutputPort> {
+    pub fn outputs(&self) -> TinyVec<[OutputPort; 4]> {
         match self {
-            Self::Int(int, _) => vec![int.value],
-            Self::Bool(bool, _) => vec![bool.value],
-            Self::Add(add) => vec![add.value],
-            Self::Load(load) => vec![load.value, load.effect_out],
-            Self::Store(store) => vec![store.effect_out],
-            Self::Start(start) => vec![start.effect],
-            Self::End(_) => Vec::new(),
-            Self::Input(input) => vec![input.value, input.effect_out],
-            Self::Output(output) => vec![output.effect_out],
+            Self::Int(int, _) => tiny_vec![int.value],
+            Self::Bool(bool, _) => tiny_vec![bool.value],
+            Self::Add(add) => tiny_vec![add.value],
+            Self::Load(load) => tiny_vec![load.value, load.effect_out],
+            Self::Store(store) => tiny_vec![store.effect_out],
+            Self::Start(start) => tiny_vec![start.effect],
+            Self::End(_) => TinyVec::new(),
+            Self::Input(input) => tiny_vec![input.value, input.effect_out],
+            Self::Output(output) => tiny_vec![output.effect_out],
             Self::Theta(theta) => {
-                let mut inputs = theta.outputs.to_vec();
+                let mut inputs = TinyVec::with_capacity(theta.outputs.len() + 1);
+                inputs.extend(theta.outputs.iter().copied());
                 inputs.push(theta.effect_out);
                 inputs
             }
-            Self::InputPort(input) => vec![input.value],
-            Self::OutputPort(_) => Vec::new(),
-            Self::Eq(eq) => vec![eq.value],
-            Self::Not(not) => vec![not.value],
-            Self::Neg(neg) => vec![neg.value],
+            Self::InputPort(input) => tiny_vec![input.value],
+            Self::OutputPort(_) => TinyVec::new(),
+            Self::Eq(eq) => tiny_vec![eq.value],
+            Self::Not(not) => tiny_vec![not.value],
+            Self::Neg(neg) => tiny_vec![neg.value],
             Self::Gamma(gamma) => {
-                let mut inputs = gamma.outputs.to_vec();
+                let mut inputs = TinyVec::with_capacity(gamma.outputs.len() + 1);
+                inputs.extend(gamma.outputs.iter().copied());
                 inputs.push(gamma.effect_out);
                 inputs
             }
@@ -470,57 +473,58 @@ impl Node {
     }
 }
 
+macro_rules! node_traits {
+    ($($variant:ident),* $(,)?) => {
+        $(
+            impl From<$variant> for Node {
+                fn from(node: $variant) -> Self {
+                    Self::$variant(node)
+                }
+            }
+
+            impl TryInto<$variant> for Node {
+                type Error = Self;
+
+                fn try_into(self) -> Result<$variant, Self::Error> {
+                    if let Self::$variant(node) = self {
+                        Ok(node)
+                    } else {
+                        Err(self)
+                    }
+                }
+            }
+
+            impl TryInto<$variant> for &Node {
+                type Error = Self;
+
+                fn try_into(self) -> Result<$variant, Self::Error> {
+                    if let Node::$variant(node) = *self {
+                        Ok(node)
+                    } else {
+                        Err(self)
+                    }
+                }
+            }
+        )*
+    };
+}
+
+node_traits! {
+    Add,
+    Load,
+    Store,
+    Start,
+    End,
+    Input,
+    Output,
+    Eq,
+    Not,
+    Neg,
+}
+
 impl From<InputParam> for Node {
     fn from(input: InputParam) -> Self {
         Self::InputPort(input)
-    }
-}
-
-impl From<Theta> for Node {
-    fn from(theta: Theta) -> Self {
-        Self::Theta(theta)
-    }
-}
-
-impl From<Output> for Node {
-    fn from(output: Output) -> Self {
-        Self::Output(output)
-    }
-}
-
-impl From<Input> for Node {
-    fn from(input: Input) -> Self {
-        Self::Input(input)
-    }
-}
-
-impl From<End> for Node {
-    fn from(end: End) -> Self {
-        Self::End(end)
-    }
-}
-
-impl From<Start> for Node {
-    fn from(start: Start) -> Self {
-        Self::Start(start)
-    }
-}
-
-impl From<Store> for Node {
-    fn from(store: Store) -> Self {
-        Self::Store(store)
-    }
-}
-
-impl From<Load> for Node {
-    fn from(load: Load) -> Self {
-        Self::Load(load)
-    }
-}
-
-impl From<Add> for Node {
-    fn from(add: Add) -> Self {
-        Self::Add(add)
     }
 }
 
@@ -530,21 +534,15 @@ impl From<OutputParam> for Node {
     }
 }
 
-impl From<Eq> for Node {
-    fn from(eq: Eq) -> Self {
-        Self::Eq(eq)
-    }
-}
-
-impl From<Not> for Node {
-    fn from(not: Not) -> Self {
-        Self::Not(not)
-    }
-}
-
 impl From<Gamma> for Node {
-    fn from(gamma: Gamma) -> Self {
-        Self::Gamma(gamma)
+    fn from(node: Gamma) -> Self {
+        Self::Gamma(node)
+    }
+}
+
+impl From<Theta> for Node {
+    fn from(node: Theta) -> Self {
+        Self::Theta(node)
     }
 }
 
@@ -596,168 +594,48 @@ impl TryInto<OutputParam> for &Node {
     }
 }
 
-impl TryInto<Load> for Node {
+impl TryInto<Gamma> for Node {
     type Error = Self;
 
-    fn try_into(self) -> Result<Load, Self::Error> {
-        if let Self::Load(load) = self {
-            Ok(load)
+    fn try_into(self) -> Result<Gamma, Self::Error> {
+        if let Self::Gamma(node) = self {
+            Ok(node)
         } else {
             Err(self)
         }
     }
 }
 
-impl TryInto<Load> for &Node {
+impl<'a> TryInto<&'a Gamma> for &'a Node {
     type Error = Self;
 
-    fn try_into(self) -> Result<Load, Self::Error> {
-        if let Node::Load(load) = *self {
-            Ok(load)
+    fn try_into(self) -> Result<&'a Gamma, Self::Error> {
+        if let Node::Gamma(node) = self {
+            Ok(node)
         } else {
             Err(self)
         }
     }
 }
 
-impl TryInto<Store> for Node {
+impl TryInto<Theta> for Node {
     type Error = Self;
 
-    fn try_into(self) -> Result<Store, Self::Error> {
-        if let Self::Store(store) = self {
-            Ok(store)
+    fn try_into(self) -> Result<Theta, Self::Error> {
+        if let Self::Theta(node) = self {
+            Ok(node)
         } else {
             Err(self)
         }
     }
 }
 
-impl TryInto<Store> for &Node {
+impl<'a> TryInto<&'a Theta> for &'a Node {
     type Error = Self;
 
-    fn try_into(self) -> Result<Store, Self::Error> {
-        if let Node::Store(store) = *self {
-            Ok(store)
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl TryInto<Add> for Node {
-    type Error = Self;
-
-    fn try_into(self) -> Result<Add, Self::Error> {
-        if let Self::Add(add) = self {
-            Ok(add)
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl TryInto<Add> for &Node {
-    type Error = Self;
-
-    fn try_into(self) -> Result<Add, Self::Error> {
-        if let Node::Add(add) = *self {
-            Ok(add)
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl TryInto<Eq> for Node {
-    type Error = Self;
-
-    fn try_into(self) -> Result<Eq, Self::Error> {
-        if let Self::Eq(eq) = self {
-            Ok(eq)
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl TryInto<Eq> for &Node {
-    type Error = Self;
-
-    fn try_into(self) -> Result<Eq, Self::Error> {
-        if let Node::Eq(eq) = *self {
-            Ok(eq)
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl TryInto<Not> for Node {
-    type Error = Self;
-
-    fn try_into(self) -> Result<Not, Self::Error> {
-        if let Self::Not(not) = self {
-            Ok(not)
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl TryInto<Not> for &Node {
-    type Error = Self;
-
-    fn try_into(self) -> Result<Not, Self::Error> {
-        if let Node::Not(not) = *self {
-            Ok(not)
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl TryInto<Start> for Node {
-    type Error = Self;
-
-    fn try_into(self) -> Result<Start, Self::Error> {
-        if let Self::Start(start) = self {
-            Ok(start)
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl TryInto<Start> for &Node {
-    type Error = Self;
-
-    fn try_into(self) -> Result<Start, Self::Error> {
-        if let Node::Start(start) = *self {
-            Ok(start)
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl TryInto<End> for Node {
-    type Error = Self;
-
-    fn try_into(self) -> Result<End, Self::Error> {
-        if let Self::End(end) = self {
-            Ok(end)
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl TryInto<End> for &Node {
-    type Error = Self;
-
-    fn try_into(self) -> Result<End, Self::Error> {
-        if let Node::End(end) = *self {
-            Ok(end)
+    fn try_into(self) -> Result<&'a Theta, Self::Error> {
+        if let Node::Theta(node) = self {
+            Ok(node)
         } else {
             Err(self)
         }

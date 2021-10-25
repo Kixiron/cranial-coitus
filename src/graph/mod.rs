@@ -2574,6 +2574,10 @@ impl Display for NodeId {
 
 pub trait Port: Debug + Clone + Copy + PartialEq + cmp::Eq + Hash {
     fn port(&self) -> PortId;
+
+    fn raw(&self) -> u32 {
+        self.port().0
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]

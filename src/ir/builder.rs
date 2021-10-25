@@ -1,9 +1,10 @@
 use crate::{
-    graph::{Node, NodeId, OutputPort, Rvsdg},
+    graph::{InputParam, Node, NodeId, OutputParam, OutputPort, Rvsdg},
     ir::{
-        Add, Assign, Block, Call, Const, Eq, Gamma, Instruction, Load, Neg, Not, Store, Theta,
-        Value, VarId,
+        Add, Assign, Block, Call, Const, EffectId, Eq, Gamma, Instruction, Load, Neg, Not, Store,
+        Theta, Value, VarId,
     },
+    utils::AssertNone,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -15,6 +16,7 @@ use std::{
 pub struct IrBuilder {
     instructions: Vec<Instruction>,
     values: BTreeMap<OutputPort, Value>,
+    effects: BTreeMap<OutputPort, NodeId>,
     evaluated: BTreeSet<NodeId>,
     evaluation_stack: Vec<NodeId>,
     top_level: bool,
@@ -25,6 +27,7 @@ impl IrBuilder {
         Self {
             instructions: Vec::new(),
             values: BTreeMap::new(),
+            effects: BTreeMap::new(),
             evaluated: BTreeSet::new(),
             evaluation_stack: Vec::new(),
             top_level: true,
@@ -90,33 +93,37 @@ impl IrBuilder {
             if let Some(value) = self.values.get(&output).cloned() {
                 input_values.insert(input, value);
             } else {
-                tracing::error!(
-                    "expected an input value for a value edge from {:?} (port {:?}) to {:?} (port {:?})",
-                    input_node,
-                    output,
-                    node,
-                    input,
-                );
+                // tracing::error!(
+                //     "expected an input value for a value edge from {:?} (port {:?}) to {:?} (port {:?})",
+                //     input_node,
+                //     output,
+                //     node,
+                //     input,
+                // );
             }
         }
 
         match node {
             &Node::Int(int, value) => {
-                // let var = VarId::new(int.node().0);
+                // let var = VarId::new(int.value());
                 // self.inst(crate::ir::Assign::new(var, Const::Int(value)));
 
-                self.values.insert(int.value(), Const::Int(value).into());
+                self.values
+                    .insert(int.value(), Const::Int(value).into())
+                    .debug_unwrap_none();
             }
 
             &Node::Bool(bool, value) => {
-                // let var = VarId::new(bool.node().0);
+                // let var = VarId::new(bool.value());
                 // self.inst(Assign::new(var, Const::Bool(value)));
 
-                self.values.insert(bool.value(), Const::Bool(value).into());
+                self.values
+                    .insert(bool.value(), Const::Bool(value).into())
+                    .debug_unwrap_none();
             }
 
             Node::Add(add) => {
-                let var = VarId::new(add.node().0);
+                let var = VarId::new(add.value());
 
                 let lhs = input_values
                     .get(&add.lhs())
@@ -128,11 +135,13 @@ impl IrBuilder {
                     .unwrap_or(Value::Missing);
                 self.inst(Assign::new(var, Add::new(lhs, rhs)));
 
-                self.values.insert(add.value(), var.into());
+                self.values
+                    .insert(add.value(), var.into())
+                    .debug_unwrap_none();
             }
 
             Node::Eq(eq) => {
-                let var = VarId::new(eq.node().0);
+                let var = VarId::new(eq.value());
 
                 let lhs = input_values
                     .get(&eq.lhs())
@@ -144,11 +153,13 @@ impl IrBuilder {
                     .unwrap_or(Value::Missing);
                 self.inst(Assign::new(var, Eq::new(lhs, rhs)));
 
-                self.values.insert(eq.value(), var.into());
+                self.values
+                    .insert(eq.value(), var.into())
+                    .debug_unwrap_none();
             }
 
             Node::Not(not) => {
-                let var = VarId::new(not.node().0);
+                let var = VarId::new(not.value());
 
                 let value = input_values
                     .get(&not.input())
@@ -156,11 +167,13 @@ impl IrBuilder {
                     .unwrap_or(Value::Missing);
                 self.inst(Assign::new(var, Not::new(value)));
 
-                self.values.insert(not.value(), var.into());
+                self.values
+                    .insert(not.value(), var.into())
+                    .debug_unwrap_none();
             }
 
             Node::Neg(neg) => {
-                let var = VarId::new(neg.node().0);
+                let var = VarId::new(neg.value());
 
                 let value = input_values
                     .get(&neg.input())
@@ -168,34 +181,40 @@ impl IrBuilder {
                     .unwrap_or(Value::Missing);
                 self.inst(Assign::new(var, Neg::new(value)));
 
-                self.values.insert(neg.value(), var.into());
+                self.values
+                    .insert(neg.value(), var.into())
+                    .debug_unwrap_none();
             }
 
             Node::Load(load) => {
-                let var = VarId::new(load.node().0);
+                let value = VarId::new(load.value());
+                let effect = EffectId::new(load.effect());
 
                 let ptr = input_values
                     .get(&load.ptr())
                     .cloned()
                     .unwrap_or(Value::Missing);
                 self.inst(Assign::new(
-                    var,
+                    value,
                     Load::new(
                         ptr,
-                        var,
+                        effect,
                         graph
                             .try_input(load.effect_in())
-                            .and_then(|(_, output, _)| self.values.get(&output))
-                            .and_then(Value::as_var),
+                            .map(|(_, output, _)| EffectId::new(output)),
                     ),
                 ));
 
-                self.values.insert(load.value(), var.into());
-                self.values.insert(load.effect(), var.into());
+                self.values
+                    .insert(load.value(), value.into())
+                    .debug_unwrap_none();
+                self.effects
+                    .insert(load.effect(), load.node())
+                    .debug_unwrap_none();
             }
 
             Node::Store(store) => {
-                let var = VarId::new(store.node().0);
+                let effect = EffectId::new(store.effect());
 
                 let ptr = input_values
                     .get(&store.ptr())
@@ -208,38 +227,43 @@ impl IrBuilder {
                 self.inst(Store::new(
                     ptr,
                     value,
-                    var,
+                    effect,
                     graph
                         .try_input(store.effect_in())
-                        .and_then(|(_, output, _)| self.values.get(&output))
-                        .and_then(Value::as_var),
+                        .map(|(_, output, _)| EffectId::new(output)),
                 ));
 
-                self.values.insert(store.effect(), var.into());
+                self.effects
+                    .insert(store.effect(), store.node())
+                    .debug_unwrap_none();
             }
 
             Node::Input(input) => {
-                let var = VarId::new(input.node().0);
+                let value = VarId::new(input.value());
+                let effect = EffectId::new(input.effect());
 
                 self.inst(Assign::new(
-                    var,
+                    value,
                     Call::new(
                         "input",
                         Vec::new(),
-                        var,
+                        effect,
                         graph
                             .try_input(input.effect_in())
-                            .and_then(|(_, output, _)| self.values.get(&output))
-                            .and_then(Value::as_var),
+                            .map(|(_, output, _)| EffectId::new(output)),
                     ),
                 ));
 
-                self.values.insert(input.value(), var.into());
-                self.values.insert(input.effect(), var.into());
+                self.values
+                    .insert(input.value(), value.into())
+                    .debug_unwrap_none();
+                self.effects
+                    .insert(input.effect(), input.node())
+                    .debug_unwrap_none();
             }
 
             Node::Output(output) => {
-                let var = VarId::new(output.node().0);
+                let effect = EffectId::new(output.effect());
 
                 let value = input_values
                     .get(&output.value())
@@ -248,20 +272,21 @@ impl IrBuilder {
                 self.inst(Call::new(
                     "output",
                     vec![value],
-                    var,
+                    effect,
                     graph
                         .try_input(output.effect_in())
-                        .and_then(|(_, output, _)| self.values.get(&output))
-                        .and_then(Value::as_var),
+                        .map(|(_, output, _)| EffectId::new(output)),
                 ));
 
-                self.values.insert(output.effect(), var.into());
+                self.effects
+                    .insert(output.effect(), output.node())
+                    .debug_unwrap_none();
             }
 
             Node::Theta(theta) => {
-                let var = VarId::new(theta.node().0);
                 let mut builder = Self {
                     values: BTreeMap::new(),
+                    effects: BTreeMap::new(),
                     instructions: Vec::new(),
                     evaluated: BTreeSet::new(),
                     evaluation_stack: Vec::new(),
@@ -269,13 +294,25 @@ impl IrBuilder {
                 };
 
                 for (input, &param) in theta.inputs().iter().zip(theta.input_params()) {
-                    let port = theta.body().outputs(param).next().unwrap().0;
+                    let input_param = theta.body().to_node::<InputParam>(param);
                     let value = input_values.get(input).cloned().unwrap_or(Value::Missing);
 
-                    builder.values.insert(port, value);
+                    if value.is_missing() {
+                        tracing::warn!(
+                            "missing input value for theta body input {:?}: {:?}",
+                            input,
+                            input_param,
+                        );
+                    }
+
+                    builder
+                        .values
+                        .insert(input_param.value(), value)
+                        .debug_unwrap_none();
                 }
 
-                let body = builder.translate(theta.body());
+                let mut body = builder.translate(theta.body());
+                let mut outputs = BTreeMap::new();
 
                 for (&output, &param) in theta.outputs().iter().zip(theta.output_params()) {
                     let value = theta
@@ -286,7 +323,22 @@ impl IrBuilder {
                         .and_then(|output| builder.values.get(&output).cloned())
                         .unwrap_or(Value::Missing);
 
-                    self.values.insert(output, value);
+                    if value.is_missing() {
+                        tracing::warn!(
+                            "missing output value for theta body {:?}: {:?}",
+                            output,
+                            theta.body().get_node(param),
+                        );
+                    }
+
+                    let output_id = VarId::new(output);
+                    body.push(Instruction::Assign(Assign::new(output_id, value.clone())));
+
+                    self.values
+                        .insert(output, output_id.into())
+                        .debug_unwrap_none();
+
+                    outputs.insert(output_id, value).debug_unwrap_none();
                 }
 
                 let cond = theta.body().get_node(theta.condition()).to_output_param();
@@ -296,6 +348,8 @@ impl IrBuilder {
                     .map(|(_, port, _)| port)
                     .and_then(|cond| builder.values.get(&cond).cloned())
                     .unwrap_or(Value::Missing);
+
+                self.values.extend(builder.values);
 
                 if cond.is_missing() {
                     tracing::error!(
@@ -308,25 +362,35 @@ impl IrBuilder {
                 self.inst(Theta::new(
                     body.into_inner(),
                     cond,
-                    var,
+                    EffectId::new(theta.effect_out()),
                     graph
                         .try_input(theta.effect_in())
-                        .and_then(|(_, output, _)| self.values.get(&output))
-                        .and_then(Value::as_var),
+                        .map(|(_, output, _)| EffectId::new(output)),
+                    outputs,
                 ));
 
-                self.values.insert(theta.effect_out(), var.into());
+                self.effects
+                    .insert(theta.effect_out(), theta.node())
+                    .debug_unwrap_none();
             }
 
             Node::Gamma(gamma) => {
-                let var = VarId::new(gamma.node().0);
                 let cond = input_values
                     .get(&gamma.condition())
                     .cloned()
                     .unwrap_or(Value::Missing);
 
+                if cond.is_missing() {
+                    tracing::warn!(
+                        "missing condition gamma node {:?}: {:?}",
+                        gamma.node(),
+                        gamma.condition(),
+                    );
+                }
+
                 let mut truthy_builder = Self {
                     values: BTreeMap::new(),
+                    effects: BTreeMap::new(),
                     instructions: Vec::new(),
                     evaluated: BTreeSet::new(),
                     evaluation_stack: Vec::new(),
@@ -334,26 +398,57 @@ impl IrBuilder {
                 };
 
                 for (input, &[param, _]) in gamma.inputs().iter().zip(gamma.input_params()) {
-                    let port = gamma.true_branch().outputs(param).next().unwrap().0;
+                    let input_param = gamma.true_branch().to_node::<InputParam>(param);
                     let value = input_values.get(input).cloned().unwrap_or(Value::Missing);
 
-                    truthy_builder.values.insert(port, value);
+                    if value.is_missing() {
+                        tracing::warn!(
+                            "missing input value for gamma true branch input {:?}: {:?}",
+                            input,
+                            input_param,
+                        );
+                    }
+
+                    truthy_builder
+                        .values
+                        .insert(input_param.value(), value)
+                        .debug_unwrap_none();
                 }
 
-                let truthy = truthy_builder.translate(gamma.true_branch());
+                let mut truthy = truthy_builder.translate(gamma.true_branch());
+                let mut true_outputs = BTreeMap::new();
 
                 for (&output, &[param, _]) in gamma.outputs().iter().zip(gamma.output_params()) {
+                    let output_param = gamma.true_branch().to_node::<OutputParam>(param);
+                    let param_source = gamma.true_branch().get_input(output_param.input()).1;
                     let value = truthy_builder
                         .values
-                        .get(&gamma.true_branch().inputs(param).next().unwrap().2)
+                        .get(&param_source)
                         .cloned()
                         .unwrap_or(Value::Missing);
 
-                    self.values.insert(output, value);
+                    if value.is_missing() {
+                        tracing::warn!(
+                            "missing output value for gamma true branch {:?}: {:?}",
+                            output,
+                            output_param,
+                        );
+                    }
+
+                    let output_id = VarId::new(output);
+                    truthy.push(Instruction::Assign(Assign::new(output_id, value.clone())));
+
+                    self.values
+                        .insert(output, output_id.into())
+                        .debug_unwrap_none();
+
+                    true_outputs.insert(output_id, value).debug_unwrap_none();
                 }
+                self.values.extend(truthy_builder.values);
 
                 let mut falsy_builder = Self {
                     values: BTreeMap::new(),
+                    effects: BTreeMap::new(),
                     instructions: Vec::new(),
                     evaluated: BTreeSet::new(),
                     evaluation_stack: Vec::new(),
@@ -361,31 +456,56 @@ impl IrBuilder {
                 };
 
                 for (input, &[_, param]) in gamma.inputs().iter().zip(gamma.input_params()) {
-                    let port = gamma.false_branch().outputs(param).next().unwrap().0;
+                    let input_param = gamma.false_branch().to_node::<InputParam>(param);
                     let value = input_values.get(input).cloned().unwrap_or(Value::Missing);
 
-                    falsy_builder.values.insert(port, value);
+                    if value.is_missing() {
+                        tracing::warn!(
+                            "missing input value for gamma false branch input {:?}: {:?}",
+                            input,
+                            input_param,
+                        );
+                    }
+
+                    falsy_builder
+                        .values
+                        .insert(input_param.value(), value)
+                        .debug_unwrap_none();
                 }
 
-                let falsy = falsy_builder.translate(gamma.false_branch());
+                let mut falsy = falsy_builder.translate(gamma.false_branch());
+                let mut false_outputs = BTreeMap::new();
 
                 for (&output, &[_, param]) in gamma.outputs().iter().zip(gamma.output_params()) {
-                    let value = gamma
-                        .false_branch()
-                        .try_inputs(param)
-                        .find_map(|(_, data)| {
-                            data.and_then(|(_, output, _)| falsy_builder.values.get(&output))
-                        })
+                    let output_param = gamma.false_branch().to_node::<OutputParam>(param);
+                    let param_source = gamma.false_branch().get_input(output_param.input()).1;
+                    let value = falsy_builder
+                        .values
+                        .get(&param_source)
                         .cloned()
                         .unwrap_or(Value::Missing);
 
-                    self.values.insert(output, value);
+                    if value.is_missing() {
+                        tracing::warn!(
+                            "missing output value for gamma false branch {:?}: {:?}",
+                            output,
+                            gamma.false_branch().get_node(param),
+                        );
+                    }
+
+                    let output_id = VarId::new(output);
+                    falsy.push(Instruction::Assign(Assign::new(output_id, value.clone())));
+
+                    // TODO: Still double-insert on this, need a merge node
+                    self.values.insert(output, output_id.into());
+
+                    false_outputs.insert(output_id, value).debug_unwrap_none();
                 }
+                self.values.extend(falsy_builder.values);
 
                 let prev_effect = graph
                     .try_input(gamma.effect_in())
-                    .and_then(|(_, output, _)| self.values.get(&output))
-                    .and_then(Value::as_var);
+                    .map(|(_, output, _)| EffectId::new(output));
 
                 if prev_effect.is_none() {
                     tracing::warn!(
@@ -398,17 +518,22 @@ impl IrBuilder {
                 self.inst(Gamma::new(
                     cond,
                     truthy.into_inner(),
+                    true_outputs,
                     falsy.into_inner(),
-                    var,
+                    false_outputs,
+                    EffectId::new(gamma.effect_out()),
                     prev_effect,
                 ));
 
-                self.values.insert(gamma.effect_out(), var.into());
+                self.effects
+                    .insert(gamma.effect_out(), gamma.node())
+                    .debug_unwrap_none();
             }
 
             Node::Start(start) => {
-                let var = VarId::new(start.node().0);
-                self.values.insert(start.effect(), var.into());
+                self.effects
+                    .insert(start.effect(), start.node())
+                    .debug_unwrap_none();
             }
 
             Node::InputPort(_) | Node::OutputPort(_) | Node::End(_) => {}
@@ -416,9 +541,11 @@ impl IrBuilder {
 
         self.evaluated.insert(node.node_id());
 
-        let mut outputs: Vec<_> = graph
-            .outputs(node.node_id())
-            .flat_map(|(_, data)| data.map(|(node, _, _)| node.node_id()))
+        let mut outputs: Vec<_> = node
+            .outputs()
+            .into_iter()
+            .flat_map(|output| graph.get_outputs(output))
+            .map(|(node, ..)| node.node_id())
             .collect();
         outputs.sort_unstable();
         self.evaluation_stack.extend(outputs);

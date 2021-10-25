@@ -269,7 +269,12 @@ impl Pass for Mem2Reg {
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
-        // We don't propagate port places into subgraphs
+        // Don't propagate port places into subgraphs
+        // FIXME: This is only a implementation limit right now,
+        //        gamma nodes aren't iterative so they can have full
+        //        access to the prior scope via input ports. We should
+        //        add inputs as needed to bring branch-invariant code
+        //        into said branches
         let tape: Vec<_> = self
             .tape
             .iter()

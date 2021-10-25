@@ -5,9 +5,13 @@ pub use builder::IrBuilder;
 use pretty::{Arena, DocAllocator, DocBuilder};
 use std::{
     borrow::Cow,
+    collections::BTreeMap,
     fmt::{self, Debug, Display, Write},
+    ops::{self, Deref, DerefMut},
     time::Instant,
 };
+
+use crate::graph::{OutputPort, Port};
 
 pub trait Pretty {
     fn pretty_print(&self) -> String {
@@ -45,6 +49,20 @@ impl Block {
 
     pub fn into_inner(self) -> Vec<Instruction> {
         self.instructions
+    }
+}
+
+impl Deref for Block {
+    type Target = Vec<Instruction>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.instructions
+    }
+}
+
+impl DerefMut for Block {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.instructions
     }
 }
 
@@ -122,23 +140,31 @@ impl From<Call> for Instruction {
 
 #[derive(Debug, Clone)]
 pub struct Theta {
-    body: Vec<Instruction>,
-    cond: Option<Value>,
-    effect: VarId,
-    prev_effect: Option<VarId>,
+    pub body: Vec<Instruction>,
+    pub cond: Option<Value>,
+    pub effect: EffectId,
+    pub prev_effect: Option<EffectId>,
+    pub outputs: BTreeMap<VarId, Value>,
 }
 
 impl Theta {
-    pub fn new<C, E>(body: Vec<Instruction>, cond: C, effect: VarId, prev_effect: E) -> Self
+    pub fn new<C, E>(
+        body: Vec<Instruction>,
+        cond: C,
+        effect: EffectId,
+        prev_effect: E,
+        outputs: BTreeMap<VarId, Value>,
+    ) -> Self
     where
         C: Into<Option<Value>>,
-        E: Into<Option<VarId>>,
+        E: Into<Option<EffectId>>,
     {
         Self {
             body,
             cond: cond.into(),
             effect,
             prev_effect: prev_effect.into(),
+            outputs,
         }
     }
 }
@@ -163,20 +189,40 @@ impl Pretty for Theta {
             .append(if self.body.is_empty() {
                 allocator.nil()
             } else {
-                allocator.hardline()
-            })
-            .append(
                 allocator
-                    .intersperse(
-                        self.body.iter().map(|inst| inst.pretty(allocator)),
-                        allocator.hardline(),
+                    .hardline()
+                    .append(
+                        allocator
+                            .intersperse(
+                                self.body.iter().map(|inst| inst.pretty(allocator)),
+                                allocator.hardline(),
+                            )
+                            .indent(2),
                     )
-                    .indent(2),
-            )
-            .append(if self.body.is_empty() {
+                    .append(allocator.hardline())
+            })
+            .append(if self.outputs.is_empty() {
                 allocator.nil()
             } else {
-                allocator.hardline()
+                if self.body.is_empty() {
+                    allocator.hardline()
+                } else {
+                    allocator.nil()
+                }
+                .append(
+                    allocator
+                        .text("// outputs: ")
+                        .append(allocator.intersperse(
+                            self.outputs.iter().map(|(var, value)| {
+                                var.pretty(allocator)
+                                    .append(allocator.text(" = "))
+                                    .append(value.pretty(allocator))
+                            }),
+                            allocator.text(", "),
+                        ))
+                        .indent(2),
+                )
+                .append(allocator.hardline())
             })
             .append(allocator.text("}"))
             .append(allocator.space())
@@ -196,29 +242,35 @@ impl Pretty for Theta {
 
 #[derive(Debug, Clone)]
 pub struct Gamma {
-    cond: Value,
-    truthy: Vec<Instruction>,
-    falsy: Vec<Instruction>,
-    effect: VarId,
-    prev_effect: Option<VarId>,
+    pub cond: Value,
+    pub truthy: Vec<Instruction>,
+    pub true_outputs: BTreeMap<VarId, Value>,
+    pub falsy: Vec<Instruction>,
+    pub false_outputs: BTreeMap<VarId, Value>,
+    pub effect: EffectId,
+    pub prev_effect: Option<EffectId>,
 }
 
 impl Gamma {
     pub fn new<C, E>(
         cond: C,
         truthy: Vec<Instruction>,
+        true_outputs: BTreeMap<VarId, Value>,
         falsy: Vec<Instruction>,
-        effect: VarId,
+        false_outputs: BTreeMap<VarId, Value>,
+        effect: EffectId,
         prev_effect: E,
     ) -> Self
     where
         C: Into<Value>,
-        E: Into<Option<VarId>>,
+        E: Into<Option<EffectId>>,
     {
         Self {
             cond: cond.into(),
             truthy,
+            true_outputs,
             falsy,
+            false_outputs,
             effect,
             prev_effect: prev_effect.into(),
         }
@@ -244,48 +296,104 @@ impl Pretty for Gamma {
             .append(self.cond.pretty(allocator))
             .append(allocator.space())
             .append(allocator.text("{"))
-            .append(allocator.hardline())
-            .append(
+            .append(if self.truthy.is_empty() {
+                allocator.nil()
+            } else {
                 allocator
-                    .intersperse(
-                        self.truthy.iter().map(|inst| inst.pretty(allocator)),
-                        allocator.hardline(),
+                    .hardline()
+                    .append(
+                        allocator
+                            .intersperse(
+                                self.truthy.iter().map(|inst| inst.pretty(allocator)),
+                                allocator.hardline(),
+                            )
+                            .indent(2),
                     )
-                    .indent(2),
-            )
-            .append(allocator.hardline())
+                    .append(allocator.hardline())
+            })
+            .append(if self.true_outputs.is_empty() {
+                allocator.nil()
+            } else {
+                if self.truthy.is_empty() {
+                    allocator.hardline()
+                } else {
+                    allocator.nil()
+                }
+                .append(
+                    allocator
+                        .text("// outputs: ")
+                        .append(allocator.intersperse(
+                            self.true_outputs.iter().map(|(var, value)| {
+                                var.pretty(allocator)
+                                    .append(allocator.text(" = "))
+                                    .append(value.pretty(allocator))
+                            }),
+                            allocator.text(", "),
+                        ))
+                        .indent(2),
+                )
+                .append(allocator.hardline())
+            })
             .append(allocator.text("}"))
             .append(allocator.space())
             .append(allocator.text("else"))
             .append(allocator.space())
             .append(allocator.text("{"))
-            .append(allocator.hardline())
-            .append(
+            .append(if self.falsy.is_empty() {
+                allocator.nil()
+            } else {
                 allocator
-                    .intersperse(
-                        self.falsy.iter().map(|inst| inst.pretty(allocator)),
-                        allocator.hardline(),
+                    .hardline()
+                    .append(
+                        allocator
+                            .intersperse(
+                                self.falsy.iter().map(|inst| inst.pretty(allocator)),
+                                allocator.hardline(),
+                            )
+                            .indent(2),
                     )
-                    .indent(2),
-            )
-            .append(allocator.hardline())
+                    .append(allocator.hardline())
+            })
+            .append(if self.false_outputs.is_empty() {
+                allocator.nil()
+            } else {
+                if self.falsy.is_empty() {
+                    allocator.hardline()
+                } else {
+                    allocator.nil()
+                }
+                .append(
+                    allocator
+                        .text("// outputs: ")
+                        .append(allocator.intersperse(
+                            self.false_outputs.iter().map(|(var, value)| {
+                                var.pretty(allocator)
+                                    .append(allocator.text(" = "))
+                                    .append(value.pretty(allocator))
+                            }),
+                            allocator.text(", "),
+                        ))
+                        .indent(2),
+                )
+                .append(allocator.hardline())
+            })
             .append(allocator.text("}"))
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Call {
-    function: Cow<'static, str>,
-    args: Vec<Value>,
-    effect: VarId,
-    prev_effect: Option<VarId>,
+    pub function: Cow<'static, str>,
+    pub args: Vec<Value>,
+    pub effect: EffectId,
+    pub prev_effect: Option<EffectId>,
 }
 
 impl Call {
-    pub fn new<F, E>(function: F, args: Vec<Value>, effect: VarId, prev_effect: E) -> Self
+    pub fn new<F, E>(function: F, args: Vec<Value>, effect: EffectId, prev_effect: E) -> Self
     where
         F: Into<Cow<'static, str>>,
-        E: Into<Option<VarId>>,
+        E: Into<Option<EffectId>>,
     {
         Self {
             function: function.into(),
@@ -327,8 +435,8 @@ impl Pretty for Call {
 
 #[derive(Debug, Clone)]
 pub struct Assign {
-    var: VarId,
-    value: Expr,
+    pub var: VarId,
+    pub value: Expr,
 }
 
 impl Assign {
@@ -365,9 +473,9 @@ pub enum Expr {
     Add(Add),
     Not(Not),
     Neg(Neg),
-    Const(Const),
     Load(Load),
     Call(Call),
+    Value(Value),
 }
 
 impl Pretty for Expr {
@@ -382,9 +490,9 @@ impl Pretty for Expr {
             Self::Add(add) => add.pretty(allocator),
             Self::Not(not) => not.pretty(allocator),
             Self::Neg(neg) => neg.pretty(allocator),
-            Self::Const(constant) => constant.pretty(allocator),
             Self::Load(load) => load.pretty(allocator),
             Self::Call(call) => call.pretty(allocator),
+            Self::Value(value) => value.pretty(allocator),
         }
     }
 }
@@ -425,16 +533,28 @@ impl From<Add> for Expr {
     }
 }
 
+impl From<Value> for Expr {
+    fn from(value: Value) -> Self {
+        Self::Value(value)
+    }
+}
+
 impl From<Const> for Expr {
     fn from(value: Const) -> Self {
-        Self::Const(value)
+        Self::Value(Value::Const(value))
+    }
+}
+
+impl From<VarId> for Expr {
+    fn from(var: VarId) -> Self {
+        Self::Value(Value::Var(var))
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Add {
-    lhs: Value,
-    rhs: Value,
+    pub lhs: Value,
+    pub rhs: Value,
 }
 
 impl Add {
@@ -469,7 +589,7 @@ impl Pretty for Add {
 
 #[derive(Debug, Clone)]
 pub struct Not {
-    value: Value,
+    pub value: Value,
 }
 
 impl Not {
@@ -499,7 +619,7 @@ impl Pretty for Not {
 
 #[derive(Debug, Clone)]
 pub struct Neg {
-    value: Value,
+    pub value: Value,
 }
 
 impl Neg {
@@ -529,8 +649,8 @@ impl Pretty for Neg {
 
 #[derive(Debug, Clone)]
 pub struct Eq {
-    lhs: Value,
-    rhs: Value,
+    pub lhs: Value,
+    pub rhs: Value,
 }
 
 impl Eq {
@@ -565,15 +685,15 @@ impl Pretty for Eq {
 
 #[derive(Debug, Clone)]
 pub struct Load {
-    ptr: Value,
-    effect: VarId,
-    prev_effect: Option<VarId>,
+    pub ptr: Value,
+    pub effect: EffectId,
+    pub prev_effect: Option<EffectId>,
 }
 
 impl Load {
-    pub fn new<E>(ptr: Value, effect: VarId, prev_effect: E) -> Self
+    pub fn new<E>(ptr: Value, effect: EffectId, prev_effect: E) -> Self
     where
-        E: Into<Option<VarId>>,
+        E: Into<Option<EffectId>>,
     {
         Self {
             ptr,
@@ -605,16 +725,16 @@ impl Pretty for Load {
 
 #[derive(Debug, Clone)]
 pub struct Store {
-    ptr: Value,
-    value: Value,
-    effect: VarId,
-    prev_effect: Option<VarId>,
+    pub ptr: Value,
+    pub value: Value,
+    pub effect: EffectId,
+    pub prev_effect: Option<EffectId>,
 }
 
 impl Store {
-    pub fn new<E>(ptr: Value, value: Value, effect: VarId, prev_effect: E) -> Self
+    pub fn new<E>(ptr: Value, value: Value, effect: EffectId, prev_effect: E) -> Self
     where
-        E: Into<Option<VarId>>,
+        E: Into<Option<EffectId>>,
     {
         Self {
             ptr,
@@ -702,23 +822,38 @@ impl From<Const> for Value {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Const {
     Int(i32),
+    Byte(u8),
     Bool(bool),
 }
 
 impl Const {
+    pub fn equal_values(&self, other: &Self) -> bool {
+        self.convert_to_i32().unwrap() == other.convert_to_i32().unwrap()
+    }
+
     pub fn convert_to_i32(&self) -> Option<i32> {
         match *self {
             Self::Int(int) => Some(int),
+            Self::Byte(byte) => Some(byte as i32),
             Self::Bool(bool) => Some(bool as i32),
         }
     }
 
-    // pub fn convert_to_u8(&self) -> Option<u8> {
-    //     match *self {
-    //         Self::Int(int) => Some(int.rem_euclid(u8::MAX as i32) as u8),
-    //         Self::Bool(bool) => Some(bool as u8),
-    //     }
-    // }
+    pub fn convert_to_u8(&self) -> Option<u8> {
+        match *self {
+            Self::Int(int) => Some(int.rem_euclid(u8::MAX as i32) as u8),
+            Self::Byte(byte) => Some(byte),
+            Self::Bool(bool) => Some(bool as u8),
+        }
+    }
+
+    pub fn convert_to_u16(&self) -> Option<u16> {
+        match *self {
+            Self::Int(int) => Some(int.rem_euclid(u16::MAX as i32) as u16),
+            Self::Byte(byte) => Some(byte as u16),
+            Self::Bool(bool) => Some(bool as u16),
+        }
+    }
 
     pub fn as_bool(&self) -> Option<bool> {
         if let Self::Bool(bool) = *self {
@@ -737,6 +872,68 @@ impl Const {
     }
 }
 
+impl ops::Not for Const {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        match self {
+            Self::Int(int) => Self::Int(!int),
+            Self::Byte(byte) => Self::Byte(!byte),
+            Self::Bool(bool) => Self::Bool(!bool),
+        }
+    }
+}
+
+impl ops::Not for &Const {
+    type Output = Const;
+
+    fn not(self) -> Self::Output {
+        !self.clone()
+    }
+}
+
+impl ops::Neg for Const {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        match self {
+            Self::Int(int) => Self::Int(-int),
+            Self::Byte(byte) => Self::Int(-(byte as i32)),
+            Self::Bool(_) => panic!("cannot negate bool"),
+        }
+    }
+}
+
+impl ops::Neg for &Const {
+    type Output = Const;
+
+    fn neg(self) -> Self::Output {
+        -self.clone()
+    }
+}
+
+impl ops::Add for Const {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs + rhs),
+            (Self::Int(lhs), Self::Byte(rhs)) => Self::Int(lhs + rhs as i32),
+            (Self::Byte(lhs), Self::Int(rhs)) => Self::Int(lhs as i32 + rhs),
+            (Self::Byte(lhs), Self::Byte(rhs)) => Self::Byte(lhs.wrapping_add(rhs)),
+            (Self::Bool(_), _) | (_, Self::Bool(_)) => panic!("can't add booleans"),
+        }
+    }
+}
+
+impl ops::Add for &Const {
+    type Output = Const;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        self.clone() + rhs.clone()
+    }
+}
+
 impl Pretty for Const {
     fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
@@ -746,6 +943,7 @@ impl Pretty for Const {
     {
         let text = match *self {
             Self::Int(int) => format!("int {}", int),
+            Self::Byte(byte) => format!("byte {}", byte),
             Self::Bool(boolean) => format!("bool {}", boolean),
         };
         allocator.text(text)
@@ -769,8 +967,8 @@ impl From<bool> for Const {
 pub struct VarId(u32);
 
 impl VarId {
-    pub const fn new(id: u32) -> Self {
-        Self(id)
+    pub fn new(port: OutputPort) -> Self {
+        Self(port.raw())
     }
 }
 
@@ -781,7 +979,7 @@ impl Pretty for VarId {
         D::Doc: Clone,
         A: Clone,
     {
-        allocator.text(format!("_{}", self))
+        allocator.text(format!("{}", self))
     }
 }
 
@@ -795,6 +993,43 @@ impl Debug for VarId {
 
 impl Display for VarId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Debug::fmt(&self.0, f)
+        f.write_char('v')?;
+        Display::fmt(&self.0, f)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct EffectId(u32);
+
+impl EffectId {
+    pub fn new(port: OutputPort) -> Self {
+        Self(port.raw())
+    }
+}
+
+impl Pretty for EffectId {
+    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+    {
+        allocator.text(format!("{}", self))
+    }
+}
+
+impl Debug for EffectId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("EffectId(")?;
+        Debug::fmt(&self.0, f)?;
+        f.write_char(')')
+    }
+}
+
+impl Display for EffectId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_char('e')?;
+        Display::fmt(&self.0, f)
     }
 }

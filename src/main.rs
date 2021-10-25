@@ -3,7 +3,9 @@
 mod args;
 mod codegen;
 mod graph;
+mod interpreter;
 mod ir;
+mod lattice;
 mod lower_tokens;
 mod parse;
 mod passes;
@@ -13,6 +15,7 @@ mod utils;
 use crate::{
     args::Args,
     graph::{EdgeKind, Node, Rvsdg},
+    interpreter::Machine,
     ir::{IrBuilder, Pretty},
     parse::Token,
     passes::{
@@ -89,8 +92,31 @@ fn main() {
     validate(&graph);
 
     let input_stats = graph.stats();
-    let input_program = IrBuilder::new().translate(&graph).pretty_print();
+    let program = IrBuilder::new().translate(&graph);
+    let input_program = program.pretty_print();
     fs::write(dump_dir.join("input.cir"), &input_program).unwrap();
+
+    // {
+    //     let mut input = vec![b'1', b'0'];
+    //     let input = move || {
+    //         let byte = if input.is_empty() { 0 } else { input.remove(0) };
+    //         tracing::info!("got input {}", byte);
+    //         byte
+    //     };
+    //
+    //     let mut output_vec = Vec::new();
+    //     let output = |byte| {
+    //         tracing::info!("got output {}", byte);
+    //         (&mut output_vec).push(byte)
+    //     };
+    //
+    //     {
+    //         let mut machine = Machine::new(args.cells as usize, input, output);
+    //         machine.execute(&program);
+    //     }
+    //
+    //     println!("Input program's output: {:?}", output_vec);
+    // }
 
     let mut evolution = BufWriter::new(File::create(dump_dir.join("evolution.diff")).unwrap());
     write!(&mut evolution, ">>>>> input\n{}", input_program).unwrap();
@@ -199,7 +225,23 @@ fn main() {
     }
 
     let elapsed = start_time.elapsed();
-    let output_program = IrBuilder::new().translate(&graph).pretty_print();
+    let program = IrBuilder::new().translate(&graph);
+    let output_program = program.pretty_print();
+
+    // {
+    //     let mut input = vec![b'1', b'0'];
+    //     let input = move || if input.is_empty() { 0 } else { input.remove(0) };
+    //
+    //     let mut output_vec = Vec::new();
+    //     let output = |byte| (&mut output_vec).push(byte);
+    //
+    //     {
+    //         let mut machine = Machine::new(args.cells as usize, input, output);
+    //         machine.execute(&program);
+    //     }
+    //
+    //     println!("Optimized program's output: {:?}", output_vec);
+    // }
 
     print!("{}", output_program);
 

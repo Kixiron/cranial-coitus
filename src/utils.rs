@@ -1,4 +1,6 @@
-pub(crate) trait AssertNone {
+use std::fmt::Debug;
+
+pub(crate) trait AssertNone: Debug {
     fn unwrap_none(&self);
 
     #[track_caller]
@@ -18,21 +20,21 @@ pub(crate) trait AssertNone {
     }
 }
 
-impl<T> AssertNone for Option<T> {
+impl<T> AssertNone for Option<T>
+where
+    T: Debug,
+{
     #[track_caller]
     fn unwrap_none(&self) {
         if self.is_some() {
-            panic!("unwrapped a `Some` value where a `None` was expected");
+            panic!("unwrapped {:?} when `None` was expected", self);
         }
     }
 
     #[track_caller]
     fn expect_none(&self, message: &str) {
         if self.is_some() {
-            panic!(
-                "unwrapped a `Some` value where a `None` was expected: {}",
-                message,
-            );
+            panic!("unwrapped {:?} when `None` was expected: {}", self, message);
         }
     }
 }

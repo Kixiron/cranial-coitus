@@ -115,10 +115,7 @@ pub fn lower_tokens(
                             },
                         );
 
-                        ptr = theta
-                            .output_ports()
-                            .next()
-                            .expect("should be one theta output");
+                        ptr = theta.outputs()[0];
                         effect = theta
                             .output_effect()
                             .expect("all thetas are effectful right now");
@@ -128,7 +125,9 @@ pub fn lower_tokens(
                 );
 
                 ptr = gamma.outputs()[0];
-                effect = gamma.effect_out();
+                effect = gamma
+                    .output_effect()
+                    .expect("all gammas are effectful right now");
             }
         }
     }

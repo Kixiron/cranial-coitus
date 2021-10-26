@@ -16,13 +16,13 @@ pub enum Node {
     End(End),
     Input(Input),
     Output(Output),
-    Theta(Theta),
+    Theta(Box<Theta>),
     InputPort(InputParam),
     OutputPort(OutputParam),
     Eq(Eq),
     Not(Not),
     Neg(Neg),
-    Gamma(Gamma),
+    Gamma(Box<Gamma>),
 }
 
 impl Node {
@@ -41,8 +41,8 @@ impl Node {
             | Self::OutputPort(OutputParam { node, .. })
             | Self::Eq(Eq { node, .. })
             | Self::Not(Not { node, .. })
-            | Self::Neg(Neg { node, .. })
-            | Self::Gamma(Gamma { node, .. }) => *node,
+            | Self::Neg(Neg { node, .. }) => *node,
+            Self::Gamma(gamma) => gamma.node(),
             Self::Theta(theta) => theta.node(),
         }
     }
@@ -520,13 +520,13 @@ impl From<OutputParam> for Node {
 
 impl From<Gamma> for Node {
     fn from(node: Gamma) -> Self {
-        Self::Gamma(node)
+        Self::Gamma(Box::new(node))
     }
 }
 
 impl From<Theta> for Node {
     fn from(node: Theta) -> Self {
-        Self::Theta(node)
+        Self::Theta(Box::new(node))
     }
 }
 
@@ -583,7 +583,7 @@ impl TryInto<Gamma> for Node {
 
     fn try_into(self) -> Result<Gamma, Self::Error> {
         if let Self::Gamma(node) = self {
-            Ok(node)
+            Ok(*node)
         } else {
             Err(self)
         }
@@ -607,7 +607,7 @@ impl TryInto<Theta> for Node {
 
     fn try_into(self) -> Result<Theta, Self::Error> {
         if let Self::Theta(node) = self {
-            Ok(node)
+            Ok(*node)
         } else {
             Err(self)
         }

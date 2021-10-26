@@ -371,7 +371,7 @@ pub struct ThetaEffects {
     /// The input effect's port on the theta node
     input: InputPort,
     /// The output effect's port on the theta node
-    output: OutputPort,
+    pub(super) output: OutputPort,
 }
 
 impl ThetaEffects {
@@ -397,5 +397,32 @@ impl ThetaData {
             condition,
             effect,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThetaStub {
+    output_effect: Option<OutputPort>,
+    outputs: TinyVec<[OutputPort; 5]>,
+}
+
+impl ThetaStub {
+    pub(super) const fn new(
+        output_effect: Option<OutputPort>,
+        outputs: TinyVec<[OutputPort; 5]>,
+    ) -> Self {
+        Self {
+            output_effect,
+            outputs,
+        }
+    }
+
+    /// Get the output effect's port from the theta node if available
+    pub fn output_effect(&self) -> Option<OutputPort> {
+        self.output_effect
+    }
+
+    pub fn outputs(&self) -> &[OutputPort] {
+        &self.outputs
     }
 }

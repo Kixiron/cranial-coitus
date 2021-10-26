@@ -1,16 +1,18 @@
+use tinyvec::TinyVec;
+
 use crate::graph::{InputPort, NodeId, OutputPort, Rvsdg};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gamma {
     pub(super) node: NodeId,
-    pub(super) inputs: Vec<InputPort>,
+    pub(super) inputs: TinyVec<[InputPort; 5]>,
     // TODO: Make optional
     pub(super) effect_in: InputPort,
-    input_params: Vec<[NodeId; 2]>,
+    input_params: TinyVec<[[NodeId; 2]; 5]>,
     input_effect: OutputPort,
-    pub(super) outputs: Vec<OutputPort>,
+    pub(super) outputs: TinyVec<[OutputPort; 5]>,
     pub(super) effect_out: OutputPort,
-    output_params: Vec<[NodeId; 2]>,
+    output_params: TinyVec<[[NodeId; 2]; 5]>,
     // TODO: Make optional, linked with `effect_in`
     output_effects: [OutputPort; 2],
     start_nodes: [NodeId; 2],
@@ -23,13 +25,13 @@ impl Gamma {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         node: NodeId,
-        inputs: Vec<InputPort>,
+        inputs: TinyVec<[InputPort; 5]>,
         effect_in: InputPort,
-        input_params: Vec<[NodeId; 2]>,
+        input_params: TinyVec<[[NodeId; 2]; 5]>,
         input_effect: OutputPort,
-        outputs: Vec<OutputPort>,
+        outputs: TinyVec<[OutputPort; 5]>,
         effect_out: OutputPort,
-        output_params: Vec<[NodeId; 2]>,
+        output_params: TinyVec<[[NodeId; 2]; 5]>,
         output_effects: [OutputPort; 2],
         start_nodes: [NodeId; 2],
         end_nodes: [NodeId; 2],
@@ -69,7 +71,7 @@ impl Gamma {
         &self.inputs
     }
 
-    pub(super) fn inputs_mut(&mut self) -> &mut Vec<InputPort> {
+    pub(super) fn inputs_mut(&mut self) -> &mut TinyVec<[InputPort; 5]> {
         &mut self.inputs
     }
 
@@ -94,7 +96,7 @@ impl Gamma {
     }
 
     #[allow(dead_code)]
-    pub fn outputs_mut(&mut self) -> &mut Vec<OutputPort> {
+    pub fn outputs_mut(&mut self) -> &mut TinyVec<[OutputPort; 5]> {
         &mut self.outputs
     }
 
@@ -134,5 +136,32 @@ impl GammaData {
             outputs: outputs.into_iter().collect(),
             effect,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GammaStub {
+    output_effect: Option<OutputPort>,
+    outputs: TinyVec<[OutputPort; 5]>,
+}
+
+impl GammaStub {
+    pub(super) const fn new(
+        output_effect: Option<OutputPort>,
+        outputs: TinyVec<[OutputPort; 5]>,
+    ) -> Self {
+        Self {
+            output_effect,
+            outputs,
+        }
+    }
+
+    /// Get the output effect's port from the gamma node if available
+    pub fn output_effect(&self) -> Option<OutputPort> {
+        self.output_effect
+    }
+
+    pub fn outputs(&self) -> &[OutputPort] {
+        &self.outputs
     }
 }

@@ -176,6 +176,7 @@ pub trait Pass {
     fn post_visit_graph(&mut self, _graph: &mut Rvsdg, _visited: &BTreeSet<NodeId>) {}
 
     fn visit(&mut self, graph: &mut Rvsdg, node_id: NodeId) {
+        // FIXME: These clones are really not good
         if let Some(node) = graph.try_node(node_id).cloned() {
             match node {
                 Node::Int(int, value) => self.visit_int(graph, int, value),
@@ -187,11 +188,11 @@ pub trait Pass {
                 Node::End(end) => self.visit_end(graph, end),
                 Node::Input(input) => self.visit_input(graph, input),
                 Node::Output(output) => self.visit_output(graph, output),
-                Node::Theta(theta) => self.visit_theta(graph, theta),
+                Node::Theta(theta) => self.visit_theta(graph, *theta),
                 Node::Eq(eq) => self.visit_eq(graph, eq),
                 Node::Not(not) => self.visit_not(graph, not),
                 Node::Neg(neg) => self.visit_neg(graph, neg),
-                Node::Gamma(gamma) => self.visit_gamma(graph, gamma),
+                Node::Gamma(gamma) => self.visit_gamma(graph, *gamma),
                 Node::InputPort(input_param) => self.visit_input_param(graph, input_param),
                 Node::OutputPort(output_param) => self.visit_output_param(graph, output_param),
             }

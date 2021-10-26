@@ -13,7 +13,13 @@ pub use ports::{InputPort, OutputPort, Port, PortId};
 pub use subgraph::Subgraph;
 pub use theta::{Theta, ThetaData};
 
-use crate::{graph::theta::ThetaEffects, utils::AssertNone};
+use crate::{
+    graph::{
+        gamma::GammaStub,
+        theta::{ThetaEffects, ThetaStub},
+    },
+    utils::AssertNone,
+};
 use std::{
     cell::Cell,
     collections::{btree_map::Entry, BTreeMap, BTreeSet, HashSet},
@@ -1125,11 +1131,11 @@ impl Rvsdg {
         debug_assert_eq!(self.port_parent(input), self.port_parent(output));
 
         // TODO: Remove allocation
-        let sources: Vec<_> = self
+        let sources: TinyVec<[_; 5]> = self
             .inputs_inner(input)
             .map(|(.., source, kind)| (source, kind))
             .collect();
-        let consumers: Vec<_> = self
+        let consumers: TinyVec<[_; 5]> = self
             .outputs_inner(output)
             .map(|(_, target, ..)| target)
             .collect();
@@ -1412,7 +1418,7 @@ impl Rvsdg {
         variant_inputs: I2,
         effect: E,
         build_theta: F,
-    ) -> Theta
+    ) -> ThetaStub
     where
         I1: IntoIterator<Item = OutputPort>,
         I2: IntoIterator<Item = OutputPort>,
@@ -1434,7 +1440,7 @@ impl Rvsdg {
         });
 
         // Create input ports for the given invariant inputs
-        let invariant_input_ports: Vec<_> = invariant_inputs
+        let invariant_input_ports: TinyVec<[_; 5]> = invariant_inputs
             .into_iter()
             .map(|input| {
                 self.assert_value_port(input);
@@ -1447,7 +1453,7 @@ impl Rvsdg {
             .collect();
 
         // Create input ports for the given variant inputs
-        let variant_input_ports: Vec<_> = variant_inputs
+        let variant_input_ports: TinyVec<[_; 5]> = variant_inputs
             .into_iter()
             .map(|input| {
                 self.assert_value_port(input);
@@ -1467,7 +1473,7 @@ impl Rvsdg {
         let start = subgraph.start();
 
         // Create the input params for the invariant inputs
-        let (invariant_inputs, invariant_param_outputs): (BTreeMap<_, _>, Vec<_>) =
+        let (invariant_inputs, invariant_param_outputs): (BTreeMap<_, _>, TinyVec<[_; 5]>) =
             invariant_input_ports
                 .iter()
                 .map(|&input| {
@@ -1477,13 +1483,14 @@ impl Rvsdg {
                 .unzip();
 
         // Create the input params for the variant inputs
-        let (variant_inputs, variant_param_outputs): (BTreeMap<_, _>, Vec<_>) = variant_input_ports
-            .iter()
-            .map(|&input| {
-                let param = subgraph.input_param(EdgeKind::Value);
-                ((input, param.node()), param.output())
-            })
-            .unzip();
+        let (variant_inputs, variant_param_outputs): (BTreeMap<_, _>, TinyVec<[_; 5]>) =
+            variant_input_ports
+                .iter()
+                .map(|&input| {
+                    let param = subgraph.input_param(EdgeKind::Value);
+                    ((input, param.node()), param.output())
+                })
+                .unzip();
 
         // Build the theta node's body
         let ThetaData {
@@ -1549,6 +1556,7 @@ impl Rvsdg {
                 )
             })
             .unzip();
+        let output_ports: TinyVec<[OutputPort; 5]> = outputs.keys().copied().collect();
 
         // If we were given an input effect then we need to make an output effect as well
         let effects = effect_input.map(|effect_input| {
@@ -1567,12 +1575,13 @@ impl Rvsdg {
             condition_param.node(),
             Box::new(Subgraph::new(subgraph, start.node(), end.node())),
         );
+
+        let stub = ThetaStub::new(effects.map(|effects| effects.output), output_ports);
         self.nodes
-            .insert(theta_id, Node::Theta(theta.clone()))
+            .insert(theta_id, Node::Theta(Box::new(theta)))
             .debug_unwrap_none();
 
-        // FIXME: Don't clone, return a stub with some ports in it
-        theta
+        stub
     }
 
     #[track_caller]
@@ -1583,7 +1592,7 @@ impl Rvsdg {
         condition: OutputPort,
         truthy: T,
         falsy: F,
-    ) -> Gamma
+    ) -> GammaStub
     where
         I: IntoIterator<Item = OutputPort>,
         T: FnOnce(&mut Rvsdg, OutputPort, &[OutputPort]) -> GammaData,
@@ -1601,7 +1610,7 @@ impl Rvsdg {
         self.add_value_edge(condition, cond_port);
 
         // Wire up the external inputs to the gamma node
-        let outer_inputs: Vec<_> = inputs
+        let outer_inputs: TinyVec<[_; 5]> = inputs
             .into_iter()
             .map(|input| {
                 self.assert_value_port(input);
@@ -1617,13 +1626,13 @@ impl Rvsdg {
             Rvsdg::from_counters(self.node_counter.clone(), self.port_counter.clone());
 
         // Create the input ports within the subgraph
-        let (truthy_input_params, truthy_inner_input_ports): (Vec<_>, Vec<_>) = (0..outer_inputs
-            .len())
-            .map(|_| {
-                let param = truthy_subgraph.input_param(EdgeKind::Value);
-                (param.node, param.output())
-            })
-            .unzip();
+        let (truthy_input_params, truthy_inner_input_ports): (TinyVec<[_; 5]>, TinyVec<[_; 5]>) =
+            (0..outer_inputs.len())
+                .map(|_| {
+                    let param = truthy_subgraph.input_param(EdgeKind::Value);
+                    (param.node, param.output())
+                })
+                .unzip();
 
         // Create the branch's start node
         let truthy_start = truthy_subgraph.start();
@@ -1639,7 +1648,7 @@ impl Rvsdg {
         truthy_subgraph.assert_effect_port(truthy_output_effect);
         let truthy_end = truthy_subgraph.end(truthy_output_effect);
 
-        let truthy_output_params: Vec<_> = truthy_outputs
+        let truthy_output_params: TinyVec<[_; 5]> = truthy_outputs
             .iter()
             .map(|&output| {
                 truthy_subgraph.assert_value_port(output);
@@ -1652,8 +1661,8 @@ impl Rvsdg {
             Rvsdg::from_counters(self.node_counter.clone(), self.port_counter.clone());
 
         // Create the input ports within the subgraph
-        let (falsy_input_params, falsy_inner_input_ports): (Vec<_>, Vec<_>) = (0..outer_inputs
-            .len())
+        let (falsy_input_params, falsy_inner_input_ports): (TinyVec<[_; 5]>, TinyVec<[_; 5]>) = (0
+            ..outer_inputs.len())
             .map(|_| {
                 let param = falsy_subgraph.input_param(EdgeKind::Value);
                 (param.node, param.output())
@@ -1674,7 +1683,7 @@ impl Rvsdg {
         falsy_subgraph.assert_effect_port(falsy_output_effect);
         let falsy_end = falsy_subgraph.end(falsy_output_effect);
 
-        let falsy_output_params: Vec<_> = falsy_outputs
+        let falsy_output_params: TinyVec<[_; 5]> = falsy_outputs
             .iter()
             .map(|&output| {
                 falsy_subgraph.assert_value_port(output);
@@ -1694,17 +1703,18 @@ impl Rvsdg {
 
         debug_assert_eq!(truthy_output_params.len(), falsy_output_params.len());
         // FIXME: Remove the temporary allocations
-        let output_params: Vec<_> = truthy_output_params
+        let output_params: TinyVec<[_; 5]> = truthy_output_params
             .into_iter()
             .zip(falsy_output_params)
             .map(|(truthy, falsy)| [truthy, falsy])
             .collect();
 
         let effect_out = self.output_port(gamma_id, EdgeKind::Effect);
-        let outer_outputs: Vec<_> = (0..output_params.len())
+        let outer_outputs: TinyVec<[_; 5]> = (0..output_params.len())
             .map(|_| self.output_port(gamma_id, EdgeKind::Value))
             .collect();
 
+        let stub = GammaStub::new(Some(effect_out), outer_outputs.iter().copied().collect());
         let gamma = Gamma::new(
             gamma_id,                                    // node
             outer_inputs,                                // inputs
@@ -1720,12 +1730,12 @@ impl Rvsdg {
             Box::new([truthy_subgraph, falsy_subgraph]), // body
             cond_port,                                   // condition
         );
+
         self.nodes
-            .insert(gamma_id, Node::Gamma(gamma.clone()))
+            .insert(gamma_id, Node::Gamma(Box::new(gamma)))
             .debug_unwrap_none();
 
-        // FIXME: Don't clone, return a stub with some ports in it
-        gamma
+        stub
     }
 
     #[track_caller]

@@ -1,6 +1,6 @@
 use crate::{
     graph::{
-        Add, Bool, EdgeKind, Eq, Gamma, InputPort, Int, NodeExt, Not, OutputPort, Rvsdg, Theta,
+        Add, Bool, EdgeKind, Eq, Gamma, InputPort, Int, Neg, NodeExt, Not, OutputPort, Rvsdg, Theta,
     },
     ir::Const,
     passes::Pass,
@@ -36,7 +36,7 @@ impl ConstFolding {
     }
 }
 
-// TODO: neg
+// TODO: Double bitwise and logical negation
 impl Pass for ConstFolding {
     fn pass_name(&self) -> &str {
         "constant-folding"
@@ -52,8 +52,6 @@ impl Pass for ConstFolding {
     }
 
     fn visit_add(&mut self, graph: &mut Rvsdg, add: Add) {
-        // debug_assert_eq!(graph.incoming_count(add.node()), 2);
-
         let inputs @ [(_, lhs), (_, rhs)] = [
             self.operand(graph, add.lhs()),
             self.operand(graph, add.rhs()),
@@ -89,8 +87,6 @@ impl Pass for ConstFolding {
     }
 
     fn visit_eq(&mut self, graph: &mut Rvsdg, eq: Eq) {
-        // debug_assert_eq!(graph.incoming_count(eq.node()), 2);
-
         let [(lhs_node, lhs), (rhs_node, rhs)] =
             [self.operand(graph, eq.lhs()), self.operand(graph, eq.rhs())];
 
@@ -130,8 +126,6 @@ impl Pass for ConstFolding {
     }
 
     fn visit_not(&mut self, graph: &mut Rvsdg, not: Not) {
-        // debug_assert_eq!(graph.incoming_count(not.node()), 1);
-
         let (_, output, edge) = graph.get_input(not.input());
         debug_assert_eq!(edge, EdgeKind::Value);
 
@@ -141,6 +135,26 @@ impl Pass for ConstFolding {
             let inverted = graph.bool(!value);
             graph.rewire_dependents(not.value(), inverted.value());
             graph.remove_node(not.node());
+
+            self.changed();
+        }
+    }
+
+    fn visit_neg(&mut self, graph: &mut Rvsdg, neg: Neg) {
+        let (_, output, edge) = graph.get_input(neg.input());
+        debug_assert_eq!(edge, EdgeKind::Value);
+
+        if let Some(value) = self.values.get(&output) {
+            tracing::debug!("constant folding 'neg {}' to '{}'", value, !value);
+
+            let inverted = match !value {
+                Const::Int(int) => graph.int(int).value(),
+                // FIXME: Do we need a byte node?
+                Const::Byte(byte) => graph.int(byte as i32).value(),
+                Const::Bool(bool) => graph.bool(bool).value(),
+            };
+            graph.rewire_dependents(neg.value(), inverted);
+            graph.remove_node(neg.node());
 
             self.changed();
         }
@@ -264,4 +278,49 @@ impl Default for ConstFolding {
     fn default() -> Self {
         Self::new()
     }
+}
+
+test_opts! {
+    constant_add,
+    passes = [ConstFolding::new()],
+    output = [30],
+    |graph, effect| {
+        let lhs = graph.int(10);
+        let rhs = graph.int(20);
+        let sum = graph.add(lhs.value(), rhs.value());
+
+        graph.output(sum.value(), effect).effect()
+    },
+}
+
+test_opts! {
+    constant_sub,
+    passes = [ConstFolding::new()],
+    output = [245],
+    |graph, effect| {
+        let lhs = graph.int(10);
+        let rhs = graph.int(-20);
+        let sum = graph.add(lhs.value(), rhs.value());
+
+        graph.output(sum.value(), effect).effect()
+    },
+}
+
+test_opts! {
+    chained_booleans,
+    passes = [ConstFolding::new()],
+    output = [1],
+    |graph, effect| {
+        let t = graph.bool(true);
+        let f = graph.bool(false);
+
+        let not1 = graph.not(t.value());
+        let not2 = graph.not(not1.value());
+        let eq1 = graph.eq(not2.value(), f.value());
+        let eq2 = graph.eq(eq1.value(), not1.value());
+        let eq3 = graph.eq(f.value(), eq2.value());
+        let not3 = graph.not(eq3.value());
+
+        graph.output(not3.value(), effect).effect()
+    },
 }

@@ -1,5 +1,7 @@
 #![feature(vec_into_raw_parts, hash_drain_filter)]
 
+#[macro_use]
+mod utils;
 mod args;
 mod codegen;
 mod graph;
@@ -10,7 +12,6 @@ mod lower_tokens;
 mod parse;
 mod passes;
 mod patterns;
-mod utils;
 
 use crate::{
     args::Args,
@@ -479,11 +480,11 @@ fn set_logger() {
         .unwrap();
 
     let registry = tracing_subscriber::registry().with(filter_layer);
-    if cfg!(test) {
+    let _ = if cfg!(test) {
         // Use a logger that'll be captured by libtest if we're running
         // under a test harness
-        registry.with(fmt_layer.with_test_writer()).init()
+        registry.with(fmt_layer.with_test_writer()).try_init()
     } else {
-        registry.with(fmt_layer).init()
-    }
+        registry.with(fmt_layer).try_init()
+    };
 }

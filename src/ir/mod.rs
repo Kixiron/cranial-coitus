@@ -966,6 +966,16 @@ impl From<bool> for Const {
     }
 }
 
+impl Display for Const {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Int(int) => write!(f, "int {}", int),
+            Self::Byte(byte) => write!(f, "byte {}", byte),
+            Self::Bool(boolean) => write!(f, "bool {}", boolean),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
 pub struct VarId(u32);

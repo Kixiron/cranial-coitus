@@ -34,6 +34,7 @@ type Counter<T> = Rc<Cell<T>>;
 // TODO: TinySet?
 type EdgeData<T> = TinyVec<[(T, EdgeKind); 2]>;
 
+// TODO: Structural equivalence method
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rvsdg {
     nodes: BTreeMap<NodeId, Node>,

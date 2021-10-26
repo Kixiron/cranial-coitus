@@ -60,6 +60,7 @@ use std::collections::{BTreeSet, VecDeque};
 //   theoretically allow us to slowly unroll and fully (or at very least partially)
 //   evaluate loops in more generalized situations
 // - Removing equivalent nodes (CSE)
+// - Build dataflow lattices of variant theta values
 pub trait Pass {
     /// The name of the current pass
     fn pass_name(&self) -> &str;

@@ -98,19 +98,30 @@ pub fn lower_tokens(
                         let mut ptr = inputs[0];
 
                         // Create the inner theta node
-                        let theta = graph.theta([ptr], effect, |graph, effect, inputs| {
-                            let [ptr]: [OutputPort; 1] = inputs.try_into().unwrap();
-                            let (effect, ptr) = lower_tokens(graph, ptr, effect, body);
+                        // FIXME: Pass in invariant constants
+                        let theta = graph.theta(
+                            [],
+                            [ptr],
+                            effect,
+                            |graph, effect, _invariant_inputs, variant_inputs| {
+                                let [ptr]: [OutputPort; 1] = variant_inputs.try_into().unwrap();
+                                let (effect, ptr) = lower_tokens(graph, ptr, effect, body);
 
-                            let zero = graph.int(0);
-                            let load = graph.load(ptr, effect);
-                            let condition = graph.neq(load.value(), zero.value());
+                                let zero = graph.int(0);
+                                let load = graph.load(ptr, effect);
+                                let condition = graph.neq(load.value(), zero.value());
 
-                            ThetaData::new([ptr], condition.value(), load.effect())
-                        });
+                                ThetaData::new([ptr], condition.value(), load.effect())
+                            },
+                        );
 
-                        ptr = theta.outputs()[0];
-                        effect = theta.effect_out();
+                        ptr = theta
+                            .output_ports()
+                            .next()
+                            .expect("should be one theta output");
+                        effect = theta
+                            .output_effect()
+                            .expect("all thetas are effectful right now");
 
                         GammaData::new([ptr], effect)
                     },

@@ -130,7 +130,7 @@ fn main() {
         Box::new(Mem2Reg::new(args.cells as usize)),
         Box::new(AddSubLoop::new()),
         Box::new(Dce::new()),
-        Box::new(ElimConstGamma::new()),
+        // Box::new(ElimConstGamma::new()),
         Box::new(ConstFolding::new()),
         Box::new(ConstDedup::new()),
     ];
@@ -330,28 +330,37 @@ fn diff_ir(old: &str, new: &str) -> String {
 // TODO: Turn validation into a pass
 // TODO: Make validation check edge and port kinds
 fn validate(graph: &Rvsdg) {
-    let start_time = Instant::now();
-
-    validate_inner(graph);
-
-    let elapsed = start_time.elapsed();
     tracing::debug!(
         target: "timings",
-        "took {:#?} to validate graph",
-        elapsed,
+        "started validating graph",
     );
-}
+    let start_time = Instant::now();
 
-fn validate_inner(graph: &Rvsdg) {
-    for (node_id, node) in graph
-        .node_ids()
-        .map(|node_id| (node_id, graph.get_node(node_id)))
-    {
+    let mut stack: Vec<_> = graph.node_ids().map(|node_id| (node_id, graph)).collect();
+
+    while let Some((node_id, graph)) = stack.pop() {
+        let node = graph.get_node(node_id);
+
         if let Node::Theta(theta) = node {
-            validate_inner(theta.body());
+            stack.extend(
+                theta
+                    .body()
+                    .node_ids()
+                    .map(|node_id| (node_id, theta.body())),
+            );
         } else if let Node::Gamma(gamma) = node {
-            validate_inner(gamma.true_branch());
-            validate_inner(gamma.false_branch());
+            stack.extend(
+                gamma
+                    .true_branch()
+                    .node_ids()
+                    .map(|node_id| (node_id, gamma.true_branch())),
+            );
+            stack.extend(
+                gamma
+                    .false_branch()
+                    .node_ids()
+                    .map(|node_id| (node_id, gamma.false_branch())),
+            );
         }
 
         let input_desc = node.input_desc();
@@ -443,6 +452,13 @@ fn validate_inner(graph: &Rvsdg) {
         //     );
         // }
     }
+
+    let elapsed = start_time.elapsed();
+    tracing::debug!(
+        target: "timings",
+        "took {:#?} to validate graph",
+        elapsed,
+    );
 }
 
 fn set_logger() {

@@ -1,5 +1,5 @@
 use crate::{
-    graph::{EdgeKind, Gamma, Rvsdg, Store, Theta},
+    graph::{EdgeKind, Gamma, NodeExt, Rvsdg, Store, Theta},
     passes::Pass,
 };
 

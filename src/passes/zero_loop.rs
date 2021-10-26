@@ -1,5 +1,7 @@
 use crate::{
-    graph::{Bool, EdgeKind, End, Gamma, InputPort, Int, Node, OutputPort, Rvsdg, Start, Theta},
+    graph::{
+        Bool, EdgeKind, End, Gamma, InputPort, Int, Node, NodeExt, OutputPort, Rvsdg, Start, Theta,
+    },
     ir::Const,
     passes::Pass,
 };
@@ -62,7 +64,7 @@ impl ZeroLoop {
         let graph = theta.body();
 
         // The theta's start node
-        let start = graph.get_node(theta.start()).to_start();
+        let start = theta.start_node();
 
         // The node after the effect must be a load
         let load = graph.get_output(start.effect())?.0.as_load()?;
@@ -79,10 +81,8 @@ impl ZeroLoop {
 
             // Find the port that the input param refers to
             let input_port = theta
-                .input_params()
-                .iter()
-                .zip(theta.inputs())
-                .find_map(|(&param, &port)| (param == input.node()).then(|| port))?;
+                .input_pairs()
+                .find_map(|(port, param)| (param.node() == input.node()).then(|| port))?;
 
             Err(input_port)
         };
@@ -95,7 +95,6 @@ impl ZeroLoop {
         // Make sure that one of the add's operands is the loaded cell and the other is 1 or -1
         if lhs.1 == load.value() {
             let value = body_values.get(&rhs.1)?.convert_to_i32()?;
-            dbg!(value, value.rem_euclid(2));
 
             // Any odd integer will eventually converge to zero
             if value.rem_euclid(2) == 0 {
@@ -107,7 +106,6 @@ impl ZeroLoop {
             }
         } else if rhs.1 == load.value() {
             let value = body_values.get(&lhs.1)?.convert_to_i32()?;
-            dbg!(value);
 
             // Any odd integer will eventually converge to zero
             if value.rem_euclid(2) == 0 {
@@ -121,7 +119,7 @@ impl ZeroLoop {
             return None;
         }
 
-        let store = dbg!(graph.get_output(load.effect()))?.0.as_store()?;
+        let store = graph.get_output(load.effect())?.0.as_store()?;
         if graph.get_input(store.value()).1 != add.value() {
             return None;
         }
@@ -129,10 +127,8 @@ impl ZeroLoop {
         let eq = graph
             .get_outputs(add.value())
             .find_map(|(node, ..)| node.as_eq())?;
-        dbg!(eq);
 
         let [lhs, rhs] = [graph.get_input(eq.lhs()), graph.get_input(eq.rhs())];
-        dbg!(lhs, rhs);
 
         // Make sure that one of the eq's operands is the added val and the other is 0
         if lhs.1 == add.value() {
@@ -152,15 +148,13 @@ impl ZeroLoop {
         }
 
         let not = graph.get_output(eq.value())?.0.as_not()?;
-        dbg!(not);
 
         // Make sure the `(value + 1) != 0` expression is the theta's condition
-        if graph.get_output(not.value())?.0.node_id() != theta.condition() {
+        if graph.get_output(not.value())?.0.node_id() != theta.condition().node() {
             return None;
         }
 
         let _end = graph.get_output(store.effect())?.0.as_end()?;
-        dbg!(_end);
 
         Some(target_ptr)
     }
@@ -404,11 +398,11 @@ impl Pass for ZeroLoop {
                 let true_param = gamma.true_branch().get_node(true_param).to_input_param();
                 let replaced = true_visitor
                     .values
-                    .insert(true_param.value(), constant.clone());
+                    .insert(true_param.output(), constant.clone());
                 debug_assert!(replaced.is_none());
 
                 let false_param = gamma.false_branch().get_node(false_param).to_input_param();
-                let replaced = false_visitor.values.insert(false_param.value(), constant);
+                let replaced = false_visitor.values.insert(false_param.output(), constant);
                 debug_assert!(replaced.is_none());
             }
         }
@@ -456,12 +450,9 @@ impl Pass for ZeroLoop {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &param) in theta.inputs().iter().zip(theta.input_params()) {
-            let (_, source, _) = graph.get_input(input);
-
-            if let Some(constant) = self.values.get(&source).cloned() {
-                let param = theta.body().get_node(param).to_input_param();
-                let replaced = visitor.values.insert(param.value(), constant);
+        for (input, param) in theta.input_pairs() {
+            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
+                let replaced = visitor.values.insert(param.output(), constant);
                 debug_assert!(replaced.is_none());
             }
         }
@@ -477,7 +468,7 @@ impl Pass for ZeroLoop {
             );
 
             // Get the theta's effect input
-            let (_, effect_source, _) = graph.get_input(theta.effect_in());
+            let effect_source = graph.input_source(theta.input_effect().unwrap());
 
             let target_cell = match target_ptr {
                 Ok(constant) => graph.int(constant).value(),
@@ -489,17 +480,15 @@ impl Pass for ZeroLoop {
             let store = graph.store(target_cell, zero.value(), effect_source);
 
             // Rewire the theta's ports
-            graph.rewire_dependents(theta.effect_out(), store.effect());
+            graph.rewire_dependents(theta.output_effect().unwrap(), store.effect());
 
-            for (&input_port, &param) in theta.inputs().iter().zip(theta.input_params()) {
-                let param = theta.body().get_node(param).to_input_param();
-
+            for (input_port, param) in theta.input_pairs() {
                 if let Some((Node::OutputPort(output), _, EdgeKind::Value)) =
-                    theta.body().get_output(param.value())
+                    theta.body().get_output(param.output())
                 {
-                    let output_port = theta.outputs().iter().zip(theta.output_params()).find_map(
-                        |(&output_port, &param)| (param == output.node()).then(|| output_port),
-                    );
+                    let output_port = theta.output_pairs().find_map(|(output_port, param)| {
+                        (param.node() == output.node()).then(|| output_port)
+                    });
 
                     if let Some(output_port) = output_port {
                         tracing::debug!(

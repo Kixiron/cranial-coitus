@@ -142,28 +142,29 @@ impl From<Call> for Instruction {
 pub struct Theta {
     pub body: Vec<Instruction>,
     pub cond: Option<Value>,
-    pub effect: EffectId,
-    pub prev_effect: Option<EffectId>,
+    pub output_effect: Option<EffectId>,
+    pub input_effect: Option<EffectId>,
     pub outputs: BTreeMap<VarId, Value>,
 }
 
 impl Theta {
-    pub fn new<C, E>(
+    pub fn new<C, E1, E2>(
         body: Vec<Instruction>,
         cond: C,
-        effect: EffectId,
-        prev_effect: E,
+        output_effect: E1,
+        input_effect: E2,
         outputs: BTreeMap<VarId, Value>,
     ) -> Self
     where
         C: Into<Option<Value>>,
-        E: Into<Option<EffectId>>,
+        E1: Into<Option<EffectId>>,
+        E2: Into<Option<EffectId>>,
     {
         Self {
             body,
             cond: cond.into(),
-            effect,
-            prev_effect: prev_effect.into(),
+            output_effect: output_effect.into(),
+            input_effect: input_effect.into(),
             outputs,
         }
     }
@@ -177,10 +178,13 @@ impl Pretty for Theta {
         A: Clone,
     {
         allocator
-            .text(if let Some(prev_effect) = self.prev_effect {
-                format!("// eff: {}, pred: {}", self.effect, prev_effect)
-            } else {
-                format!("// eff: {}, pred: ???", self.effect)
+            .text(match (self.input_effect, self.output_effect) {
+                (None, None) => "// eff: ???, pred: ???".to_owned(),
+                (None, Some(output_effect)) => format!("// eff: {}, pred: ???", output_effect),
+                (Some(input_effect), None) => format!("// eff: ???, pred: {}", input_effect),
+                (Some(input_effect), Some(output_effect)) => {
+                    format!("// eff: {}, pred: {}", output_effect, input_effect)
+                }
             })
             .append(allocator.hardline())
             .append(allocator.text("do"))

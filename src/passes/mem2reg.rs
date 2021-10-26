@@ -1,5 +1,8 @@
 use crate::{
-    graph::{Bool, EdgeKind, Gamma, Int, Load, Node, NodeId, OutputPort, Rvsdg, Store, Theta},
+    graph::{
+        Bool, EdgeKind, Gamma, InputParam, Int, Load, Node, NodeExt, NodeId, OutputPort, Rvsdg,
+        Store, Theta,
+    },
     ir::Const,
     passes::Pass,
 };
@@ -10,7 +13,7 @@ use std::{
 
 /// Evaluates constant loads within the program
 pub struct Mem2Reg {
-    values: BTreeMap<NodeId, Place>,
+    values: BTreeMap<OutputPort, Place>,
     tape: Vec<Place>,
     changed: bool,
     buffer: Vec<&'static Node>,
@@ -85,12 +88,11 @@ impl Pass for Mem2Reg {
     }
 
     fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
-        let ptr = graph.get_input(load.ptr()).0;
-        let ptr = ptr.as_int().map(|(_, ptr)| ptr).or_else(|| {
-            self.values
-                .get(&ptr.node_id())
-                .and_then(Place::convert_to_i32)
-        });
+        let (ptr, source, _) = graph.get_input(load.ptr());
+        let ptr = ptr
+            .as_int()
+            .map(|(_, ptr)| ptr)
+            .or_else(|| self.values.get(&source).and_then(Place::convert_to_i32));
 
         if let Some(offset) = ptr {
             let offset = offset.rem_euclid(self.tape.len() as i32) as usize;
@@ -106,7 +108,7 @@ impl Pass for Mem2Reg {
                     );
 
                     let int = graph.int(value);
-                    self.values.insert(int.node(), value.into());
+                    self.values.insert(int.value(), value.into());
 
                     graph.splice_ports(load.effect_in(), load.effect());
                     graph.rewire_dependents(load.value(), int.value());
@@ -137,12 +139,11 @@ impl Pass for Mem2Reg {
     }
 
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
-        let ptr = graph.get_input(store.ptr()).0;
-        let ptr = ptr.as_int().map(|(_, ptr)| ptr).or_else(|| {
-            self.values
-                .get(&ptr.node_id())
-                .and_then(Place::convert_to_i32)
-        });
+        let (ptr, source, _) = graph.get_input(store.ptr());
+        let ptr = ptr
+            .as_int()
+            .map(|(_, ptr)| ptr)
+            .or_else(|| self.values.get(&source).and_then(Place::convert_to_i32));
 
         if let Some(offset) = ptr {
             let offset = offset.rem_euclid(self.tape.len() as i32) as usize;
@@ -150,7 +151,7 @@ impl Pass for Mem2Reg {
             let (stored_value, output_port, _) = graph.get_input(store.value());
             let stored_value = stored_value.as_int().map(|(_, value)| value).or_else(|| {
                 self.values
-                    .get(&stored_value.node_id())
+                    .get(&output_port)
                     .and_then(Place::convert_to_i32)
             });
 
@@ -166,7 +167,7 @@ impl Pass for Mem2Reg {
                     tracing::debug!("redirected {:?} to a constant of {}", store, value);
 
                     let int = graph.int(value);
-                    self.values.insert(int.node(), (value as i32).into());
+                    self.values.insert(int.value(), (value as i32).into());
 
                     graph.remove_input_edges(store.value());
                     graph.add_value_edge(int.value(), store.value());
@@ -259,12 +260,12 @@ impl Pass for Mem2Reg {
     }
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
-        let replaced = self.values.insert(bool.node(), value.into());
+        let replaced = self.values.insert(bool.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(value.into()));
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
-        let replaced = self.values.insert(int.node(), value.into());
+        let replaced = self.values.insert(int.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(value.into()));
     }
 
@@ -302,19 +303,20 @@ impl Pass for Mem2Reg {
         for (&input, &[truthy_param, falsy_param]) in
             gamma.inputs().iter().zip(gamma.input_params())
         {
-            let (input_node, _, _) = graph.get_input(input);
-            let input_node_id = input_node.node_id();
-
             if let Some(constant) = self
                 .values
-                .get(&input_node_id)
+                .get(&graph.input_source(input))
                 .filter(|place| place.is_const())
                 .cloned()
             {
-                let replaced = truthy_visitor.values.insert(truthy_param, constant.clone());
+                let param = gamma.true_branch().to_node::<InputParam>(truthy_param);
+                let replaced = truthy_visitor
+                    .values
+                    .insert(param.output(), constant.clone());
                 debug_assert!(replaced.is_none());
 
-                let replaced = falsy_visitor.values.insert(falsy_param, constant);
+                let param = gamma.false_branch().to_node::<InputParam>(falsy_param);
+                let replaced = falsy_visitor.values.insert(param.output(), constant);
                 debug_assert!(replaced.is_none());
             }
         }
@@ -395,17 +397,14 @@ impl Pass for Mem2Reg {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &param) in theta.inputs().iter().zip(theta.input_params()) {
-            let (input_node, _, _) = graph.get_input(input);
-            let input_node_id = input_node.node_id();
-
+        for (input, param) in theta.input_pairs() {
             if let Some(constant) = self
                 .values
-                .get(&input_node_id)
+                .get(&graph.input_source(input))
                 .filter(|place| place.is_const())
                 .cloned()
             {
-                let replaced = visitor.values.insert(param, constant);
+                let replaced = visitor.values.insert(param.output(), constant);
                 debug_assert!(replaced.is_none());
             }
         }

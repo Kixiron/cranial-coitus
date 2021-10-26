@@ -1,5 +1,5 @@
 use crate::{
-    graph::{EdgeKind, Gamma, Node, NodeId, Rvsdg, Theta},
+    graph::{EdgeKind, Gamma, Node, NodeExt, NodeId, Rvsdg, Theta},
     passes::Pass,
 };
 use std::collections::{BTreeSet, VecDeque};
@@ -134,7 +134,7 @@ impl Pass for Dce {
                 let falsy_param = gamma.false_branch().get_node(param[1]).to_input_param();
 
                 if let Some((Node::OutputPort(output), _, EdgeKind::Value)) =
-                    gamma.true_branch().get_output(truthy_param.value())
+                    gamma.true_branch().get_output(truthy_param.output())
                 {
                     let output_port = gamma.outputs().iter().zip(gamma.output_params()).find_map(
                         |(&output_port, &param)| (param[0] == output.node()).then(|| output_port),
@@ -150,7 +150,7 @@ impl Pass for Dce {
                         graph.splice_ports(input_port, output_port);
                     }
                 } else if let Some((Node::OutputPort(output), _, EdgeKind::Value)) =
-                    gamma.false_branch().get_output(falsy_param.value())
+                    gamma.false_branch().get_output(falsy_param.output())
                 {
                     let output_port = gamma.outputs().iter().zip(gamma.output_params()).find_map(
                         |(&output_port, &param)| (param[1] == output.node()).then(|| output_port),
@@ -175,17 +175,19 @@ impl Pass for Dce {
         }
     }
 
-    // TODO: Remove the theta node if it's unused?
+    // TODO: Remove the theta node if it's unused
+    // TODO: Remove effect inputs and outputs from the theta node if they're unused
+    // TODO: Remove unused invariant inputs
+    // TODO: Remove unused variant inputs and their associated output
+    // TODO: Hoist invariant values out of the loop and make them invariant inputs
+    // TODO: Demote variant inputs that don't vary into invariant inputs
+    // TODO: Deduplicate both variant and invariant inputs & outputs
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut visitor = Self::new();
 
-        self.stack_buf.extend(
-            theta
-                .input_params()
-                .iter()
-                .chain(theta.output_params())
-                .copied(),
-        );
+        // Add all inputs & outputs to the list of nodes to be visited by the subgraph visitor
+        self.stack_buf
+            .extend(theta.output_param_ids().chain(theta.input_param_ids()));
 
         visitor.visit_graph_inner(
             theta.body_mut(),
@@ -194,113 +196,6 @@ impl Pass for Dce {
             &mut self.buffer_buf,
         );
         self.changed |= visitor.did_change();
-
-        // TODO: Buffer these
-        let mut unused_input_ports = BTreeSet::new();
-        let mut unused_input_params = BTreeSet::new();
-        let mut unused_output_ports = BTreeSet::new();
-        let mut unused_output_params = BTreeSet::new();
-
-        for (&port, &param) in theta.inputs().iter().zip(theta.input_params()) {
-            let input = theta.body().get_node(param).to_input_param();
-            let param_output = theta.body().get_output(input.value());
-
-            match param_output {
-                // If the input param is unused, remove the port and parameter
-                None => {
-                    tracing::debug!(
-                        "removing input param from theta node {:?}: {:?} with input param {:?}",
-                        theta.node(),
-                        port,
-                        param,
-                    );
-
-                    unused_input_ports.insert(port);
-                    unused_input_params.insert(param);
-
-                    self.changed();
-                }
-
-                // TODO: allow removing effect edges through loops as well
-                Some((consumer, _, EdgeKind::Value)) => {
-                    if let Some(output) = consumer.as_output_param() {
-                        let (&output_port, &output_param) = theta
-                            .outputs()
-                            .iter()
-                            .zip(theta.output_params())
-                            .find(|(_, &param)| param == output.node())
-                            .unwrap();
-
-                        tracing::debug!(
-                            theta = ?theta.node(),
-                            input_port = ?port,
-                            input_param = ?param,
-                            ?output_port,
-                            ?output_param,
-                            "theta input param is a passthrough, rerouting to its original value",
-                        );
-
-                        let (_, producer, _) = graph.get_input(port);
-                        graph.rewire_dependents(output_port, producer);
-
-                        unused_output_ports.insert(output_port);
-                        unused_output_params.insert(output_param);
-
-                        self.changed();
-                    }
-                }
-
-                _ => {}
-            }
-        }
-
-        // Remove the nodes from the subgraph
-        for &param in unused_input_params.iter() {
-            theta.body_mut().remove_node(param);
-        }
-
-        // Remove the unused ports and parameters from the theta node
-        theta
-            .inputs_mut()
-            .retain(|port| !unused_input_ports.contains(port));
-        theta
-            .input_params_mut()
-            .retain(|param| !unused_input_params.contains(param));
-
-        for (&port, &param) in theta.outputs().iter().zip(theta.output_params()) {
-            let output = theta.body().get_node(param).to_output_param();
-
-            // If the output param is unused, grab the port and parameter
-            let port_is_unused = theta.body().try_input(output.input()).is_none()
-                || graph.get_output(port).is_none();
-
-            if port_is_unused {
-                tracing::debug!(
-                    "removing output param from theta node {:?}: {:?} with input output {:?}",
-                    theta.node(),
-                    port,
-                    param,
-                );
-
-                unused_output_ports.insert(port);
-                unused_output_params.insert(param);
-
-                self.changed();
-            }
-        }
-
-        // Remove the nodes from the subgraph
-        for &param in unused_output_params.iter() {
-            theta.body_mut().remove_node(param);
-        }
-
-        // Remove the unused ports and parameters from the theta node
-        theta
-            .outputs_mut()
-            .retain(|port| !unused_output_ports.contains(port));
-        theta
-            .output_params_mut()
-            .retain(|param| !unused_output_params.contains(param));
 
         graph.replace_node(theta.node(), theta);
     }

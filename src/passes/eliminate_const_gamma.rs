@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Bool, EdgeKind, End, Gamma, InputParam, InputPort, Node, NodeId, OutputParam, OutputPort,
-        Rvsdg, Start, Theta,
+        Bool, EdgeKind, End, Gamma, InputParam, InputPort, Node, NodeExt, NodeId, OutputParam,
+        OutputPort, Rvsdg, Start, Theta,
     },
     passes::Pass,
     utils::AssertNone,
@@ -66,11 +66,11 @@ impl Pass for ElimConstGamma {
 
             if let Some(constant) = self.values.get(&source).cloned() {
                 let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
-                let replaced = truthy_visitor.values.insert(true_param.value(), constant);
+                let replaced = truthy_visitor.values.insert(true_param.output(), constant);
                 debug_assert!(replaced.is_none());
 
                 let false_param = gamma.true_branch().to_node::<InputParam>(false_param);
-                let replaced = falsy_visitor.values.insert(false_param.value(), constant);
+                let replaced = falsy_visitor.values.insert(false_param.output(), constant);
                 debug_assert!(replaced.is_none());
             }
         }
@@ -109,7 +109,7 @@ impl Pass for ElimConstGamma {
                 let inlined_output = graph.input_source(input);
 
                 self.output_lookup
-                    .insert(input_param.value(), inlined_output)
+                    .insert(input_param.output(), inlined_output)
                     .debug_unwrap_none();
             }
 
@@ -203,33 +203,12 @@ impl Pass for ElimConstGamma {
                         }
                     } else {
                         tracing::error!(
-                            "failed to add edge while inlining gamma branch, missing output port for {:?} (inputs: {:?}",
+                            "failed to add edge while inlining gamma branch, missing output port for {:?} (inputs: {:?})",
                             branch_output,
                             inputs.collect::<Vec<_>>(),
                         );
                     }
                 }
-
-                // for (branch_output, data) in chosen_branch.outputs(node_id) {
-                //     if let Some((_, branch_input, kind)) = data {
-                //         let (inputs, output) = (
-                //             input_lookup.get(&branch_input).into_iter().flatten(),
-                //             output_lookup.get(&branch_output).copied(),
-                //         );
-                //
-                //         if let Some(output) = output {
-                //             for &input in inputs {
-                //                 graph.add_edge(output, input, kind);
-                //             }
-                //         } else {
-                //             tracing::error!(
-                //                 "failed to add edge while inlining gamma branch, missing output port for {:?} (inputs: {:?}",
-                //                 branch_output,
-                //                 inputs.collect::<Vec<_>>(),
-                //             );
-                //         }
-                //     }
-                // }
             }
 
             self.nodes.clear();
@@ -253,19 +232,17 @@ impl Pass for ElimConstGamma {
         // TODO: Propagate constants out of gamma bodies?
     }
 
+    // FIXME: Inlining gamma bodies is broken rn
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut visitor = Self::new();
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &param) in theta.inputs().iter().zip(theta.input_params()) {
-            let (_, source, _) = graph.get_input(input);
-
-            if let Some(constant) = self.values.get(&source).cloned() {
-                let param = theta.body().to_node::<InputParam>(param);
+        for (input, param) in theta.input_pairs() {
+            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
                 visitor
                     .values
-                    .insert(param.value(), constant)
+                    .insert(param.output(), constant)
                     .debug_unwrap_none();
             }
         }
@@ -273,9 +250,9 @@ impl Pass for ElimConstGamma {
         visitor.visit_graph(theta.body_mut());
         self.changed |= visitor.did_change();
 
-        let cond_out = theta.body().to_node::<OutputParam>(theta.condition());
-        let cond_input = theta.body().get_input(cond_out.input()).1;
-        let cond_value = visitor.values.get(&cond_input).copied();
+        let cond_out = theta.condition();
+        let cond_source = theta.body().input_source(cond_out.input());
+        let cond_value = visitor.values.get(&cond_source).copied();
 
         // If the theta's condition is `false`, it will never loop and we can inline the body
         if cond_value == Some(false) {
@@ -297,23 +274,17 @@ impl Pass for ElimConstGamma {
                     .map(|(node_id, node)| (node_id, node.clone())),
             );
 
-            for (&input, &param) in theta.inputs().iter().zip(theta.input_params()) {
-                let input_param = theta.body().to_node::<InputParam>(param);
+            for (input, param) in theta.input_pairs() {
                 let inlined_output = graph.input_source(input);
 
                 self.output_lookup
-                    .insert(input_param.value(), inlined_output)
+                    .insert(param.output(), inlined_output)
                     .debug_unwrap_none();
             }
 
-            for (&output, &param) in theta.outputs().iter().zip(theta.output_params()) {
-                let output_param = theta.body().to_node::<OutputParam>(param);
-
+            for (output, param) in theta.output_pairs() {
                 self.input_lookup
-                    .insert(
-                        output_param.input(),
-                        graph.output_dest(output).collect::<Vec<_>>(),
-                    )
+                    .insert(param.input(), graph.output_dest(output).collect::<Vec<_>>())
                     .debug_unwrap_none();
             }
 
@@ -321,9 +292,8 @@ impl Pass for ElimConstGamma {
             for (node_id, mut node) in self.nodes.drain(..) {
                 // Replace start nodes with the gamma's input effect
                 if node.is_start() {
-                    let start = theta.body().to_node::<Start>(theta.start());
-
-                    let output_effect = graph.input_source(theta.effect_in());
+                    let start = theta.start_node();
+                    let output_effect = graph.input_source(theta.input_effect().unwrap());
 
                     self.output_lookup
                         .insert(start.effect(), output_effect)
@@ -331,12 +301,11 @@ impl Pass for ElimConstGamma {
 
                 // Replace end nodes with the gamma's output effect
                 } else if node.is_end() {
-                    let end = theta.body().to_node::<End>(theta.end());
-
+                    let end = theta.end_node();
                     self.input_lookup
                         .insert(
                             end.effect_in(),
-                            graph.output_dest(theta.effect_out()).collect(),
+                            graph.output_dest(theta.output_effect().unwrap()).collect(),
                         )
                         .debug_unwrap_none();
 
@@ -392,33 +361,13 @@ impl Pass for ElimConstGamma {
                         }
                     } else {
                         tracing::error!(
-                            "failed to add edge while inlining theta branch, missing output port for {:?} (inputs: {:?}",
+                            "failed to add {} edge while inlining theta branch, missing output port for {:?} (inputs: {:?})",
+                            kind,
                             branch_output,
                             inputs.collect::<Vec<_>>(),
                         );
                     }
                 }
-
-                // for (branch_output, data) in theta.body().outputs(node_id) {
-                //     if let Some((_, branch_input, kind)) = data {
-                //         let (inputs, output) = (
-                //             input_lookup.get(&branch_input).into_iter().flatten(),
-                //             output_lookup.get(&branch_output).copied(),
-                //         );
-                //
-                //         if let Some(output) = output {
-                //             for &input in inputs {
-                //                 graph.add_edge(output, input, kind);
-                //             }
-                //         } else {
-                //             tracing::error!(
-                //                 "failed to add edge while inlining theta branch, missing output port for {:?} (inputs: {:?}",
-                //                 branch_output,
-                //                 inputs.collect::<Vec<_>>(),
-                //             );
-                //         }
-                //     }
-                // }
             }
 
             self.nodes.clear();

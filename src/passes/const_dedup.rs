@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Bool, Gamma, Int, NodeId, Rvsdg, Theta},
+    graph::{Bool, Gamma, InputParam, Int, NodeExt, OutputPort, Rvsdg, Theta},
     ir::Const,
     passes::Pass,
 };
@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 /// Deduplicates constants within the graph, reusing them as much as possible
 pub struct ConstDedup {
-    constants: BTreeMap<NodeId, Const>,
+    constants: BTreeMap<OutputPort, Const>,
     changed: bool,
 }
 
@@ -45,12 +45,12 @@ impl Pass for ConstDedup {
             .iter()
             .find(|&(_, known)| known.as_bool().map_or(false, |known| known == value))
         {
-            let existing_const = graph.get_node(const_id);
+            let existing_const = graph.get_node(graph.port_parent(const_id));
             let (const_id, const_value) = existing_const.as_bool().map_or_else(
                 || {
                     // Input params can also produce constant values
                     let param = existing_const.to_input_param();
-                    (param.node(), param.value())
+                    (param.node(), param.output())
                 },
                 |(bool, _)| (bool.node(), bool.value()),
             );
@@ -65,7 +65,7 @@ impl Pass for ConstDedup {
             graph.remove_inputs(bool.node());
             self.changed();
         } else {
-            let replaced = self.constants.insert(bool.node(), value.into());
+            let replaced = self.constants.insert(bool.value(), value.into());
             debug_assert!(replaced.is_none());
         }
     }
@@ -76,12 +76,12 @@ impl Pass for ConstDedup {
             .iter()
             .find(|&(_, known)| known.as_int().map_or(false, |known| known == value))
         {
-            let existing_const = graph.get_node(const_id);
+            let existing_const = graph.get_node(graph.port_parent(const_id));
             let (const_id, const_value) = existing_const.as_int().map_or_else(
                 || {
                     // Input params can also produce constant values
                     let param = existing_const.to_input_param();
-                    (param.node(), param.value())
+                    (param.node(), param.output())
                 },
                 |(int, _)| (int.node(), int.value()),
             );
@@ -96,7 +96,7 @@ impl Pass for ConstDedup {
             graph.remove_inputs(int.node());
             self.changed();
         } else {
-            let replaced = self.constants.insert(int.node(), value.into());
+            let replaced = self.constants.insert(int.value(), value.into());
             debug_assert!(replaced.is_none());
         }
     }
@@ -106,19 +106,17 @@ impl Pass for ConstDedup {
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &[truthy_param, falsy_param]) in
-            gamma.inputs().iter().zip(gamma.input_params())
+        for (&input, &[true_param, false_param]) in gamma.inputs().iter().zip(gamma.input_params())
         {
-            let (input_node, _, _) = graph.get_input(input);
-            let input_node_id = input_node.node_id();
-
-            if let Some(constant) = self.constants.get(&input_node_id).cloned() {
+            if let Some(constant) = self.constants.get(&graph.input_source(input)).cloned() {
+                let param = gamma.true_branch().to_node::<InputParam>(true_param);
                 let replaced = truthy_visitor
                     .constants
-                    .insert(truthy_param, constant.clone());
+                    .insert(param.output(), constant.clone());
                 debug_assert!(replaced.is_none());
 
-                let replaced = falsy_visitor.constants.insert(falsy_param, constant);
+                let param = gamma.false_branch().to_node::<InputParam>(false_param);
+                let replaced = falsy_visitor.constants.insert(param.output(), constant);
                 debug_assert!(replaced.is_none());
             }
         }
@@ -142,12 +140,9 @@ impl Pass for ConstDedup {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &param) in theta.inputs().iter().zip(theta.input_params()) {
-            let (input_node, _, _) = graph.get_input(input);
-            let input_node_id = input_node.node_id();
-
-            if let Some(constant) = self.constants.get(&input_node_id).cloned() {
-                let replaced = visitor.constants.insert(param, constant);
+        for (input, param) in theta.input_pairs() {
+            if let Some(constant) = self.constants.get(&graph.input_source(input)).cloned() {
+                let replaced = visitor.constants.insert(param.output(), constant);
                 debug_assert!(replaced.is_none());
             }
         }

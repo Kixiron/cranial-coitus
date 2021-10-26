@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Add, Gamma, InputPort, Int, NodeId, OutputPort, Rvsdg, Theta},
+    graph::{Add, Gamma, InputPort, Int, NodeExt, NodeId, OutputPort, Rvsdg, Theta},
     ir::Const,
     passes::Pass,
 };
@@ -166,11 +166,11 @@ impl Pass for AssociativeAdd {
                 let true_param = gamma.true_branch().get_node(true_param).to_input_param();
                 let replaced = truthy_visitor
                     .values
-                    .insert(true_param.value(), constant.clone());
+                    .insert(true_param.output(), constant.clone());
                 debug_assert!(replaced.is_none());
 
                 let false_param = gamma.false_branch().get_node(false_param).to_input_param();
-                let replaced = falsy_visitor.values.insert(false_param.value(), constant);
+                let replaced = falsy_visitor.values.insert(false_param.output(), constant);
                 debug_assert!(replaced.is_none());
             }
         }
@@ -192,12 +192,9 @@ impl Pass for AssociativeAdd {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &param) in theta.inputs().iter().zip(theta.input_params()) {
-            let (_, source, _) = graph.get_input(input);
-
-            if let Some(constant) = self.values.get(&source).cloned() {
-                let param = theta.body().get_node(param).to_input_param();
-                let replaced = visitor.values.insert(param.value(), constant);
+        for (input, param) in theta.input_pairs() {
+            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
+                let replaced = visitor.values.insert(param.output(), constant);
                 debug_assert!(replaced.is_none());
             }
         }

@@ -1,11 +1,11 @@
 use crate::graph::{
     Add, Bool, EdgeCount, EdgeDescriptor, EdgeKind, End, Eq, Gamma, Input, InputParam, InputPort,
-    Int, Load, Neg, NodeId, Not, Output, OutputParam, OutputPort, Start, Store, Theta,
+    Int, Load, Neg, NodeExt, NodeId, Not, Output, OutputParam, OutputPort, Start, Store, Theta,
 };
 use tinyvec::{tiny_vec, TinyVec};
 
 // TODO: derive_more?
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     Int(Int, i32),
     Bool(Bool, bool),
@@ -27,7 +27,7 @@ pub enum Node {
 
 impl Node {
     pub fn node_id(&self) -> NodeId {
-        match *self {
+        match self {
             Self::Int(Int { node, .. }, _)
             | Self::Bool(Bool { node, .. }, _)
             | Self::Add(Add { node, .. })
@@ -37,13 +37,13 @@ impl Node {
             | Self::End(End { node, .. })
             | Self::Input(Input { node, .. })
             | Self::Output(Output { node, .. })
-            | Self::Theta(Theta { node, .. })
             | Self::InputPort(InputParam { node, .. })
             | Self::OutputPort(OutputParam { node, .. })
             | Self::Eq(Eq { node, .. })
             | Self::Not(Not { node, .. })
             | Self::Neg(Neg { node, .. })
-            | Self::Gamma(Gamma { node, .. }) => node,
+            | Self::Gamma(Gamma { node, .. }) => *node,
+            Self::Theta(theta) => theta.node(),
         }
     }
 
@@ -58,27 +58,23 @@ impl Node {
             Self::End(end) => tiny_vec![end.effect],
             Self::Input(input) => tiny_vec![input.effect_in],
             Self::Output(output) => tiny_vec![output.value, output.effect_in],
-            Self::Theta(theta) => {
-                let mut inputs = TinyVec::with_capacity(theta.inputs.len() + 1);
-                inputs.extend(theta.inputs.iter().copied());
-                inputs.push(theta.effect_in);
-                inputs
-            }
+            Self::Theta(theta) => theta.all_input_ports(),
             Self::InputPort(_) => TinyVec::new(),
-            Self::OutputPort(output) => tiny_vec![output.value],
+            Self::OutputPort(output) => tiny_vec![output.input],
             Self::Eq(eq) => tiny_vec![eq.lhs, eq.rhs],
             Self::Not(not) => tiny_vec![not.input],
             Self::Neg(neg) => tiny_vec![neg.input],
             Self::Gamma(gamma) => {
-                let mut inputs = TinyVec::with_capacity(gamma.inputs.len() + 2);
-                inputs.extend(gamma.inputs.iter().copied());
-                inputs.push(gamma.condition);
-                inputs.push(gamma.effect_in);
+                let mut inputs = TinyVec::with_capacity(gamma.inputs().len() + 2);
+                inputs.extend(gamma.inputs().iter().copied());
+                inputs.push(gamma.condition());
+                inputs.push(gamma.effect_in());
                 inputs
             }
         }
     }
 
+    // FIXME: Remove this and use a setter
     pub fn inputs_mut(&mut self) -> Vec<&mut InputPort> {
         match self {
             Self::Int(_, _) | Self::Bool(_, _) => Vec::new(),
@@ -89,13 +85,12 @@ impl Node {
             Self::End(end) => vec![&mut end.effect],
             Self::Input(input) => vec![&mut input.effect_in],
             Self::Output(output) => vec![&mut output.value, &mut output.effect_in],
-            Self::Theta(theta) => {
-                let mut inputs: Vec<_> = theta.inputs.iter_mut().collect();
-                inputs.push(&mut theta.effect_in);
-                inputs
+            Self::Theta(_) => {
+                tracing::warn!("use setters for setting inputs on theta nodes");
+                Vec::new()
             }
             Self::InputPort(_) => Vec::new(),
-            Self::OutputPort(output) => vec![&mut output.value],
+            Self::OutputPort(output) => vec![&mut output.input],
             Self::Eq(eq) => vec![&mut eq.lhs, &mut eq.rhs],
             Self::Not(not) => vec![&mut not.input],
             Self::Neg(neg) => vec![&mut neg.input],
@@ -108,7 +103,6 @@ impl Node {
         }
     }
 
-    // FIXME: TinyVec?
     pub fn outputs(&self) -> TinyVec<[OutputPort; 4]> {
         match self {
             Self::Int(int, _) => tiny_vec![int.value],
@@ -120,26 +114,22 @@ impl Node {
             Self::End(_) => TinyVec::new(),
             Self::Input(input) => tiny_vec![input.value, input.effect_out],
             Self::Output(output) => tiny_vec![output.effect_out],
-            Self::Theta(theta) => {
-                let mut inputs = TinyVec::with_capacity(theta.outputs.len() + 1);
-                inputs.extend(theta.outputs.iter().copied());
-                inputs.push(theta.effect_out);
-                inputs
-            }
-            Self::InputPort(input) => tiny_vec![input.value],
+            Self::Theta(theta) => theta.all_output_ports(),
+            Self::InputPort(input) => tiny_vec![input.output],
             Self::OutputPort(_) => TinyVec::new(),
             Self::Eq(eq) => tiny_vec![eq.value],
             Self::Not(not) => tiny_vec![not.value],
             Self::Neg(neg) => tiny_vec![neg.value],
             Self::Gamma(gamma) => {
-                let mut inputs = TinyVec::with_capacity(gamma.outputs.len() + 1);
-                inputs.extend(gamma.outputs.iter().copied());
-                inputs.push(gamma.effect_out);
+                let mut inputs = TinyVec::with_capacity(gamma.outputs().len() + 1);
+                inputs.extend(gamma.outputs().iter().copied());
+                inputs.push(gamma.effect_out());
                 inputs
             }
         }
     }
 
+    // FIXME: Remove this and use a setter
     pub fn outputs_mut(&mut self) -> Vec<&mut OutputPort> {
         match self {
             Self::Int(int, _) => vec![&mut int.value],
@@ -151,12 +141,11 @@ impl Node {
             Self::End(_) => Vec::new(),
             Self::Input(input) => vec![&mut input.value, &mut input.effect_out],
             Self::Output(output) => vec![&mut output.effect_out],
-            Self::Theta(theta) => {
-                let mut inputs: Vec<_> = theta.outputs.iter_mut().collect();
-                inputs.push(&mut theta.effect_out);
-                inputs
+            Self::Theta(_) => {
+                tracing::warn!("use setters for setting outputs on theta nodes");
+                Vec::new()
             }
-            Self::InputPort(input) => vec![&mut input.value],
+            Self::InputPort(input) => vec![&mut input.output],
             Self::OutputPort(_) => Vec::new(),
             Self::Eq(eq) => vec![&mut eq.value],
             Self::Not(not) => vec![&mut not.value],
@@ -180,9 +169,7 @@ impl Node {
             Self::End(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
             Self::Input(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
             Self::Output(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one()),
-            Self::Theta(theta) => {
-                EdgeDescriptor::new(EdgeCount::one(), EdgeCount::exact(theta.inputs().len()))
-            }
+            Self::Theta(theta) => theta.input_desc(),
             Self::OutputPort(output) => match output.kind {
                 EdgeKind::Effect => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
                 EdgeKind::Value => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
@@ -206,10 +193,7 @@ impl Node {
             Self::End(_) => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::zero()),
             Self::Input(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one()),
             Self::Output(_) => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
-            Self::Theta(theta) => EdgeDescriptor::new(
-                EdgeCount::one(),
-                EdgeCount::new(None, Some(theta.outputs().len())),
-            ),
+            Self::Theta(theta) => theta.output_desc(),
             Self::InputPort(output) => match output.kind {
                 EdgeKind::Effect => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
                 EdgeKind::Value => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),

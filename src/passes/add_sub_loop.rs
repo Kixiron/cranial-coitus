@@ -1,8 +1,5 @@
 use crate::{
-    graph::{
-        Add, End, Eq, Gamma, InputParam, Int, Load, Node, Not, OutputParam, OutputPort, Rvsdg,
-        Start, Store, Theta,
-    },
+    graph::{Add, End, Eq, Gamma, Int, Load, Node, NodeExt, Not, OutputPort, Rvsdg, Store, Theta},
     ir::Const,
     passes::Pass,
 };
@@ -109,7 +106,7 @@ impl AddSubLoop {
                 .map_or(false, |val| val == expected)
         };
 
-        let start = graph.cast_node::<Start>(theta.start())?;
+        let start = theta.start_node();
 
         // The initial load from the lhs ptr
         // _counter_val := load _counter_ptr
@@ -189,7 +186,7 @@ impl AddSubLoop {
         };
 
         // The output param that takes the theta's exit condition
-        let cond_output = graph.cast_node::<OutputParam>(theta.condition())?;
+        let cond_output = theta.condition();
 
         // Invert the `_dec_counter == 0` to make it `_dec_counter != 0`
         // _counter_not_zero := not _counter_is_zero
@@ -249,11 +246,11 @@ impl Pass for AddSubLoop {
                 let true_param = gamma.true_branch().get_node(true_param).to_input_param();
                 let replaced = truthy_visitor
                     .values
-                    .insert(true_param.value(), constant.clone());
+                    .insert(true_param.output(), constant.clone());
                 debug_assert!(replaced.is_none());
 
                 let false_param = gamma.false_branch().get_node(false_param).to_input_param();
-                let replaced = falsy_visitor.values.insert(false_param.value(), constant);
+                let replaced = falsy_visitor.values.insert(false_param.output(), constant);
                 debug_assert!(replaced.is_none());
             }
         }
@@ -271,12 +268,9 @@ impl Pass for AddSubLoop {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &param) in theta.inputs().iter().zip(theta.input_params()) {
-            let (_, source, _) = graph.get_input(input);
-
-            if let Some(constant) = self.values.get(&source).cloned() {
-                let param = theta.body().get_node(param).to_input_param();
-                let replaced = visitor.values.insert(param.value(), constant);
+        for (input, param) in theta.input_pairs() {
+            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
+                let replaced = visitor.values.insert(param.output(), constant);
                 debug_assert!(replaced.is_none());
             }
         }
@@ -303,13 +297,9 @@ impl Pass for AddSubLoop {
 
             let mut get_theta_input = |output| {
                 theta
-                    .input_params()
-                    .iter()
-                    .zip(theta.inputs())
-                    .find_map(|(&param, &port)| {
-                        let input = theta.body().to_node::<InputParam>(param);
-
-                        if input.value() == output {
+                    .input_pairs()
+                    .find_map(|(port, input)| {
+                        if input.output() == output {
                             Some(graph.get_input(port).1)
                         } else {
                             None
@@ -327,7 +317,7 @@ impl Pass for AddSubLoop {
 
             let (counter_ptr, acc_ptr) = (get_theta_input(counter_ptr), get_theta_input(acc_ptr));
 
-            let input_effect = graph.get_input(theta.effect_in()).1;
+            let input_effect = graph.input_source(theta.input_effect().unwrap());
 
             // Load the counter and accumulator values
             let counter_val = graph.load(counter_ptr, input_effect);
@@ -354,11 +344,9 @@ impl Pass for AddSubLoop {
             let zero_counter = graph.store(counter_ptr, zero.value(), store_sum_diff.effect());
 
             // Wire the final store into the theta's output effect
-            graph.rewire_dependents(theta.effect_out(), zero_counter.effect());
+            graph.rewire_dependents(theta.output_effect().unwrap(), zero_counter.effect());
 
-            for (&port, &param) in theta.outputs().iter().zip(theta.output_params()) {
-                let param = theta.body().to_node::<OutputParam>(param);
-
+            for (port, param) in theta.output_pairs() {
                 if let Some((input_node, ..)) = theta.body().try_input(param.input()) {
                     match *input_node {
                         Node::Int(_, value) => {
@@ -372,12 +360,12 @@ impl Pass for AddSubLoop {
                         }
 
                         Node::InputPort(param) => {
-                            let (_, input_value, _) = graph.get_input(
+                            let input_value = graph.input_source(
                                 theta
-                                    .input_params()
-                                    .iter()
-                                    .zip(theta.inputs())
-                                    .find_map(|(&node, &port)| (node == param.node()).then(|| port))
+                                    .input_pairs()
+                                    .find_map(|(port, input)| {
+                                        (input.node() == param.node()).then(|| port)
+                                    })
                                     .unwrap(),
                             );
 

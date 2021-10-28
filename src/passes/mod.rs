@@ -95,9 +95,9 @@ pub trait Pass {
         for node_id in graph.node_ids() {
             let node = graph.get_node(node_id);
 
-            if node.is_start() || node.is_input_port() {
+            if node.is_start() || node.is_input_param() {
                 stack.push_back(node_id);
-            } else if node.is_end() || node.is_output_port() {
+            } else if node.is_end() || node.is_output_param() {
                 stack.push_front(node_id);
             }
         }
@@ -193,8 +193,8 @@ pub trait Pass {
                 Node::Not(not) => self.visit_not(graph, not),
                 Node::Neg(neg) => self.visit_neg(graph, neg),
                 Node::Gamma(gamma) => self.visit_gamma(graph, *gamma),
-                Node::InputPort(input_param) => self.visit_input_param(graph, input_param),
-                Node::OutputPort(output_param) => self.visit_output_param(graph, output_param),
+                Node::InputParam(input_param) => self.visit_input_param(graph, input_param),
+                Node::OutputParam(output_param) => self.visit_output_param(graph, output_param),
             }
         } else {
             tracing::error!("visited node that doesn't exist: {:?}", node_id);

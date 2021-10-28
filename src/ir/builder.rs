@@ -276,7 +276,9 @@ impl IrBuilder {
                     top_level: false,
                 };
 
+                let (mut inputs, mut input_vars) = (BTreeMap::new(), BTreeMap::new());
                 for (input, param) in theta.input_pairs() {
+                    let input_id = VarId::new(param.output());
                     let value = input_values.get(&input).cloned().unwrap_or(Value::Missing);
 
                     if value.is_missing() {
@@ -287,15 +289,25 @@ impl IrBuilder {
                         );
                     }
 
+                    if let Value::Var(var) = value {
+                        inputs.insert(var, value.clone()).debug_unwrap_none();
+                        input_vars.insert(input, var).debug_unwrap_none();
+                    } else {
+                        inputs.insert(input_id, value.clone()).debug_unwrap_none();
+                        input_vars.insert(input, input_id).debug_unwrap_none();
+                    }
+
                     builder
                         .values
                         .insert(param.output(), value)
                         .debug_unwrap_none();
                 }
 
-                let mut body = builder.translate(theta.body());
-                let mut outputs = BTreeMap::new();
-
+                let (mut body, mut outputs, mut output_feedback) = (
+                    builder.translate(theta.body()),
+                    BTreeMap::new(),
+                    BTreeMap::new(),
+                );
                 for (output, param) in theta.output_pairs() {
                     let value = theta
                         .body()
@@ -319,33 +331,36 @@ impl IrBuilder {
                         .debug_unwrap_none();
 
                     outputs.insert(output_id, value).debug_unwrap_none();
+                    output_feedback
+                        .insert(output_id, input_vars[&theta.output_feedback()[&output]])
+                        .debug_unwrap_none();
                 }
 
-                let cond = theta.condition();
-                let cond = theta
-                    .body()
-                    .try_input_source(cond.input())
+                let condition_node = theta.body().cast_node::<OutputParam>(theta.condition_id());
+                let condition = condition_node
+                    .and_then(|cond| theta.body().try_input_source(cond.input()))
                     .and_then(|cond| builder.values.get(&cond).cloned())
                     .unwrap_or(Value::Missing);
-
                 self.values.extend(builder.values);
 
-                if cond.is_missing() {
+                if condition.is_missing() {
                     tracing::error!(
                         "failed to get condition for theta {:?} (cond: {:?})",
                         theta.node(),
-                        theta.condition(),
+                        condition_node,
                     );
                 }
 
                 self.inst(Theta::new(
                     body.into_inner(),
-                    cond,
+                    condition,
                     theta.output_effect().map(EffectId::new),
                     theta
                         .input_effect()
                         .and_then(|effect| graph.try_input_source(effect).map(EffectId::new)),
+                    inputs,
                     outputs,
+                    output_feedback,
                 ));
             }
 
@@ -499,7 +514,7 @@ impl IrBuilder {
                 ));
             }
 
-            Node::InputPort(_) | Node::OutputPort(_) | Node::Start(_) | Node::End(_) => {}
+            Node::InputParam(_) | Node::OutputParam(_) | Node::Start(_) | Node::End(_) => {}
         };
 
         self.evaluated.insert(node.node_id());

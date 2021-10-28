@@ -255,8 +255,8 @@ impl Pass for AddSubLoop {
             }
         }
 
-        truthy_visitor.visit_graph(gamma.truthy_mut());
-        falsy_visitor.visit_graph(gamma.falsy_mut());
+        truthy_visitor.visit_graph(gamma.true_mut());
+        falsy_visitor.visit_graph(gamma.false_mut());
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 
@@ -359,7 +359,7 @@ impl Pass for AddSubLoop {
                             graph.rewire_dependents(port, bool.value());
                         }
 
-                        Node::InputPort(param) => {
+                        Node::InputParam(param) => {
                             let input_value = graph.input_source(
                                 theta
                                     .input_pairs()

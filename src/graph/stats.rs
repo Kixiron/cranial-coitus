@@ -93,7 +93,7 @@ impl Rvsdg {
                     stats.branches += 1;
                 }
 
-                Node::Start(_) | Node::End(_) | Node::InputPort(_) | Node::OutputPort(_) => {}
+                Node::Start(_) | Node::End(_) | Node::InputParam(_) | Node::OutputParam(_) => {}
             }
         }
 

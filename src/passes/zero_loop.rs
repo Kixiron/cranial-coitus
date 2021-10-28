@@ -227,7 +227,7 @@ impl ZeroLoop {
         let end_effect = gamma
             .true_branch()
             .to_node::<End>(gamma.ends()[0])
-            .effect_in();
+            .input_effect();
 
         // Make sure the true branch is empty
         let true_branch_is_empty =
@@ -322,7 +322,7 @@ impl ZeroLoop {
         let end_effect = gamma
             .true_branch()
             .to_node::<End>(gamma.ends()[0])
-            .effect_in();
+            .input_effect();
 
         // Make sure the true branch is empty
         let true_branch_is_empty =
@@ -407,8 +407,8 @@ impl Pass for ZeroLoop {
             }
         }
 
-        true_visitor.visit_graph(gamma.truthy_mut());
-        false_visitor.visit_graph(gamma.falsy_mut());
+        true_visitor.visit_graph(gamma.true_mut());
+        false_visitor.visit_graph(gamma.false_mut());
         self.changed |= true_visitor.did_change();
         self.changed |= false_visitor.did_change();
 
@@ -483,7 +483,7 @@ impl Pass for ZeroLoop {
             graph.rewire_dependents(theta.output_effect().unwrap(), store.effect());
 
             for (input_port, param) in theta.input_pairs() {
-                if let Some((Node::OutputPort(output), _, EdgeKind::Value)) =
+                if let Some((Node::OutputParam(output), _, EdgeKind::Value)) =
                     theta.body().get_output(param.output())
                 {
                     let output_port = theta.output_pairs().find_map(|(output_port, param)| {

@@ -121,8 +121,8 @@ impl Pass for ConstDedup {
             }
         }
 
-        truthy_visitor.visit_graph(gamma.truthy_mut());
-        falsy_visitor.visit_graph(gamma.falsy_mut());
+        truthy_visitor.visit_graph(gamma.true_mut());
+        falsy_visitor.visit_graph(gamma.false_mut());
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 

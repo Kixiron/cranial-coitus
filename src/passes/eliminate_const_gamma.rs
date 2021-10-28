@@ -146,44 +146,164 @@ impl Pass for ElimConstGamma {
 
                     self.input_lookup
                         .insert(
-                            end.effect_in(),
+                            end.input_effect(),
                             graph.output_dest(gamma.effect_out()).collect(),
                         )
                         .debug_unwrap_none();
 
                 // Ignore input and output ports
                 // Otherwise just create the required ports & inline the node
-                } else if !node.is_input_port() && !node.is_output_port() {
-                    for input in node.inputs_mut() {
-                        let inlined = graph.input_port(node_id, EdgeKind::Value);
+                } else if !node.is_input_param() && !node.is_output_param() {
+                    if let Some(theta) = node.as_theta_mut() {
+                        if let Some(input_effect) = theta.input_effect() {
+                            let inlined = graph.input_port(theta.node(), EdgeKind::Effect);
 
-                        let replaced = self.input_lookup.insert(*input, vec![inlined]);
-                        debug_assert!(
-                            replaced.is_none(),
-                            "replaced value {:?} for input port {:?} with {:?}",
-                            replaced,
-                            input,
-                            inlined,
-                        );
+                            let replaced = self.input_lookup.insert(input_effect, vec![inlined]);
+                            debug_assert!(
+                                replaced.is_none() ,
+                                "replaced effect {:?} for theta input effect port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                                replaced,
+                                input_effect,
+                                inlined,
+                                self.input_lookup,
+                                self.output_lookup,
+                            );
 
-                        *input = inlined;
-                    }
+                            theta.set_input_effect(inlined);
+                        }
 
-                    for output in node.outputs_mut() {
-                        let inlined = graph.output_port(node_id, EdgeKind::Value);
+                        {
+                            let mut new_invariant_inputs = BTreeMap::new();
+                            for (port, param) in theta.invariant_input_pair_ids() {
+                                let inlined = graph.input_port(theta.node(), EdgeKind::Value);
 
-                        let replaced = self.output_lookup.insert(*output, inlined);
-                        debug_assert!(
-                            replaced.is_none() ,
-                            "replaced value {:?} for output port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
-                            replaced,
-                            output,
-                            inlined,
-                            self.input_lookup,
-                            self.output_lookup,
-                        );
+                                let replaced = self.input_lookup.insert(port, vec![inlined]);
+                                debug_assert!(
+                                    replaced.is_none() ,
+                                    "replaced value {:?} for theta input port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                                    replaced,
+                                    port,
+                                    inlined,
+                                    self.input_lookup,
+                                    self.output_lookup,
+                                );
 
-                        *output = inlined;
+                                new_invariant_inputs
+                                    .insert(inlined, param)
+                                    .debug_unwrap_none();
+                            }
+
+                            theta.replace_invariant_inputs(new_invariant_inputs);
+                        }
+
+                        {
+                            let (mut new_variant_inputs, mut new_output_feedback) =
+                                (BTreeMap::new(), BTreeMap::new());
+
+                            for (port, param, output) in
+                                theta.variant_input_pair_ids_with_feedback()
+                            {
+                                let inlined = graph.input_port(theta.node(), EdgeKind::Value);
+
+                                let replaced = self.input_lookup.insert(port, vec![inlined]);
+                                debug_assert!(
+                                    replaced.is_none() ,
+                                    "replaced value {:?} for theta input port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                                    replaced,
+                                    port,
+                                    inlined,
+                                    self.input_lookup,
+                                    self.output_lookup,
+                                );
+
+                                new_variant_inputs
+                                    .insert(inlined, param)
+                                    .debug_unwrap_none();
+                                new_output_feedback
+                                    .insert(output, inlined)
+                                    .debug_unwrap_none();
+                            }
+
+                            theta.replace_variant_inputs(new_variant_inputs);
+                            theta.replace_output_feedback(new_output_feedback);
+                        }
+
+                        {
+                            let (mut new_outputs, mut new_output_feedback) =
+                                (BTreeMap::new(), BTreeMap::new());
+
+                            for (port, param, input) in theta.output_pair_ids_with_feedback() {
+                                let inlined = graph.output_port(theta.node(), EdgeKind::Value);
+
+                                let replaced = self.output_lookup.insert(port, inlined);
+                                debug_assert!(
+                                    replaced.is_none() ,
+                                    "replaced value {:?} for theta output port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                                    replaced,
+                                    port,
+                                    inlined,
+                                    self.input_lookup,
+                                    self.output_lookup,
+                                );
+
+                                new_outputs.insert(inlined, param).debug_unwrap_none();
+                                new_output_feedback
+                                    .insert(inlined, input)
+                                    .debug_unwrap_none();
+                            }
+
+                            theta.replace_outputs(new_outputs);
+                            theta.replace_output_feedback(new_output_feedback);
+                        }
+
+                        if let Some(output_effect) = theta.output_effect() {
+                            let inlined = graph.output_port(theta.node(), EdgeKind::Effect);
+
+                            let replaced = self.output_lookup.insert(output_effect, inlined);
+                            debug_assert!(
+                                replaced.is_none() ,
+                                "replaced effect {:?} for theta output port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                                replaced,
+                                output_effect,
+                                inlined,
+                                self.input_lookup,
+                                self.output_lookup,
+                            );
+
+                            theta.set_output_effect(inlined);
+                        }
+                    } else {
+                        for (input, kind) in node.inputs_mut() {
+                            let inlined = graph.input_port(node_id, kind);
+
+                            let replaced = self.input_lookup.insert(*input, vec![inlined]);
+                            debug_assert!(
+                                replaced.is_none(),
+                                "replaced value {:?} for input port {:?} with {:?}",
+                                replaced,
+                                input,
+                                inlined,
+                            );
+
+                            *input = inlined;
+                        }
+
+                        for (output, kind) in node.outputs_mut() {
+                            let inlined = graph.output_port(node_id, kind);
+
+                            let replaced = self.output_lookup.insert(*output, inlined);
+                            debug_assert!(
+                                replaced.is_none() ,
+                                "replaced value {:?} for output port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                                replaced,
+                                output,
+                                inlined,
+                                self.input_lookup,
+                                self.output_lookup,
+                            );
+
+                            *output = inlined;
+                        }
                     }
 
                     graph.add_node(node_id, node);
@@ -191,7 +311,8 @@ impl Pass for ElimConstGamma {
             }
 
             for node_id in chosen_branch.node_ids() {
-                for (branch_input, _, branch_output, kind) in chosen_branch.inputs(node_id) {
+                for (branch_input, _, branch_output, kind) in chosen_branch.all_node_inputs(node_id)
+                {
                     let (inputs, output) = (
                         self.input_lookup.get(&branch_input).into_iter().flatten(),
                         self.output_lookup.get(&branch_output).copied(),
@@ -220,8 +341,8 @@ impl Pass for ElimConstGamma {
 
         // If we can't find a constant condition for this gamma, just visit all of its branches
         } else {
-            truthy_visitor.visit_graph(gamma.truthy_mut());
-            falsy_visitor.visit_graph(gamma.falsy_mut());
+            truthy_visitor.visit_graph(gamma.true_mut());
+            falsy_visitor.visit_graph(gamma.false_mut());
 
             self.changed |= truthy_visitor.did_change();
             self.changed |= falsy_visitor.did_change();
@@ -304,44 +425,164 @@ impl Pass for ElimConstGamma {
                     let end = theta.end_node();
                     self.input_lookup
                         .insert(
-                            end.effect_in(),
+                            end.input_effect(),
                             graph.output_dest(theta.output_effect().unwrap()).collect(),
                         )
                         .debug_unwrap_none();
 
                 // Ignore input and output ports
                 // Otherwise just create the required ports & inline the node
-                } else if !node.is_input_port() && !node.is_output_port() {
-                    for input in node.inputs_mut() {
-                        let inlined = graph.input_port(node_id, EdgeKind::Value);
+                } else if !node.is_input_param() && !node.is_output_param() {
+                    if let Some(theta) = node.as_theta_mut() {
+                        if let Some(input_effect) = theta.input_effect() {
+                            let inlined = graph.input_port(theta.node(), EdgeKind::Effect);
 
-                        let replaced = self.input_lookup.insert(*input, vec![inlined]);
-                        debug_assert!(
-                            replaced.is_none(),
-                            "replaced value {:?} for input port {:?} with {:?}",
-                            replaced,
-                            input,
-                            inlined,
-                        );
+                            let replaced = self.input_lookup.insert(input_effect, vec![inlined]);
+                            debug_assert!(
+                                replaced.is_none() ,
+                                "replaced effect {:?} for theta input effect port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                                replaced,
+                                input_effect,
+                                inlined,
+                                self.input_lookup,
+                                self.output_lookup,
+                            );
 
-                        *input = inlined;
-                    }
+                            theta.set_input_effect(inlined);
+                        }
 
-                    for output in node.outputs_mut() {
-                        let inlined = graph.output_port(node_id, EdgeKind::Value);
+                        {
+                            let mut new_invariant_inputs = BTreeMap::new();
+                            for (port, param) in theta.invariant_input_pair_ids() {
+                                let inlined = graph.input_port(theta.node(), EdgeKind::Value);
 
-                        let replaced = self.output_lookup.insert(*output, inlined);
-                        debug_assert!(
-                            replaced.is_none() ,
-                            "replaced value {:?} for output port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
-                            replaced,
-                            output,
-                            inlined,
-                            self.input_lookup,
-                            self.output_lookup,
-                        );
+                                let replaced = self.input_lookup.insert(port, vec![inlined]);
+                                debug_assert!(
+                                    replaced.is_none() ,
+                                    "replaced value {:?} for theta input port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                                    replaced,
+                                    port,
+                                    inlined,
+                                    self.input_lookup,
+                                    self.output_lookup,
+                                );
 
-                        *output = inlined;
+                                new_invariant_inputs
+                                    .insert(inlined, param)
+                                    .debug_unwrap_none();
+                            }
+
+                            theta.replace_invariant_inputs(new_invariant_inputs);
+                        }
+
+                        {
+                            let (mut new_variant_inputs, mut new_output_feedback) =
+                                (BTreeMap::new(), BTreeMap::new());
+
+                            for (port, param, output) in
+                                theta.variant_input_pair_ids_with_feedback()
+                            {
+                                let inlined = graph.input_port(theta.node(), EdgeKind::Value);
+
+                                let replaced = self.input_lookup.insert(port, vec![inlined]);
+                                debug_assert!(
+                                    replaced.is_none() ,
+                                    "replaced value {:?} for theta input port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                                    replaced,
+                                    port,
+                                    inlined,
+                                    self.input_lookup,
+                                    self.output_lookup,
+                                );
+
+                                new_variant_inputs
+                                    .insert(inlined, param)
+                                    .debug_unwrap_none();
+                                new_output_feedback
+                                    .insert(output, inlined)
+                                    .debug_unwrap_none();
+                            }
+
+                            theta.replace_variant_inputs(new_variant_inputs);
+                            theta.replace_output_feedback(new_output_feedback);
+                        }
+
+                        {
+                            let (mut new_outputs, mut new_output_feedback) =
+                                (BTreeMap::new(), BTreeMap::new());
+
+                            for (port, param, input) in theta.output_pair_ids_with_feedback() {
+                                let inlined = graph.output_port(theta.node(), EdgeKind::Value);
+
+                                let replaced = self.output_lookup.insert(port, inlined);
+                                debug_assert!(
+                                    replaced.is_none() ,
+                                    "replaced value {:?} for theta output port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                                    replaced,
+                                    port,
+                                    inlined,
+                                    self.input_lookup,
+                                    self.output_lookup,
+                                );
+
+                                new_outputs.insert(inlined, param).debug_unwrap_none();
+                                new_output_feedback
+                                    .insert(inlined, input)
+                                    .debug_unwrap_none();
+                            }
+
+                            theta.replace_outputs(new_outputs);
+                            theta.replace_output_feedback(new_output_feedback);
+                        }
+
+                        if let Some(output_effect) = theta.output_effect() {
+                            let inlined = graph.output_port(theta.node(), EdgeKind::Effect);
+
+                            let replaced = self.output_lookup.insert(output_effect, inlined);
+                            debug_assert!(
+                                replaced.is_none() ,
+                                "replaced effect {:?} for theta output port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                                replaced,
+                                output_effect,
+                                inlined,
+                                self.input_lookup,
+                                self.output_lookup,
+                            );
+
+                            theta.set_output_effect(inlined);
+                        }
+                    } else {
+                        for (input, kind) in node.inputs_mut() {
+                            let inlined = graph.input_port(node_id, kind);
+
+                            let replaced = self.input_lookup.insert(*input, vec![inlined]);
+                            debug_assert!(
+                                replaced.is_none(),
+                                "replaced value {:?} for input port {:?} with {:?}",
+                                replaced,
+                                input,
+                                inlined,
+                            );
+
+                            *input = inlined;
+                        }
+
+                        for (output, kind) in node.outputs_mut() {
+                            let inlined = graph.output_port(node_id, kind);
+
+                            let replaced = self.output_lookup.insert(*output, inlined);
+                            debug_assert!(
+                                replaced.is_none() ,
+                                "replaced value {:?} for output port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
+                                replaced,
+                                output,
+                                inlined,
+                                self.input_lookup,
+                                self.output_lookup,
+                            );
+
+                            *output = inlined;
+                        }
                     }
 
                     graph.add_node(node_id, node);
@@ -349,7 +590,8 @@ impl Pass for ElimConstGamma {
             }
 
             for node_id in theta.body().node_ids() {
-                for (branch_input, _, branch_output, kind) in theta.body().inputs(node_id) {
+                for (branch_input, _, branch_output, kind) in theta.body().all_node_inputs(node_id)
+                {
                     let (inputs, output) = (
                         self.input_lookup.get(&branch_input).into_iter().flatten(),
                         self.output_lookup.get(&branch_output).copied(),

@@ -2,6 +2,7 @@ use clap::Clap;
 use std::path::PathBuf;
 
 #[derive(Clap)]
+#[clap(rename_all = "kebab-case")]
 pub struct Args {
     pub file: PathBuf,
 
@@ -12,4 +13,8 @@ pub struct Args {
     /// The maximum number of optimization iterations to run
     #[clap(long)]
     pub iteration_limit: Option<usize>,
+
+    /// The interpreter's step limit
+    #[clap(long, default_value = "300000")]
+    pub step_limit: usize,
 }

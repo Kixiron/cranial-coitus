@@ -124,23 +124,31 @@ impl Pass for AssociativeAdd {
                     // Make a value edge between the newly fused operand and the dependency
                     // add node, removing the previous constant input from the dependency
                     let dependency_add = graph.get_node(dependency_add.node()).to_add();
-                    if dependency_add.lhs() == dependency_unknown {
-                        graph.remove_input_edges(dependency_add.rhs());
-                        graph.add_value_edge(int.value(), dependency_add.rhs());
-                    } else if dependency_add.rhs() == dependency_unknown {
-                        graph.remove_input_edges(dependency_add.lhs());
-                        graph.add_value_edge(int.value(), dependency_add.lhs());
-                    } else {
-                        unreachable!();
-                    }
+
+                    graph.remove_input_edges(add.lhs());
+                    graph.remove_input_edges(add.rhs());
+
+                    let unknown_source = graph.input_source(dependency_unknown);
+                    graph.add_value_edge(unknown_source, add.lhs());
+                    graph.add_value_edge(int.value(), add.rhs());
+
+                    //if dependency_add.lhs() == dependency_unknown {
+                    //    graph.remove_input_edges(dependency_add.rhs());
+                    //    graph.add_value_edge(int.value(), dependency_add.rhs());
+                    //} else if dependency_add.rhs() == dependency_unknown {
+                    //    graph.remove_input_edges(dependency_add.lhs());
+                    //    graph.add_value_edge(int.value(), dependency_add.lhs());
+                    //} else {
+                    //    unreachable!();
+                    //}
 
                     // Reroute dependents from the dependency add to the current one,
                     // the current add node is the one that we've given the fused
                     // operands to
-                    graph.rewire_dependents(add.value(), dependency_add.value());
+                    // graph.rewire_dependents(add.value(), dependency_add.value());
                     // Remove the now-replaced dependency add
                     // graph.remove_node(add.node());
-                    self.to_be_removed.insert(add.node());
+                    // self.to_be_removed.insert(add.node());
 
                     self.changed();
                 }
@@ -177,8 +185,8 @@ impl Pass for AssociativeAdd {
 
         // TODO: Eliminate gamma branches based on gamma condition
 
-        truthy_visitor.visit_graph(gamma.truthy_mut());
-        falsy_visitor.visit_graph(gamma.falsy_mut());
+        truthy_visitor.visit_graph(gamma.true_mut());
+        falsy_visitor.visit_graph(gamma.false_mut());
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 

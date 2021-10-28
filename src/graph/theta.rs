@@ -43,7 +43,7 @@ pub struct Theta {
     /// These are the relationships between outputs and variant inputs
     ///
     /// These point from an [`OutputPort`] in `outputs` to an [`InputPort`] in `variant_inputs`
-    output_back_edges: BTreeMap<OutputPort, InputPort>,
+    output_feedback: BTreeMap<OutputPort, InputPort>,
 
     /// The theta's condition, it should be an expression that evaluates to a boolean
     ///
@@ -66,15 +66,15 @@ impl Theta {
         invariant_inputs: BTreeMap<InputPort, NodeId>,
         variant_inputs: BTreeMap<InputPort, NodeId>,
         outputs: BTreeMap<OutputPort, NodeId>,
-        output_back_edges: BTreeMap<OutputPort, InputPort>,
+        output_feedback: BTreeMap<OutputPort, InputPort>,
         condition: NodeId,
         subgraph: Box<Subgraph>,
     ) -> Self {
         if cfg!(debug_assertions) {
             assert_eq!(variant_inputs.len(), outputs.len());
-            assert_eq!(outputs.len(), output_back_edges.len());
+            assert_eq!(outputs.len(), output_feedback.len());
 
-            for (output, input) in &output_back_edges {
+            for (output, input) in &output_feedback {
                 assert!(outputs.contains_key(output));
                 assert!(variant_inputs.contains_key(input));
                 assert!(!invariant_inputs.contains_key(input));
@@ -91,7 +91,7 @@ impl Theta {
             invariant_inputs,
             variant_inputs,
             outputs,
-            output_back_edges,
+            output_feedback,
             condition,
             subgraph,
         }
@@ -119,6 +119,11 @@ impl Theta {
         self.subgraph.end_node()
     }
 
+    /// Get the [`NodeId`] of the theta body's [`End`] node
+    pub fn end_node_id(&self) -> NodeId {
+        self.subgraph.end
+    }
+
     /// Get access to the theta node's body
     pub fn body(&self) -> &Rvsdg {
         &self.subgraph
@@ -137,6 +142,27 @@ impl Theta {
     /// Get the output effect's port from the theta node if available
     pub fn output_effect(&self) -> Option<OutputPort> {
         self.effects.map(|effects| effects.output)
+    }
+
+    /// Get the theta's output feedback edges
+    pub fn output_feedback(&self) -> &BTreeMap<OutputPort, InputPort> {
+        &self.output_feedback
+    }
+
+    pub fn set_input_effect(&mut self, input_effect: InputPort) {
+        if let Some(effects) = self.effects.as_mut() {
+            effects.input = input_effect;
+        } else {
+            tracing::error!("tried to set input effect on theta without effect edges");
+        }
+    }
+
+    pub fn set_output_effect(&mut self, output_effect: OutputPort) {
+        if let Some(effects) = self.effects.as_mut() {
+            effects.output = output_effect;
+        } else {
+            tracing::error!("tried to set output effect on theta without effect edges");
+        }
     }
 }
 
@@ -182,6 +208,13 @@ impl Theta {
             .chain(self.variant_input_param_ids())
     }
 
+    pub fn input_pair_ids_with_feedback(
+        &self,
+    ) -> impl Iterator<Item = (InputPort, NodeId, OutputPort)> + '_ {
+        self.invariant_input_pair_ids_with_feedback()
+            .chain(self.variant_input_pair_ids_with_feedback())
+    }
+
     /// Get the number of invariant inputs to the theta node
     pub fn invariant_inputs_len(&self) -> usize {
         self.invariant_inputs.len()
@@ -216,6 +249,25 @@ impl Theta {
     /// Returns the node ids of invariant inputs to the theta node
     pub fn invariant_input_param_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.invariant_inputs.values().copied()
+    }
+
+    pub fn invariant_input_pair_ids_with_feedback(
+        &self,
+    ) -> impl Iterator<Item = (InputPort, NodeId, OutputPort)> + '_ {
+        self.invariant_inputs.iter().map(|(&port, &param)| {
+            (
+                port,
+                param,
+                self.output_feedback
+                    .iter()
+                    .find_map(|(&output, &input)| (input == port).then(|| output))
+                    .unwrap(),
+            )
+        })
+    }
+
+    pub fn replace_invariant_inputs(&mut self, invariant_inputs: BTreeMap<InputPort, NodeId>) {
+        self.invariant_inputs = invariant_inputs;
     }
 
     /// Get the number of variant inputs to the theta node
@@ -254,6 +306,25 @@ impl Theta {
         self.variant_inputs.values().copied()
     }
 
+    pub fn variant_input_pair_ids_with_feedback(
+        &self,
+    ) -> impl Iterator<Item = (InputPort, NodeId, OutputPort)> + '_ {
+        self.variant_inputs.iter().map(|(&port, &param)| {
+            (
+                port,
+                param,
+                self.output_feedback
+                    .iter()
+                    .find_map(|(&output, &input)| (input == port).then(|| output))
+                    .unwrap(),
+            )
+        })
+    }
+
+    pub fn replace_variant_inputs(&mut self, variant_inputs: BTreeMap<InputPort, NodeId>) {
+        self.variant_inputs = variant_inputs;
+    }
+
     /// Get the number of outputs from the theta node, *not including effect outputs*
     pub fn outputs_len(&self) -> usize {
         self.outputs.len()
@@ -277,6 +348,22 @@ impl Theta {
         self.outputs.iter().map(|(&port, &param)| (port, param))
     }
 
+    pub fn output_pair_ids_with_feedback(
+        &self,
+    ) -> impl Iterator<Item = (OutputPort, NodeId, InputPort)> + '_ {
+        self.outputs
+            .iter()
+            .map(|(&port, &param)| (port, param, self.output_feedback[&port]))
+    }
+
+    pub fn replace_outputs(&mut self, outputs: BTreeMap<OutputPort, NodeId>) {
+        self.outputs = outputs;
+    }
+
+    pub fn replace_output_feedback(&mut self, output_feedback: BTreeMap<OutputPort, InputPort>) {
+        self.output_feedback = output_feedback;
+    }
+
     /// Returns the outputs from the theta node, *not including effect outputs*
     pub fn output_params(&self) -> impl Iterator<Item = OutputParam> + '_ {
         self.outputs
@@ -292,7 +379,7 @@ impl Theta {
     /// Returns all variant inputs to the theta node along with the output
     /// that loops back into the given input
     pub fn variant_inputs_loopback(&self) -> impl Iterator<Item = (InputParam, OutputParam)> + '_ {
-        self.output_back_edges.iter().map(|(output, input)| {
+        self.output_feedback.iter().map(|(output, input)| {
             let (input, output) = (self.variant_inputs[input], self.outputs[output]);
             (self.subgraph.to_node(input), self.subgraph.to_node(output))
         })

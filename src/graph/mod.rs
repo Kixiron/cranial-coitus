@@ -1,15 +1,20 @@
+mod edge;
 mod gamma;
+mod inherent;
 mod node;
 mod node_ext;
 mod ports;
+mod remove;
 mod stats;
 mod subgraph;
 mod theta;
 
+pub use edge::{EdgeCount, EdgeDescriptor, EdgeKind};
 pub use gamma::{Gamma, GammaData};
+pub use inherent::{End, InputParam, OutputParam, Start};
 pub use node::Node;
-pub use node_ext::{EdgeCount, EdgeDescriptor, NodeExt};
-pub use ports::{InputPort, OutputPort, Port, PortId};
+pub use node_ext::NodeExt;
+pub use ports::{InputPort, OutputPort, Port, PortData, PortId, PortKind};
 pub use subgraph::Subgraph;
 pub use theta::{Theta, ThetaData};
 
@@ -22,7 +27,7 @@ use crate::{
 };
 use std::{
     cell::Cell,
-    collections::{btree_map::Entry, BTreeMap, BTreeSet, HashSet},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
     fmt::{self, Debug, Display, Write},
     hash::Hash,
     rc::Rc,
@@ -47,6 +52,8 @@ pub struct Rvsdg {
     forward: BTreeMap<OutputPort, EdgeData<InputPort>>,
     reverse: BTreeMap<InputPort, EdgeData<OutputPort>>,
     ports: BTreeMap<PortId, PortData>,
+    start_nodes: TinyVec<[NodeId; 1]>,
+    end_nodes: TinyVec<[NodeId; 1]>,
     node_counter: Counter<NodeId>,
     port_counter: Counter<PortId>,
 }
@@ -65,6 +72,8 @@ impl Rvsdg {
             forward: BTreeMap::new(),
             reverse: BTreeMap::new(),
             ports: BTreeMap::new(),
+            start_nodes: TinyVec::new(),
+            end_nodes: TinyVec::new(),
             node_counter,
             port_counter,
         }
@@ -566,10 +575,10 @@ impl Rvsdg {
     }
 
     #[track_caller]
-    pub fn inputs(
+    pub fn all_node_inputs(
         &self,
         node: NodeId,
-    ) -> impl Iterator<Item = (InputPort, &Node, OutputPort, EdgeKind)> {
+    ) -> impl Iterator<Item = (InputPort, &Node, OutputPort, EdgeKind)> + '_ {
         let node = self.get_node(node);
 
         // TODO: Remove need for `.inputs()` call & allocation here
@@ -577,6 +586,17 @@ impl Rvsdg {
             self.inputs_inner(input)
                 .map(|(node, input, output, edge)| (input, node, output, edge))
         })
+    }
+
+    #[track_caller]
+    pub fn all_node_input_sources(&self, node: NodeId) -> impl Iterator<Item = OutputPort> + '_ {
+        self.all_node_inputs(node).map(|(.., source, _)| source)
+    }
+
+    #[track_caller]
+    pub fn all_node_input_source_ids(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.all_node_input_sources(node)
+            .map(|source| self.port_parent(source))
     }
 
     #[allow(dead_code)]
@@ -824,159 +844,6 @@ impl Rvsdg {
             .expect("attempted to replace a node that doesn't exist") = node.into();
     }
 
-    #[tracing::instrument(skip(self))]
-    pub fn remove_node(&mut self, node: NodeId) {
-        /*
-        tracing::trace!("removing node {:?}", node);
-
-        let removed_ports = self.ports.drain_filter(|_, data| data.parent == node);
-        for (port, data) in removed_ports {
-            tracing::trace!(
-                "removed child port of {:?} {}({})",
-                node,
-                match data.kind {
-                    PortKind::Input => "InputPort",
-                    PortKind::Output => "OutputPort",
-                },
-                port,
-            );
-
-            match data.kind {
-                PortKind::Input => {
-                    if let Some(removed) = self.reverse.remove(&InputPort::new(port)) {
-                        tracing::trace!(
-                            reverse_edges = ?removed,
-                            "removing {} reverse edges from InputPort({})",
-                            removed.len(),
-                            port,
-                        );
-                    } else {
-                        tracing::trace!("InputPort({}) had no reverse edges", port);
-                    }
-                }
-                PortKind::Output => {
-                    if let Some(removed) = self.forward.remove(&OutputPort::new(port)) {
-                        tracing::trace!(
-                            reverse_edges = ?removed,
-                            "removing {} forward edges from OutputPort({})",
-                            removed.len(),
-                            port,
-                        );
-                    } else {
-                        tracing::trace!("OutputPort({}) had no forward edges", port);
-                    }
-                }
-            }
-        }
-
-        self.nodes.remove(&node);
-        */
-
-        // TODO: Remove allocation
-        let mut set = HashSet::with_capacity(1);
-        set.insert(node);
-        self.bulk_remove_nodes(&set);
-    }
-
-    #[tracing::instrument(skip(self))]
-    pub fn bulk_remove_nodes(&mut self, nodes: &HashSet<NodeId>) {
-        // Remove forward edges
-        self.forward.retain(|output, targets| {
-            if nodes.contains(&self.ports[&output.port()].parent) {
-                false
-            } else {
-                targets.retain(|(input, _)| {
-                    self.ports.get(&input.port()).map_or_else(
-                        || {
-                            tracing::warn!(
-                                "could not get the port entry for {:?} while bulk removing nodes, \
-                                 removing forward edge from {:?} to {:?}",
-                                input,
-                                output,
-                                input,
-                            );
-
-                            false
-                        },
-                        |data| !nodes.contains(&data.parent),
-                    )
-                });
-
-                !targets.is_empty()
-            }
-        });
-
-        // Remove reverse edges
-        self.reverse.retain(|input, sources| {
-            if nodes.contains(&self.ports[&input.port()].parent) {
-                false
-            } else {
-                sources.retain(|(output, _, )| {
-                    self.ports.get(&output.port()).map_or_else(
-                        || {
-                            tracing::warn!(
-                                "could not get the port entry for {:?} while bulk removing nodes, \
-                                 removing reverse edge from {:?} to {:?}",
-                                output,
-                                input,
-                                output,
-                            );
-
-                            false
-                        },
-                        |data| {
-                            debug_assert!(data.kind.is_output(), "{:?} is not an output port", output);
-
-                            if nodes.contains(&data.parent) {
-                                tracing::trace!(
-                                    "removing reverse edge from {:?} to {:?} ({:?}'s parent is {:?})",
-                                    input,
-                                    output,
-                                    output,
-                                    data.parent,
-                                );
-
-                                false
-                            } else {
-                                true
-                            }
-                        },
-                    )
-                });
-
-                !sources.is_empty()
-            }
-        });
-
-        // Remove ports
-        self.ports.retain(|port, data| {
-            if nodes.contains(&data.parent) {
-                tracing::trace!(
-                    parent = ?data.parent,
-                    "removing {:?} ({} {} port) while bulk removing nodes",
-                    port,
-                    data.edge,
-                    data.kind,
-                );
-
-                false
-            } else {
-                true
-            }
-        });
-
-        // Remove nodes
-        self.nodes.retain(|node, _| {
-            if nodes.contains(node) {
-                tracing::trace!("removing {:?} while bulk removing nodes", node);
-
-                false
-            } else {
-                true
-            }
-        });
-    }
-
     // FIXME: Invariant assertions & logging
     #[track_caller]
     #[tracing::instrument(skip(self))]
@@ -1076,15 +943,24 @@ impl Rvsdg {
                         forward_edges.len(),
                     );
 
-                    for &(input, _) in forward.get() {
-                        let reverse = self.reverse.get_mut(&input).unwrap();
-
-                        for (output, _) in reverse {
-                            if *output == old_port {
-                                *output = rewire_to;
-                            }
-                        }
-                    }
+                    // for &(input, kind) in forward.get() {
+                    //     let reverse = self.reverse.get_mut(&input).unwrap();
+                    //
+                    //     for (output, edge_kind) in reverse {
+                    //         if *output == old_port && *edge_kind == kind {
+                    //             tracing::trace!(
+                    //                 "rewired reverse {} edge from {:?}->{:?} to {:?}->{:?}",
+                    //                 edge_kind,
+                    //                 input,
+                    //                 old_port,
+                    //                 input,
+                    //                 rewire_to,
+                    //             );
+                    //
+                    //             *output = rewire_to;
+                    //         }
+                    //     }
+                    // }
 
                     forward.get_mut().reserve(forward_edges.len());
                     for (input, kind) in forward_edges {
@@ -1120,7 +996,7 @@ impl Rvsdg {
         }
 
         // Remove any edges that were lying around
-        self.remove_output_edges(old_port);
+        // self.remove_output_edges(old_port);
     }
 
     #[track_caller]
@@ -1180,6 +1056,7 @@ impl Rvsdg {
 
     pub fn start(&mut self) -> Start {
         let start_id = self.next_node();
+        self.start_nodes.push(start_id);
 
         let effect = self.output_port(start_id, EdgeKind::Effect);
 
@@ -1196,6 +1073,7 @@ impl Rvsdg {
         self.assert_effect_port(effect);
 
         let end_id = self.next_node();
+        self.end_nodes.push(end_id);
 
         let effect_port = self.input_port(end_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_port);
@@ -1357,7 +1235,7 @@ impl Rvsdg {
         let port = self.output_port(input_id, EdgeKind::Value);
         let param = InputParam::new(input_id, port, kind);
         self.nodes
-            .insert(input_id, Node::InputPort(param))
+            .insert(input_id, Node::InputParam(param))
             .debug_unwrap_none();
 
         param
@@ -1371,7 +1249,7 @@ impl Rvsdg {
 
         let param = OutputParam::new(output_id, port, kind);
         self.nodes
-            .insert(output_id, Node::OutputPort(param))
+            .insert(output_id, Node::OutputParam(param))
             .debug_unwrap_none();
 
         param
@@ -1630,7 +1508,7 @@ impl Rvsdg {
             (0..outer_inputs.len())
                 .map(|_| {
                     let param = truthy_subgraph.input_param(EdgeKind::Value);
-                    (param.node, param.output())
+                    (param.node(), param.output())
                 })
                 .unzip();
 
@@ -1665,7 +1543,7 @@ impl Rvsdg {
             ..outer_inputs.len())
             .map(|_| {
                 let param = falsy_subgraph.input_param(EdgeKind::Value);
-                (param.node, param.output())
+                (param.node(), param.output())
             })
             .unzip();
 
@@ -1725,8 +1603,8 @@ impl Rvsdg {
             effect_out,                                  // effect_out
             output_params,                               // output_params
             [truthy_output_effect, falsy_output_effect], // output_effect
-            [truthy_start.node, falsy_start.node],       // start_nodes
-            [truthy_end.node, falsy_end.node],           // end_nodes
+            [truthy_start.node(), falsy_start.node()],   // start_nodes
+            [truthy_end.node(), falsy_end.node()],       // end_nodes
             Box::new([truthy_subgraph, falsy_subgraph]), // body
             cond_port,                                   // condition
         );
@@ -1805,110 +1683,21 @@ impl Rvsdg {
         let eq = self.eq(lhs, rhs);
         self.not(eq.value())
     }
+
+    /// Get a reference to the rvsdg's start nodes.
+    pub fn start_nodes(&self) -> &[NodeId] {
+        &self.start_nodes
+    }
+
+    /// Get a reference to the rvsdg's end nodes.
+    pub fn end_nodes(&self) -> &[NodeId] {
+        &self.end_nodes
+    }
 }
 
 impl Default for Rvsdg {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PortData {
-    kind: PortKind,
-    edge: EdgeKind,
-    parent: NodeId,
-}
-
-impl PortData {
-    const fn new(kind: PortKind, edge: EdgeKind, node: NodeId) -> Self {
-        Self {
-            kind,
-            edge,
-            parent: node,
-        }
-    }
-
-    const fn input(node: NodeId, edge: EdgeKind) -> Self {
-        Self::new(PortKind::Input, edge, node)
-    }
-
-    const fn output(node: NodeId, edge: EdgeKind) -> Self {
-        Self::new(PortKind::Output, edge, node)
-    }
-}
-
-impl Display for PortData {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} port for {}", self.kind, self.parent)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PortKind {
-    Input,
-    Output,
-}
-
-impl PortKind {
-    /// Returns `true` if the port kind is [`Input`].
-    ///
-    /// [`Input`]: PortKind::Input
-    const fn is_input(&self) -> bool {
-        matches!(self, Self::Input)
-    }
-
-    /// Returns `true` if the port kind is [`Output`].
-    ///
-    /// [`Output`]: PortKind::Output
-    const fn is_output(&self) -> bool {
-        matches!(self, Self::Output)
-    }
-}
-
-impl Display for PortKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Input => f.write_str("input"),
-            Self::Output => f.write_str("output"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EdgeKind {
-    Effect,
-    Value,
-}
-
-impl EdgeKind {
-    /// Returns `true` if the edge kind is [`Effect`].
-    ///
-    /// [`Effect`]: EdgeKind::Effect
-    pub const fn is_effect(&self) -> bool {
-        matches!(self, Self::Effect)
-    }
-
-    /// Returns `true` if the edge kind is [`Value`].
-    ///
-    /// [`Value`]: EdgeKind::Value
-    pub const fn is_value(&self) -> bool {
-        matches!(self, Self::Value)
-    }
-}
-
-impl Default for EdgeKind {
-    fn default() -> Self {
-        Self::Value
-    }
-}
-
-impl Display for EdgeKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Effect => f.write_str("effect"),
-            Self::Value => f.write_str("value"),
-        }
     }
 }
 
@@ -2095,89 +1884,6 @@ impl Store {
 
     pub const fn effect(&self) -> OutputPort {
         self.effect_out
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Start {
-    node: NodeId,
-    effect: OutputPort,
-}
-
-impl Start {
-    const fn new(node: NodeId, effect: OutputPort) -> Self {
-        Self { node, effect }
-    }
-
-    pub const fn node(&self) -> NodeId {
-        self.node
-    }
-
-    pub const fn effect(&self) -> OutputPort {
-        self.effect
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct End {
-    node: NodeId,
-    effect: InputPort,
-}
-
-impl End {
-    const fn new(node: NodeId, effect: InputPort) -> Self {
-        Self { node, effect }
-    }
-
-    pub const fn node(&self) -> NodeId {
-        self.node
-    }
-
-    #[allow(dead_code)]
-    pub const fn effect_in(&self) -> InputPort {
-        self.effect
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct InputParam {
-    node: NodeId,
-    output: OutputPort,
-    kind: EdgeKind,
-}
-
-impl InputParam {
-    const fn new(node: NodeId, output: OutputPort, kind: EdgeKind) -> Self {
-        Self { node, output, kind }
-    }
-
-    pub const fn node(&self) -> NodeId {
-        self.node
-    }
-
-    pub const fn output(&self) -> OutputPort {
-        self.output
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct OutputParam {
-    node: NodeId,
-    input: InputPort,
-    kind: EdgeKind,
-}
-
-impl OutputParam {
-    const fn new(node: NodeId, input: InputPort, kind: EdgeKind) -> Self {
-        Self { node, input, kind }
-    }
-
-    pub const fn node(&self) -> NodeId {
-        self.node
-    }
-
-    pub const fn input(&self) -> InputPort {
-        self.input
     }
 }
 

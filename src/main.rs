@@ -36,6 +36,11 @@ use std::{
 
 // TODO: Write an evaluator so that we can actually verify optimizations
 // TODO: Codegen via https://docs.rs/iced-x86/1.15.0/iced_x86/index.html
+// TODO: Generate ELK text files
+//       https://rtsys.informatik.uni-kiel.de/elklive/elkgraph.html
+//       https://github.com/eclipse/elk/pull/106
+//       https://rtsys.informatik.uni-kiel.de/elklive/examples.html
+//       https://rtsys.informatik.uni-kiel.de/elklive/elkgraph.html?compressedContent=IYGw5g9gTglgLgCwLYC4AEJgE8CmUcAmAUEQHYQE5qI5zBoDeRaLaOIA1gHQEz4DGcGBFLoAIgHkA6gDlmrAA7Q4AYREBnOFGAxScdegBiAJQCip+S3KUAMsABG7dVwWZ+OJDj3oARAEkZAGU-MVM0ADUAfQAVCQAFNAAJSJtTQ2ifSzQlKDgAQRAYMFJPPR4cADNgAFcQOHE-QOjjPwAhAFVo0zEs3XUYSkD2CpsICAVnYEEYADdgOBx0LWqcElYMB3Y0HwBxYCQkYEysnLg0XQVquABGRiz1gD1Trn7KdBkJY2jErIBfE+U51IlzgACY7utHs9Xos0B8vj91v91qc0Jp5jhIroIZCWE9lC8BrD4d8-mtWNYqMACAQcbjKXZHCBnK4ph4vPVtgFgqEIpEVKYZF1jEl+YLhZlcSxTgUiiUOeUqrVOWJGs02p1uuTcZgmds8jTjlLsoCQAh1HTjWh8blCW84Z9SVbWLqtj4zepJVLkVLUVBzZbjTa4HbiY7Ec6NnqfP7PfdWP949LAXMQCtA1Lg6H0IEJJ0I7ifSxEyjARAriDbkwg9CiTm806EwDcmi6AtIuWztXM7X7bn82SsoQwFQaHQuBcrrcALQAPjQ1IIXA9Q4II+oCFowAnwKu4LnC5pXFjq-Xi64qfTB7H287laIieHo8347vU7Q15f28nYKIT43W4vG2mLYp+gHou2naWn0RJDCAIxjBMXBYBASxQCsD5EEAA
 fn main() {
     set_logger();
 
@@ -97,27 +102,47 @@ fn main() {
     let input_program = program.pretty_print();
     fs::write(dump_dir.join("input.cir"), &input_program).unwrap();
 
-    // {
-    //     let mut input = vec![b'1', b'0'];
-    //     let input = move || {
-    //         let byte = if input.is_empty() { 0 } else { input.remove(0) };
-    //         tracing::info!("got input {}", byte);
-    //         byte
-    //     };
-    //
-    //     let mut output_vec = Vec::new();
-    //     let output = |byte| {
-    //         tracing::info!("got output {}", byte);
-    //         (&mut output_vec).push(byte)
-    //     };
-    //
-    //     {
-    //         let mut machine = Machine::new(args.cells as usize, input, output);
-    //         machine.execute(&program);
-    //     }
-    //
-    //     println!("Input program's output: {:?}", output_vec);
-    // }
+    {
+        let mut input = vec![b'1', b'0'];
+        let input = move || {
+            let byte = if input.is_empty() { 0 } else { input.remove(0) };
+            tracing::trace!("got input {}", byte);
+            byte
+        };
+
+        let mut output_vec = Vec::new();
+        let output = |byte| {
+            tracing::trace!("got output {}", byte);
+            (&mut output_vec).push(byte)
+        };
+
+        let result = {
+            let mut machine = Machine::new(args.step_limit, args.cells as usize, input, output);
+            machine.execute(&program).map(|_| ())
+        };
+
+        let output_str = String::from_utf8_lossy(&output_vec);
+        match result {
+            Ok(()) => {
+                println!(
+                    "Unoptimized program's output (bytes): {:?}\n\
+                     output (escaped): {:?}\n\
+                     output (utf8):\n{}",
+                    output_vec, output_str, output_str,
+                );
+            }
+
+            Err(_) => {
+                println!(
+                    "Unoptimized program hit the step limit of {} steps\n\
+                     output (bytes): {:?}\n\
+                     output (escaped): {:?}\n\
+                     output (utf8): {}",
+                    args.step_limit, output_vec, output_str, output_str,
+                );
+            }
+        }
+    }
 
     let mut evolution = BufWriter::new(File::create(dump_dir.join("evolution.diff")).unwrap());
     write!(&mut evolution, ">>>>> input\n{}", input_program).unwrap();
@@ -125,13 +150,16 @@ fn main() {
     let mut passes: Vec<Box<dyn Pass>> = vec![
         Box::new(Dce::new()),
         Box::new(UnobservedStore::new()),
+        // FIXME: ConstFolding is broken for xmastree.bf
         Box::new(ConstFolding::new()),
         Box::new(AssociativeAdd::new()),
         Box::new(ZeroLoop::new()),
         Box::new(Mem2Reg::new(args.cells as usize)),
+        // FIXME: AddSubLoop is broken for xmastree.bf
         Box::new(AddSubLoop::new()),
         Box::new(Dce::new()),
-        // Box::new(ElimConstGamma::new()),
+        // FIXME: ElimConstGamma is broken for xmastree.bf
+        Box::new(ElimConstGamma::new()),
         Box::new(ConstFolding::new()),
         Box::new(ConstDedup::new()),
     ];
@@ -229,22 +257,42 @@ fn main() {
     let program = IrBuilder::new().translate(&graph);
     let output_program = program.pretty_print();
 
-    // {
-    //     let mut input = vec![b'1', b'0'];
-    //     let input = move || if input.is_empty() { 0 } else { input.remove(0) };
-    //
-    //     let mut output_vec = Vec::new();
-    //     let output = |byte| (&mut output_vec).push(byte);
-    //
-    //     {
-    //         let mut machine = Machine::new(args.cells as usize, input, output);
-    //         machine.execute(&program);
-    //     }
-    //
-    //     println!("Optimized program's output: {:?}", output_vec);
-    // }
-
     print!("{}", output_program);
+
+    {
+        let mut input = vec![b'1', b'0'];
+        let input = move || if input.is_empty() { 0 } else { input.remove(0) };
+
+        let mut output_vec = Vec::new();
+        let output = |byte| (&mut output_vec).push(byte);
+
+        let result = {
+            let mut machine = Machine::new(args.step_limit, args.cells as usize, input, output);
+            machine.execute(&program).map(|_| ())
+        };
+
+        let output_str = String::from_utf8_lossy(&output_vec);
+        match result {
+            Ok(()) => {
+                println!(
+                    "Optimized program's output (bytes): {:?}\n\
+                     output (escaped): {:?}\n\
+                     output (utf8):{}",
+                    output_vec, output_str, output_str,
+                );
+            }
+
+            Err(_) => {
+                println!(
+                    "Optimized program hit the step limit of {} steps\n\
+                     output (bytes): {:?}\n\
+                     output (escaped): {:?}\n\
+                     output (utf8): {}",
+                    args.step_limit, output_vec, output_str, output_str,
+                );
+            }
+        }
+    }
 
     let output_stats = graph.stats();
     let difference = input_stats.difference(output_stats);
@@ -367,7 +415,7 @@ fn validate(graph: &Rvsdg) {
         let input_desc = node.input_desc();
         let (input_effects, input_values) =
             graph
-                .inputs(node_id)
+                .all_node_inputs(node_id)
                 .fold((0, 0), |(effect, value), (_, _, _, edge)| match edge {
                     EdgeKind::Effect => (effect + 1, value),
                     EdgeKind::Value => (effect, value + 1),

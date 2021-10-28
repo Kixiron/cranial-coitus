@@ -162,7 +162,7 @@ impl Pass for Mem2Reg {
                 // other passes (namely `constant-deduplication` to propagate)
                 // constants into regions
                 if !graph.get_input(store.value()).0.is_int()
-                    && !graph.get_input(store.value()).0.is_input_port()
+                    && !graph.get_input(store.value()).0.is_input_param()
                 {
                     tracing::debug!("redirected {:?} to a constant of {}", store, value);
 
@@ -323,8 +323,8 @@ impl Pass for Mem2Reg {
 
         // TODO: Eliminate gamma branches based on gamma condition
 
-        truthy_visitor.visit_graph(gamma.truthy_mut());
-        falsy_visitor.visit_graph(gamma.falsy_mut());
+        truthy_visitor.visit_graph(gamma.true_mut());
+        falsy_visitor.visit_graph(gamma.false_mut());
         self.changed |= truthy_visitor.did_change();
         self.changed |= falsy_visitor.did_change();
 
@@ -404,8 +404,10 @@ impl Pass for Mem2Reg {
                 .filter(|place| place.is_const())
                 .cloned()
             {
-                let replaced = visitor.values.insert(param.output(), constant);
-                debug_assert!(replaced.is_none());
+                if !constant.is_port() {
+                    let replaced = visitor.values.insert(param.output(), constant);
+                    debug_assert!(replaced.is_none());
+                }
             }
         }
 
@@ -457,6 +459,13 @@ impl Place {
     /// [`Const`]: Place::Const
     pub const fn is_const(&self) -> bool {
         matches!(self, Self::Const(..))
+    }
+
+    /// Returns `true` if the place is [`Port`].
+    ///
+    /// [`Port`]: Place::Port
+    pub const fn is_port(&self) -> bool {
+        matches!(self, Self::Port(..))
     }
 }
 

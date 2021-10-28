@@ -7,15 +7,22 @@ use crate::{
 };
 use std::collections::HashMap;
 
+type Result<T> = std::result::Result<T, StepLimitReached>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepLimitReached;
+
 pub struct Machine<'a> {
     tape: Vec<u8>,
     values: HashMap<VarId, Const>,
     input: Box<dyn FnMut() -> u8 + 'a>,
     output: Box<dyn FnMut(u8) + 'a>,
+    step_limit: usize,
+    steps: usize,
 }
 
 impl<'a> Machine<'a> {
-    pub fn new<I, O>(length: usize, input: I, output: O) -> Self
+    pub fn new<I, O>(step_limit: usize, length: usize, input: I, output: O) -> Self
     where
         I: FnMut() -> u8 + 'a,
         O: FnMut(u8) + 'a,
@@ -25,27 +32,65 @@ impl<'a> Machine<'a> {
             values: HashMap::new(),
             input: Box::new(input),
             output: Box::new(output),
+            step_limit,
+            steps: 0,
         }
     }
 
     #[tracing::instrument(skip(self, block))]
-    pub fn execute(&mut self, block: &Block) -> &[u8] {
+    pub fn execute(&mut self, block: &Block) -> Result<&[u8]> {
         for inst in block.iter() {
-            self.handle(inst);
+            self.handle(inst)?;
         }
 
-        &self.tape
+        Ok(&self.tape)
     }
 
-    fn handle(&mut self, inst: &Instruction) {
+    fn handle(&mut self, inst: &Instruction) -> Result<()> {
         match inst {
-            Instruction::Call(call) => {
-                self.call(call).debug_unwrap_none();
-            }
+            Instruction::Call(call) => self.call(call).debug_unwrap_none(),
             Instruction::Assign(assign) => self.assign(assign),
-            Instruction::Theta(theta) => self.theta(theta),
-            Instruction::Gamma(gamma) => self.gamma(gamma),
+            Instruction::Theta(theta) => self.theta(theta)?,
+            Instruction::Gamma(gamma) => self.gamma(gamma)?,
             Instruction::Store(store) => self.store(store),
+        }
+
+        if self.steps >= self.step_limit {
+            match inst {
+                Instruction::Call(call) => {
+                    tracing::info!("hit step limit within call {}", call.effect);
+                }
+                Instruction::Assign(assign) => {
+                    tracing::info!("hit step limit within assign {}", assign.var);
+                }
+                Instruction::Theta(theta) => {
+                    tracing::info!(
+                        "hit step limit within theta {}",
+                        theta.output_effect.unwrap(),
+                    );
+                }
+                Instruction::Gamma(gamma) => {
+                    tracing::info!("hit step limit within gamma {}", gamma.effect);
+                }
+                Instruction::Store(store) => {
+                    tracing::info!("hit step limit within store {}", store.effect);
+                }
+            }
+
+            Err(StepLimitReached)
+        } else {
+            // Don't penalize constant assignments
+            if !matches!(
+                inst,
+                Instruction::Assign(Assign {
+                    value: Expr::Value(_),
+                    ..
+                }),
+            ) {
+                self.steps += 1;
+            }
+
+            Ok(())
         }
     }
 
@@ -96,11 +141,18 @@ impl<'a> Machine<'a> {
         self.values.insert(assign.var, value);
     }
 
-    fn theta(&mut self, theta: &Theta) {
+    fn theta(&mut self, theta: &Theta) -> Result<()> {
         let mut iter = 0;
         loop {
+            let current_steps = self.steps;
             for inst in &theta.body {
-                self.handle(inst);
+                self.handle(inst)?;
+            }
+
+            // If the body doesn't change our step limit at all, we want to still take steps
+            // to make sure we don't infinitely loop
+            if self.steps == current_steps {
+                self.steps += 1;
             }
 
             let cond = theta.cond.as_ref().expect("expected a theta condition");
@@ -113,22 +165,34 @@ impl<'a> Machine<'a> {
             );
 
             if should_break {
+                for (&output, value) in &theta.outputs {
+                    self.values.insert(output, self.get_const(value).clone());
+                }
+
                 break;
             }
-            iter += 1;
 
-            // FIXME: Set input ports to the proper output port's values to
-            //        allow loop values to propagate within the loop
+            for (output, value) in &theta.outputs {
+                let input_var = theta.output_feedback[output];
+                let feedback_value = self.get_const(value).clone();
+                self.values.insert(input_var, feedback_value);
+            }
+
+            iter += 1;
         }
+
+        Ok(())
     }
 
-    fn gamma(&mut self, gamma: &Gamma) {
+    fn gamma(&mut self, gamma: &Gamma) -> Result<()> {
         let cond = self.get_bool(&gamma.cond);
         let branch = if cond { &gamma.truthy } else { &gamma.falsy };
 
         for inst in branch {
-            self.handle(inst);
+            self.handle(inst)?;
         }
+
+        Ok(())
     }
 
     fn store(&mut self, store: &Store) {

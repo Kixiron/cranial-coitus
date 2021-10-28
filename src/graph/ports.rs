@@ -4,6 +4,8 @@ use std::{
     hash::Hash,
 };
 
+use crate::graph::{EdgeKind, NodeId};
+
 pub trait Port: Debug + Clone + Copy + PartialEq + Eq + Hash {
     fn port(&self) -> PortId;
 
@@ -103,5 +105,67 @@ impl Debug for OutputPort {
 impl Display for OutputPort {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Display::fmt(&self.0.inner(), f)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortData {
+    pub kind: PortKind,
+    pub edge: EdgeKind,
+    pub parent: NodeId,
+}
+
+impl PortData {
+    pub const fn new(kind: PortKind, edge: EdgeKind, node: NodeId) -> Self {
+        Self {
+            kind,
+            edge,
+            parent: node,
+        }
+    }
+
+    pub const fn input(node: NodeId, edge: EdgeKind) -> Self {
+        Self::new(PortKind::Input, edge, node)
+    }
+
+    pub const fn output(node: NodeId, edge: EdgeKind) -> Self {
+        Self::new(PortKind::Output, edge, node)
+    }
+}
+
+impl Display for PortData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} port for {}", self.kind, self.parent)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortKind {
+    Input,
+    Output,
+}
+
+impl PortKind {
+    /// Returns `true` if the port kind is [`Input`].
+    ///
+    /// [`Input`]: PortKind::Input
+    pub const fn is_input(&self) -> bool {
+        matches!(self, Self::Input)
+    }
+
+    /// Returns `true` if the port kind is [`Output`].
+    ///
+    /// [`Output`]: PortKind::Output
+    pub const fn is_output(&self) -> bool {
+        matches!(self, Self::Output)
+    }
+}
+
+impl Display for PortKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Input => f.write_str("input"),
+            Self::Output => f.write_str("output"),
+        }
     }
 }

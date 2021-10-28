@@ -144,7 +144,9 @@ pub struct Theta {
     pub cond: Option<Value>,
     pub output_effect: Option<EffectId>,
     pub input_effect: Option<EffectId>,
+    pub inputs: BTreeMap<VarId, Value>,
     pub outputs: BTreeMap<VarId, Value>,
+    pub output_feedback: BTreeMap<VarId, VarId>,
 }
 
 impl Theta {
@@ -153,7 +155,9 @@ impl Theta {
         cond: C,
         output_effect: E1,
         input_effect: E2,
+        inputs: BTreeMap<VarId, Value>,
         outputs: BTreeMap<VarId, Value>,
+        output_feedback: BTreeMap<VarId, VarId>,
     ) -> Self
     where
         C: Into<Option<Value>>,
@@ -165,7 +169,9 @@ impl Theta {
             cond: cond.into(),
             output_effect: output_effect.into(),
             input_effect: input_effect.into(),
+            inputs,
             outputs,
+            output_feedback,
         }
     }
 }

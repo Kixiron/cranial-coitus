@@ -1,7 +1,7 @@
+use crate::graph::{InputPort, NodeId, OutputPort, Rvsdg};
 use tinyvec::TinyVec;
 
-use crate::graph::{InputPort, NodeId, OutputPort, Rvsdg};
-
+// TODO: Refactor this
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gamma {
     pub(super) node: NodeId,
@@ -108,7 +108,7 @@ impl Gamma {
         &self.bodies[0]
     }
 
-    pub fn truthy_mut(&mut self) -> &mut Rvsdg {
+    pub fn true_mut(&mut self) -> &mut Rvsdg {
         &mut self.bodies[0]
     }
 
@@ -116,7 +116,7 @@ impl Gamma {
         &self.bodies[1]
     }
 
-    pub fn falsy_mut(&mut self) -> &mut Rvsdg {
+    pub fn false_mut(&mut self) -> &mut Rvsdg {
         &mut self.bodies[1]
     }
 }

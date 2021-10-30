@@ -513,7 +513,12 @@ impl Rvsdg {
         if let Some(node) = self.cast_node::<T>(node) {
             node
         } else {
-            panic!("failed to cast node to {}", std::any::type_name::<T>())
+            panic!(
+                "failed to cast {:?} to {}: {:?}",
+                node,
+                std::any::type_name::<T>(),
+                self.try_node(node),
+            )
         }
     }
 
@@ -996,7 +1001,7 @@ impl Rvsdg {
         }
 
         // Remove any edges that were lying around
-        // self.remove_output_edges(old_port);
+        self.remove_output_edges(old_port);
     }
 
     #[track_caller]

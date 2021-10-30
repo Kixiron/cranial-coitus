@@ -37,7 +37,16 @@ impl IrBuilder {
     }
 
     pub fn translate(&mut self, graph: &Rvsdg) -> Block {
+        let mut block = Block::new();
+        self.translate_into(&mut block, graph);
+        block
+    }
+
+    pub fn translate_into(&mut self, block: &mut Block, graph: &Rvsdg) {
         let start_time = Instant::now();
+
+        debug_assert!(self.instructions.is_empty());
+        mem::swap(&mut block.instructions, &mut self.instructions);
 
         let old_level = self.top_level;
         self.top_level = false;
@@ -51,8 +60,6 @@ impl IrBuilder {
             }
         }
 
-        let block = Block::new(mem::take(&mut self.instructions));
-
         self.top_level = old_level;
 
         if self.top_level {
@@ -64,7 +71,7 @@ impl IrBuilder {
             );
         }
 
-        block
+        mem::swap(&mut block.instructions, &mut self.instructions);
     }
 
     pub fn push(&mut self, graph: &Rvsdg, node: &Node) {
@@ -103,20 +110,22 @@ impl IrBuilder {
 
         match node {
             &Node::Int(int, value) => {
-                // let var = VarId::new(int.value());
-                // self.inst(crate::ir::Assign::new(var, Const::Int(value)));
+                let var = VarId::new(int.value());
+                self.inst(crate::ir::Assign::new(var, Const::Int(value)));
 
                 self.values
-                    .insert(int.value(), Const::Int(value).into())
+                    // .insert(int.value(), Const::Int(value).into())
+                    .insert(int.value(), var.into())
                     .debug_unwrap_none();
             }
 
             &Node::Bool(bool, value) => {
-                // let var = VarId::new(bool.value());
-                // self.inst(Assign::new(var, Const::Bool(value)));
+                let var = VarId::new(bool.value());
+                self.inst(Assign::new(var, Const::Bool(value)));
 
                 self.values
-                    .insert(bool.value(), Const::Bool(value).into())
+                    // .insert(bool.value(), Const::Bool(value).into())
+                    .insert(bool.value(), var.into())
                     .debug_unwrap_none();
             }
 
@@ -275,6 +284,7 @@ impl IrBuilder {
                     evaluation_stack: Vec::new(),
                     top_level: false,
                 };
+                let mut body = Block::with_capacity(theta.inputs_len() + theta.outputs_len());
 
                 let (mut inputs, mut input_vars) = (BTreeMap::new(), BTreeMap::new());
                 for (input, param) in theta.input_pairs() {
@@ -303,11 +313,8 @@ impl IrBuilder {
                         .debug_unwrap_none();
                 }
 
-                let (mut body, mut outputs, mut output_feedback) = (
-                    builder.translate(theta.body()),
-                    BTreeMap::new(),
-                    BTreeMap::new(),
-                );
+                builder.translate_into(&mut body, theta.body());
+                let (mut outputs, mut output_feedback) = (BTreeMap::new(), BTreeMap::new());
                 for (output, param) in theta.output_pairs() {
                     let value = theta
                         .body()
@@ -324,7 +331,10 @@ impl IrBuilder {
                     }
 
                     let output_id = VarId::new(output);
-                    body.push(Instruction::Assign(Assign::new(output_id, value.clone())));
+                    body.push(Instruction::Assign(Assign::output(
+                        output_id,
+                        value.clone(),
+                    )));
 
                     self.values
                         .insert(output, output_id.into())
@@ -425,7 +435,10 @@ impl IrBuilder {
                     }
 
                     let output_id = VarId::new(output);
-                    truthy.push(Instruction::Assign(Assign::new(output_id, value.clone())));
+                    truthy.push(Instruction::Assign(Assign::output(
+                        output_id,
+                        value.clone(),
+                    )));
 
                     self.values
                         .insert(output, output_id.into())
@@ -482,7 +495,10 @@ impl IrBuilder {
                     }
 
                     let output_id = VarId::new(output);
-                    falsy.push(Instruction::Assign(Assign::new(output_id, value.clone())));
+                    falsy.push(Instruction::Assign(Assign::output(
+                        output_id,
+                        value.clone(),
+                    )));
 
                     // TODO: Still double-insert on this, need a merge node
                     self.values.insert(output, output_id.into());

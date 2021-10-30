@@ -150,17 +150,16 @@ fn main() {
     let mut passes: Vec<Box<dyn Pass>> = vec![
         Box::new(Dce::new()),
         Box::new(UnobservedStore::new()),
-        // FIXME: ConstFolding is broken for xmastree.bf
-        Box::new(ConstFolding::new()),
+        // FIXME: ConstFolding is broken for e.bf
+        // Box::new(ConstFolding::new()),
         Box::new(AssociativeAdd::new()),
         Box::new(ZeroLoop::new()),
         Box::new(Mem2Reg::new(args.cells as usize)),
-        // FIXME: AddSubLoop is broken for xmastree.bf
         Box::new(AddSubLoop::new()),
         Box::new(Dce::new()),
-        // FIXME: ElimConstGamma is broken for xmastree.bf
         Box::new(ElimConstGamma::new()),
-        Box::new(ConstFolding::new()),
+        // // FIXME: ConstFolding is broken for e.bf
+        // Box::new(ConstFolding::new()),
         Box::new(ConstDedup::new()),
     ];
     let (mut pass_num, mut stack, mut visited, mut buffer, mut previous_graph) = (
@@ -176,7 +175,7 @@ fn main() {
 
         for (pass_idx, pass) in passes.iter_mut().enumerate() {
             let span = tracing::info_span!("pass", pass = pass.pass_name());
-            span.in_scope(|| {
+            let current_graph = span.in_scope(|| {
                 tracing::info!(
                     "running {} (pass #{}.{})",
                     pass.pass_name(),
@@ -187,6 +186,7 @@ fn main() {
                 let start_time = Instant::now();
                 changed |=
                     pass.visit_graph_inner(&mut graph, &mut stack, &mut visited, &mut buffer);
+
                 let elapsed = start_time.elapsed();
 
                 tracing::info!(
@@ -205,9 +205,10 @@ fn main() {
                 pass.reset();
                 stack.clear();
 
-                let current_graph = IrBuilder::new().translate(&graph).pretty_print();
+                let current_graph = IrBuilder::new().translate(&graph);
+                let current_graph_pretty = current_graph.pretty_print();
 
-                let diff = diff_ir(&previous_graph, &current_graph);
+                let diff = diff_ir(&previous_graph, &current_graph_pretty);
 
                 if !diff.is_empty() {
                     fs::write(
@@ -217,7 +218,7 @@ fn main() {
                             pass_num,
                             pass_idx,
                         )),
-                        &current_graph,
+                        &current_graph_pretty,
                     )
                     .unwrap();
 
@@ -243,8 +244,59 @@ fn main() {
                     .unwrap();
                 }
 
-                previous_graph = current_graph;
+                previous_graph = current_graph_pretty;
+                current_graph
             });
+
+            {
+                let mut input = vec![b'1', b'0'];
+                let input = move || {
+                    let byte = if input.is_empty() { 0 } else { input.remove(0) };
+                    tracing::trace!("got input {}", byte);
+                    byte
+                };
+
+                let mut output_vec = Vec::new();
+                let output = |byte| {
+                    tracing::trace!("got output {}", byte);
+                    (&mut output_vec).push(byte)
+                };
+
+                let result = {
+                    let mut machine =
+                        Machine::new(args.step_limit, args.cells as usize, input, output);
+                    machine.execute(&current_graph).map(|_| ())
+                };
+
+                let output_str = String::from_utf8_lossy(&output_vec);
+                match result {
+                    Ok(()) => {
+                        println!(
+                            "post-{} output (bytes): {:?}\n\
+                            output (escaped): {:?}\n\
+                            output (utf8):\n{}",
+                            pass.pass_name(),
+                            output_vec,
+                            output_str,
+                            output_str,
+                        );
+                    }
+
+                    Err(_) => {
+                        println!(
+                            "post-{} hit the step limit of {} steps\n\
+                            output (bytes): {:?}\n\
+                            output (escaped): {:?}\n\
+                            output (utf8): {}",
+                            pass.pass_name(),
+                            args.step_limit,
+                            output_vec,
+                            output_str,
+                            output_str,
+                        );
+                    }
+                }
+            }
         }
 
         pass_num += 1;

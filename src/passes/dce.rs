@@ -18,6 +18,8 @@ impl Dce {
         self.changed = true;
     }
 
+    // TODO: For subgraph'd nodes we should keep track of the ports which are actually used,
+    //       since that will let us remove unused parameters from the inner subgraphs
     fn mark_nodes(
         &mut self,
         graph: &mut Rvsdg,
@@ -30,9 +32,13 @@ impl Dce {
                 if visited.insert(node_id) {
                     stack.extend(graph.all_node_input_source_ids(node_id));
 
-                    let (stack_len, mut visited_len) = (stack.len(), visited.len());
+                    let stack_len = stack.len();
                     match graph.get_node_mut(node_id) {
                         Node::Gamma(gamma) => {
+                            stack.reserve(
+                                1 + gamma.output_params().len() + gamma.input_params().len(),
+                            );
+
                             // Clean up the true branch
                             {
                                 // Push the gamma's true branch end node to the stack
@@ -43,13 +49,8 @@ impl Dce {
                                 // Mark the nodes within the gamma's true branch
                                 self.mark_nodes(gamma.true_mut(), stack, visited, stack_len);
 
-                                // Only sweep though the true branch's nodes if we've actually found dead nodes within it
-                                if visited.len() != visited_len {
-                                    visited_len = visited.len();
-
-                                    if gamma.true_mut().bulk_retain_nodes(visited) {
-                                        self.changed();
-                                    }
+                                if gamma.true_mut().bulk_retain_nodes(visited) {
+                                    self.changed();
                                 }
                             }
 
@@ -66,28 +67,25 @@ impl Dce {
                                 // Mark the nodes within the gamma's false branch
                                 self.mark_nodes(gamma.false_mut(), stack, visited, stack_len);
 
-                                // Only sweep though the false branch's nodes if we've actually found dead nodes within it
-                                if visited.len() != visited_len
-                                    && gamma.false_mut().bulk_retain_nodes(visited)
-                                {
+                                if gamma.false_mut().bulk_retain_nodes(visited) {
                                     self.changed();
                                 }
                             }
                         }
 
                         Node::Theta(theta) => {
+                            stack.reserve(2 + theta.outputs_len() + theta.inputs_len());
+
                             // Push the theta's end node to the stack
                             stack.push(theta.end_node_id());
+                            stack.push(theta.condition_id());
                             stack.extend(theta.output_param_ids());
                             stack.extend(theta.input_param_ids());
 
                             // Mark the nodes within the theta's body
                             self.mark_nodes(theta.body_mut(), stack, visited, stack_len);
 
-                            // Only sweep though the body's nodes if we've actually found dead nodes within it
-                            if visited.len() != visited_len
-                                && theta.body_mut().bulk_retain_nodes(visited)
-                            {
+                            if theta.body_mut().bulk_retain_nodes(visited) {
                                 self.changed();
                             }
                         }

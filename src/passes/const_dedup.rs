@@ -62,7 +62,9 @@ impl Pass for ConstDedup {
             );
 
             graph.rewire_dependents(bool.value(), const_value);
-            graph.remove_inputs(bool.node());
+            graph.remove_outputs(bool.node());
+            self.constants.remove(&bool.value());
+
             self.changed();
         } else {
             let replaced = self.constants.insert(bool.value(), value.into());
@@ -93,7 +95,9 @@ impl Pass for ConstDedup {
             );
 
             graph.rewire_dependents(int.value(), const_value);
-            graph.remove_inputs(int.node());
+            graph.remove_outputs(int.node());
+            self.constants.remove(&int.value());
+
             self.changed();
         } else {
             let replaced = self.constants.insert(int.value(), value.into());

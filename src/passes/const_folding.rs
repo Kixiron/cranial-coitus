@@ -25,14 +25,11 @@ impl ConstFolding {
         self.changed = true;
     }
 
-    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (InputPort, Option<i32>) {
-        let (operand, output, _) = graph.get_input(input);
-        let value = operand
-            .as_int()
-            .map(|(_, value)| value)
-            .or_else(|| self.values.get(&output).and_then(Const::convert_to_i32));
+    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (OutputPort, Option<i32>) {
+        let source = graph.input_source(input);
+        let value = self.values.get(&source).and_then(Const::as_int);
 
-        (input, value)
+        (source, value)
     }
 }
 
@@ -60,19 +57,20 @@ impl Pass for ConstFolding {
         // If both sides of the add are known, we can evaluate it
         if let (Some(lhs), Some(rhs)) = (lhs, rhs) {
             let sum = lhs + rhs;
-            tracing::debug!("evaluated add {:?} to {}", add, sum);
+            tracing::debug!(lhs, rhs, "evaluated add {:?} to {}", add, sum);
 
             let int = graph.int(sum);
             self.values.insert(int.value(), sum.into());
+            self.values.remove(&add.value());
 
             graph.rewire_dependents(add.value(), int.value());
-            graph.remove_node(add.node());
 
             self.changed();
 
-        // If either side of the add is zero, we can remove the add entirely
-        } else if let [(_, Some(0)), (input, None)] | [(input, None), (_, Some(0))] = inputs {
-            let non_zero_value = graph.input_source(input);
+            // If either side of the add is zero, we can remove the add entirely
+        } else if let [(_, Some(0)), (non_zero_value, None)]
+        | [(non_zero_value, None), (_, Some(0))] = inputs
+        {
             tracing::debug!(
                 "removing an addition by zero {:?} into a direct value of {:?}",
                 add,
@@ -80,14 +78,13 @@ impl Pass for ConstFolding {
             );
 
             graph.rewire_dependents(add.value(), non_zero_value);
-            graph.remove_node(add.node());
 
             self.changed();
         }
     }
 
     fn visit_eq(&mut self, graph: &mut Rvsdg, eq: Eq) {
-        let [(lhs_node, lhs), (rhs_node, rhs)] =
+        let [(lhs_source, lhs), (rhs_source, rhs)] =
             [self.operand(graph, eq.lhs()), self.operand(graph, eq.rhs())];
 
         // If both values are known we can statically evaluate the comparison
@@ -98,28 +95,33 @@ impl Pass for ConstFolding {
                 lhs,
                 rhs,
                 eq,
-                graph.get_input(lhs_node),
-                graph.get_input(rhs_node),
+                graph.get_output(lhs_source),
+                graph.get_output(rhs_source),
             );
 
-            let true_val = graph.bool(lhs == rhs);
-            graph.rewire_dependents(eq.value(), true_val.value());
-            graph.remove_node(eq.node());
+            let are_equal = graph.bool(lhs == rhs);
+            self.values
+                .insert(are_equal.value(), Const::Bool(lhs == rhs));
+            self.values.remove(&eq.value());
+
+            graph.rewire_dependents(eq.value(), are_equal.value());
 
             self.changed();
 
         // If the operands are equal this comparison will always be true
-        } else if graph.get_input(lhs_node).0.node_id() == graph.get_input(rhs_node).0.node_id() {
+        } else if lhs_source == rhs_source {
             tracing::debug!(
                 "replaced self-equality with true ({:?} == {:?}) {:?}",
-                lhs_node,
-                rhs_node,
-                eq
+                lhs_source,
+                rhs_source,
+                eq,
             );
 
             let true_val = graph.bool(true);
+            self.values.insert(true_val.value(), Const::Bool(true));
+            self.values.remove(&eq.value());
+
             graph.rewire_dependents(eq.value(), true_val.value());
-            graph.remove_node(eq.node());
 
             self.changed();
         }
@@ -133,8 +135,10 @@ impl Pass for ConstFolding {
             tracing::debug!("constant folding 'not {}' to '{}'", value, !value);
 
             let inverted = graph.bool(!value);
+            self.values.insert(inverted.value(), Const::Bool(!value));
+            self.values.remove(&not.value());
+
             graph.rewire_dependents(not.value(), inverted.value());
-            graph.remove_node(not.node());
 
             self.changed();
         }
@@ -147,14 +151,15 @@ impl Pass for ConstFolding {
         if let Some(value) = self.values.get(&output) {
             tracing::debug!("constant folding 'neg {}' to '{}'", value, !value);
 
-            let inverted = match !value {
+            let inverted = match -value {
                 Const::Int(int) => graph.int(int).value(),
                 // FIXME: Do we need a byte node?
                 Const::Byte(byte) => graph.int(byte as i32).value(),
                 Const::Bool(bool) => graph.bool(bool).value(),
             };
+            self.values.remove(&neg.value());
+
             graph.rewire_dependents(neg.value(), inverted);
-            graph.remove_node(neg.node());
 
             self.changed();
         }
@@ -259,16 +264,16 @@ impl Pass for ConstFolding {
         self.changed |= visitor.did_change();
 
         // FIXME: This is probably incorrect
-        for (port, param) in theta.output_pairs() {
-            if let Some(value) = self
-                .values
-                .get(&theta.body().get_input(param.input()).1)
-                .cloned()
-            {
-                tracing::trace!("propagating {:?} out of theta node", value);
-                self.values.insert(port, value);
-            }
-        }
+        // for (port, param) in theta.output_pairs() {
+        //     if let Some(value) = self
+        //         .values
+        //         .get(&theta.body().get_input(param.input()).1)
+        //         .cloned()
+        //     {
+        //         tracing::trace!("propagating {:?} out of theta node", value);
+        //         self.values.insert(port, value);
+        //     }
+        // }
 
         graph.replace_node(theta.node(), theta);
     }

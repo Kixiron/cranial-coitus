@@ -37,7 +37,7 @@ impl<'a> Machine<'a> {
         }
     }
 
-    #[tracing::instrument(skip(self, block))]
+    #[tracing::instrument(skip_all)]
     pub fn execute(&mut self, block: &Block) -> Result<&[u8]> {
         for inst in block.iter() {
             self.handle(inst)?;
@@ -169,6 +169,15 @@ impl<'a> Machine<'a> {
                     self.values.insert(output, self.get_const(value).clone());
                 }
 
+                tracing::trace!(
+                    values = ?theta
+                        .outputs
+                        .iter()
+                        .map(|(output, value)| (output, self.get_const(value)))
+                        .collect::<HashMap<_, _>>(),
+                    "theta output values",
+                );
+
                 break;
             }
 
@@ -177,6 +186,15 @@ impl<'a> Machine<'a> {
                 let feedback_value = self.get_const(value).clone();
                 self.values.insert(input_var, feedback_value);
             }
+
+            tracing::trace!(
+                values = ?theta
+                    .outputs
+                    .iter()
+                    .map(|(output, value)| (theta.output_feedback[output], (output, self.get_const(value))))
+                    .collect::<HashMap<_, _>>(),
+                "theta feedback values",
+            );
 
             iter += 1;
         }
@@ -216,10 +234,17 @@ impl<'a> Machine<'a> {
     }
 
     fn eq(&self, eq: &Eq) -> Const {
-        let (lhs, rhs) = (self.get_const(&eq.lhs), self.get_const(&eq.rhs));
-        tracing::trace!("({:?} == {:?}) is {}", lhs, rhs, lhs.equal_values(rhs));
+        let (lhs, rhs) = (self.get_byte(&eq.lhs), self.get_byte(&eq.rhs));
+        tracing::trace!(
+            lhs = ?self.get_const(&eq.lhs),
+            rhs = ?self.get_const(&eq.rhs),
+            "({:?} == {:?}) is {}",
+            lhs,
+            rhs,
+            lhs == rhs,
+        );
 
-        Const::Bool(lhs.equal_values(rhs))
+        Const::Bool(lhs == rhs)
     }
 
     fn add(&self, add: &Add) -> Const {

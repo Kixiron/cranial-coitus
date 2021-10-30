@@ -1,6 +1,6 @@
 use crate::{
-    graph::{Node, NodeId, Port, Rvsdg},
-    utils::{Set, SingletonSet},
+    graph::{Node, NodeId, Port, PortData, PortId, Rvsdg},
+    utils::Set,
 };
 use std::fmt::Debug;
 
@@ -12,7 +12,14 @@ impl Rvsdg {
             tracing::trace!("removing {:?}", node);
 
             // Remove all the associated ports and edges
-            self.bulk_remove_nodes(&SingletonSet::new(node_id));
+            self.retain_graph_elements(
+                |parent| parent != node_id,
+                |data| data.parent != node_id,
+                |parent| parent != node_id,
+                |data| data.parent != node_id,
+                |_, data| data.parent != node_id,
+                |node| node != node_id,
+            );
 
             Some(node)
         } else {
@@ -32,183 +39,14 @@ impl Rvsdg {
     where
         S: Set<NodeId> + Debug,
     {
-        if removed_nodes.is_empty() {
-            tracing::trace!("got an empty set of nodes to remove, not removing any");
-
-            return false;
-        }
-
-        // Get the original sizes of each collection
-        let (
-            initial_nodes,
-            initial_ports,
-            initial_forward,
-            initial_reverse,
-            initial_start,
-            initial_end,
-        ) = (
-            self.nodes.len(),
-            self.ports.len(),
-            self.forward.len(),
-            self.reverse.len(),
-            self.start_nodes.len(),
-            self.end_nodes.len(),
-        );
-
-        // Remove forward edges
-        self.forward.retain(|output, targets| {
-            if removed_nodes.contains(&self.ports[&output.port()].parent) {
-                false
-            } else {
-                targets.retain(|(input, _)| {
-                    self.ports.get(&input.port()).map_or_else(
-                        || {
-                            tracing::warn!(
-                                "could not get the port entry for {:?} while bulk removing nodes, \
-                                 removing forward edge from {:?} to {:?}",
-                                input,
-                                output,
-                                input,
-                            );
-
-                            false
-                        },
-                        |data| {
-                            let should_keep = removed_nodes.contains(&data.parent);
-                            if !should_keep {
-                                tracing::trace!(
-                                    "removing forward edge from {:?} to {:?} ({:?}'s parent is {:?}) \
-                                     while bulk removing nodes",
-                                    output,
-                                    output,
-                                    input,
-                                    data.parent,
-                                );
-                            }
-                            debug_assert!(data.kind.is_input(), "{:?} is not an input port", output);
-
-                            should_keep
-                        },
-                    )
-                });
-
-                !targets.is_empty()
-            }
-        });
-
-        // Remove reverse edges
-        self.reverse.retain(|input, sources| {
-            if removed_nodes.contains(&self.ports[&input.port()].parent) {
-                false
-            } else {
-                sources.retain(|(output, _, )| {
-                    self.ports.get(&output.port()).map_or_else(
-                        || {
-                            tracing::warn!(
-                                "could not get the port entry for {:?} while bulk removing nodes, \
-                                 removing reverse edge from {:?} to {:?}",
-                                output,
-                                input,
-                                output,
-                            );
-
-                            false
-                        },
-                        |data| {
-                            let should_keep = !removed_nodes.contains(&data.parent);
-                            if !should_keep {
-                                tracing::trace!(
-                                    "removing forward edge from {:?} to {:?} ({:?}'s parent is {:?}) \
-                                     while bulk removing nodes",
-                                    output,
-                                    output,
-                                    input,
-                                    data.parent,
-                                );
-                            }
-                            debug_assert!(data.kind.is_output(), "{:?} is not an output port", output);
-
-                            should_keep
-                        },
-                    )
-                });
-
-                !sources.is_empty()
-            }
-        });
-
-        // Remove ports
-        self.ports.retain(|port, data| {
-            let should_keep = !removed_nodes.contains(&data.parent);
-            if !should_keep {
-                tracing::trace!(
-                    parent = ?data.parent,
-                    "removing {:?} ({} {} port) while bulk removing nodes",
-                    port,
-                    data.edge,
-                    data.kind,
-                );
-            }
-
-            should_keep
-        });
-
-        // Remove nodes
-        self.nodes.retain(|node, _| {
-            let should_keep = !removed_nodes.contains(node);
-            if !should_keep {
-                tracing::trace!("removing {:?} while bulk removing nodes", node);
-            }
-
-            should_keep
-        });
-
-        self.start_nodes.retain(|node| {
-            let should_keep = self.nodes.contains_key(node);
-            if !should_keep {
-                tracing::trace!("removing start node {:?} while bulk removing nodes", node);
-            }
-
-            should_keep
-        });
-
-        self.end_nodes.retain(|node| {
-            let should_keep = self.nodes.contains_key(node);
-            if !should_keep {
-                tracing::trace!("removing end node {:?} while bulk removing nodes", node);
-            }
-
-            should_keep
-        });
-
-        // Get the final sizes of each collection
-        let (final_nodes, final_ports, final_forward, final_reverse, final_start, final_end) = (
-            self.nodes.len(),
-            self.ports.len(),
-            self.forward.len(),
-            self.reverse.len(),
-            self.start_nodes.len(),
-            self.end_nodes.len(),
-        );
-
-        tracing::trace!(
-            final_nodes, final_ports, final_forward, final_reverse, final_start, final_end,
-            "removed {} nodes, {} ports, {} forward edges, {} reverse edges, {} start nodes and {} end nodes",
-            initial_nodes - final_nodes,
-            initial_ports - final_ports,
-            initial_forward - final_forward,
-            initial_reverse - final_reverse,
-            initial_start - final_start,
-            initial_end - final_end,
-        );
-
-        // Return whether we've actually removed any nodes or not
-        initial_nodes != final_nodes
-            || initial_ports != final_ports
-            || initial_forward != final_forward
-            || initial_reverse != final_reverse
-            || initial_start != final_start
-            || initial_end != final_end
+        self.retain_graph_elements(
+            |parent| !removed_nodes.contains(&parent),
+            |data| !removed_nodes.contains(&data.parent),
+            |parent| !removed_nodes.contains(&parent),
+            |data| !removed_nodes.contains(&data.parent),
+            |_, data| !removed_nodes.contains(&data.parent),
+            |node| !removed_nodes.contains(&node),
+        )
     }
 
     /// Remove all nodes from the graph except for the ones mentioned in `retained_nodes`
@@ -220,6 +58,50 @@ impl Rvsdg {
     pub fn bulk_retain_nodes<S>(&mut self, retained_nodes: &S) -> bool
     where
         S: Set<NodeId> + Debug,
+    {
+        self.retain_graph_elements(
+            |parent| retained_nodes.contains(&parent),
+            |data| retained_nodes.contains(&data.parent),
+            |parent| retained_nodes.contains(&parent),
+            |data| retained_nodes.contains(&data.parent),
+            |_, data| retained_nodes.contains(&data.parent),
+            |node| retained_nodes.contains(&node),
+        )
+    }
+
+    /// Remove all graph elements where the given closures return `false`
+    ///
+    /// `forward` is run on all unique forward edge start ports, `forward_targets`
+    /// is ran for each unique forward edge endpoint pair.
+    /// `reverse` is run on all unique reverse edge start ports, `reverse_sources`
+    /// is ran for each unique reverse edge endpoint pair.
+    /// `ports` is run for each port entry.
+    /// `nodes` is run for each node entry.
+    ///
+    /// Graph [`Start`] and [`End`] nodes are automatically updated based on the removals
+    /// performed within the user functions.
+    /// That is, if the `nodes` function removes any start or end nodes, the corresponding
+    /// nodes will be removed from the graph's internal start and end node lists.
+    ///
+    /// This function will also automatically remove any edges for which any of the involved nodes
+    /// no longer exists, and may also remove ports who's parent node no longer exists as well.
+    ///
+    pub fn retain_graph_elements<Forward, ForwardTargets, Reverse, ReverseSources, Ports, Nodes>(
+        &mut self,
+        mut forward: Forward,
+        mut forward_targets: ForwardTargets,
+        mut reverse: Reverse,
+        mut reverse_sources: ReverseSources,
+        mut ports: Ports,
+        mut nodes: Nodes,
+    ) -> bool
+    where
+        Forward: FnMut(NodeId) -> bool,
+        ForwardTargets: FnMut(&PortData) -> bool,
+        Reverse: FnMut(NodeId) -> bool,
+        ReverseSources: FnMut(&PortData) -> bool,
+        Ports: FnMut(PortId, &PortData) -> bool,
+        Nodes: FnMut(NodeId) -> bool,
     {
         // Get the original sizes of each collection
         let (
@@ -238,81 +120,50 @@ impl Rvsdg {
             self.end_nodes.len(),
         );
 
-        // If we've been instructed to retain zero nodes, just clear the graph
-        if retained_nodes.is_empty() {
-            tracing::trace!(
-                removed_forward_edges = initial_nodes,
-                removed_reverse_edges = initial_ports,
-                removed_ports = initial_forward,
-                removed_nodes = initial_reverse,
-                removed_start_nodes = initial_start,
-                removed_end_nodes = initial_end,
-                "got an empty set of nodes to retain, removing all nodes, ports and edges from the graph",
-            );
-
-            // If there's actually any elements within the graph
-            let graph_is_empty = initial_nodes != 0
-                || initial_ports != 0
-                || initial_forward != 0
-                || initial_reverse != 0
-                || initial_start != 0
-                || initial_end != 0;
-
-            if !graph_is_empty {
-                self.forward.clear();
-                self.reverse.clear();
-                self.ports.clear();
-                self.nodes.clear();
-                self.start_nodes.clear();
-                self.end_nodes.clear();
-            }
-
-            return graph_is_empty;
-        }
-
         // Remove forward edges
         self.forward.retain(|output, targets| {
-            if retained_nodes.contains(&self.ports[&output.port()].parent) {
-                targets.retain(|(input, _)| {
-                    self.ports.get(&input.port()).map_or_else(
-                        || {
-                            tracing::warn!(
-                                "could not get the port entry for {:?} while bulk retaining nodes, \
-                                 removing forward edge from {:?} to {:?}",
-                                input,
-                                output,
-                                input,
-                            );
+            let parent = match self.ports.get(&output.port()) {
+                Some(data) => data.parent,
 
-                            false
-                        },
-                        |data| {
-                            let should_keep = retained_nodes.contains(&data.parent);
-                            if !should_keep {
-                                tracing::trace!(
-                                    "removing forward edge from {:?} to {:?} ({:?}'s parent is {:?}) \
-                                     while bulk retaining nodes",
-                                    output,
-                                    output,
-                                    input,
-                                    data.parent,
-                                );
-                            }
-                            debug_assert!(data.kind.is_input(), "{:?} is not an input port", output);
+                // If the port doesn't exist, remove it anyways
+                None => {
+                    tracing::warn!("could not get the port entry for forward edge {:?}", output);
+                    return false;
+                }
+            };
 
-                            should_keep
-                        },
-                    )
+            // If the user wants to keep this edge
+            if forward(parent) {
+                // Process all of the kept edge's targets
+                targets.retain(|(input, _)| match self.ports.get(&input.port()) {
+                    // Decide whether or not to keep the edge
+                    Some(data) => forward_targets(data),
+
+                    // If the port doesn't exist, remove it anyways
+                    None => {
+                        tracing::warn!(
+                            ?parent,
+                            "could not get the port entry for {:?}, removing forward edge from {:?} to {:?}",
+                            input,
+                            output,
+                            input,
+                        );
+
+                        false
+                    }
                 });
 
-                if targets.is_empty() {
-                    tracing::trace!(
-                        "found that forward edge entry for {:?} was empty while bulk retaining nodes",
-                        output,
-                    );
-                }
+                // If the edge has no targets, remove it
+                let has_targets = !targets.is_empty();
+                tracing::trace!(
+                    ?parent,
+                    "forward edge from {:?} has no targets, removing it",
+                    output,
+                );
 
-                !targets.is_empty()
+                has_targets
+
+            // Otherwise the user has decided to discard this edge
             } else {
                 false
             }
@@ -320,59 +171,60 @@ impl Rvsdg {
 
         // Remove reverse edges
         self.reverse.retain(|input, sources| {
-            if retained_nodes.contains(&self.ports[&input.port()].parent) {
-                sources.retain(|(output, _, )| {
-                    self.ports.get(&output.port()).map_or_else(
-                        || {
-                            tracing::warn!(
-                                "could not get the port entry for {:?} while bulk retaining nodes, \
-                                 removing reverse edge from {:?} to {:?}",
-                                output,
-                                input,
-                                output,
-                            );
+            let parent = match self.ports.get(&input.port()) {
+                Some(data) => data.parent,
 
-                            false
-                        },
-                        |data| {
-                            let should_keep = retained_nodes.contains(&data.parent);
-                            if !should_keep {
-                                tracing::trace!(
-                                    "removing reverse edge from {:?} to {:?} ({:?}'s parent is {:?}) \
-                                     while bulk retaining nodes",
-                                    input,
-                                    output,
-                                    output,
-                                    data.parent,
-                                );
-                            }
-                            debug_assert!(data.kind.is_output(), "{:?} is not an output port", output);
+                // If the port doesn't exist, remove it anyways
+                None => {
+                    tracing::warn!("could not get the port entry for reverse edge {:?}", input);
+                    return false;
+                }
+            };
 
-                            should_keep
-                        },
-                    )
+            // If the user wants to keep this edge
+            if reverse(parent) {
+                // Process all of the kept edge's sources
+                sources.retain(|(output, _)| match self.ports.get(&output.port()) {
+                    // Decide whether or not to keep the edge
+                    Some(data) => reverse_sources(data),
+
+                    // If the port doesn't exist, remove it anyways
+                    None => {
+                        tracing::warn!(
+                            ?parent,
+                            "could not get the port entry for {:?}, removing forward edge from {:?} to {:?}",
+                            output,
+                            input,
+                            output,
+                        );
+
+                        false
+                    }
                 });
 
-                if sources.is_empty() {
-                    tracing::trace!(
-                        "found that reverse edge entry for {:?} was empty while bulk retaining nodes",
-                        input,
-                    );
-                }
+                // If the edge has no sources, remove it
+                let has_sources = !sources.is_empty();
+                tracing::trace!(
+                    ?parent,
+                    "reverse edge from {:?} has no sources, removing it",
+                    input,
+                );
 
-                !sources.is_empty()
+                has_sources
+
+            // Otherwise the user has decided to discard this edge
             } else {
                 false
             }
         });
 
         // Remove ports
-        self.ports.retain(|port, data| {
-            let should_keep = retained_nodes.contains(&data.parent);
+        self.ports.retain(|&port, data| {
+            let should_keep = ports(port, data);
             if !should_keep {
                 tracing::trace!(
                     parent = ?data.parent,
-                    "removing {:?} ({} {} port) while bulk retaining nodes",
+                    "removing {:?} ({} {} port)",
                     port,
                     data.edge,
                     data.kind,
@@ -383,28 +235,36 @@ impl Rvsdg {
         });
 
         // Remove nodes
-        self.nodes.retain(|node, _| {
-            let should_keep = retained_nodes.contains(node);
+        self.nodes.retain(|&node, _| {
+            let should_keep = nodes(node);
             if !should_keep {
-                tracing::trace!("removing {:?} while bulk retaining nodes", node);
+                tracing::trace!("removing {:?}", node);
             }
 
             should_keep
         });
 
+        // Remove any start nodes which don't exist within the graph
         self.start_nodes.retain(|node| {
             let should_keep = self.nodes.contains_key(node);
             if !should_keep {
-                tracing::trace!("removing start node {:?} while bulk retaining nodes", node);
+                tracing::trace!(
+                    "removing start node {:?}, its node entry no longer exists",
+                    node,
+                );
             }
 
             should_keep
         });
 
+        // Remove any end nodes which don't exist within the graph
         self.end_nodes.retain(|node| {
             let should_keep = self.nodes.contains_key(node);
             if !should_keep {
-                tracing::trace!("removing end node {:?} while bulk retaining nodes", node);
+                tracing::trace!(
+                    "removing end node {:?}, its node entry no longer exists",
+                    node,
+                );
             }
 
             should_keep
@@ -420,8 +280,22 @@ impl Rvsdg {
             self.end_nodes.len(),
         );
 
+        // Return whether we've actually removed any nodes or not
+        let did_modify_graph = initial_nodes != final_nodes
+            || initial_ports != final_ports
+            || initial_forward != final_forward
+            || initial_reverse != final_reverse
+            || initial_start != final_start
+            || initial_end != final_end;
+
         tracing::trace!(
-            final_nodes, final_ports, final_forward, final_reverse, final_start, final_end,
+            did_modify_graph,
+            final_nodes,
+            final_ports,
+            final_forward,
+            final_reverse,
+            final_start,
+            final_end,
             "removed {} nodes, {} ports, {} forward edges, {} reverse edges, {} start nodes and {} end nodes",
             initial_nodes - final_nodes,
             initial_ports - final_ports,
@@ -431,12 +305,6 @@ impl Rvsdg {
             initial_end - final_end,
         );
 
-        // Return whether we've actually removed any nodes or not
-        initial_nodes != final_nodes
-            || initial_ports != final_ports
-            || initial_forward != final_forward
-            || initial_reverse != final_reverse
-            || initial_start != final_start
-            || initial_end != final_end
+        did_modify_graph
     }
 }

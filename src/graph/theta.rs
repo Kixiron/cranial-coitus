@@ -100,7 +100,7 @@ impl Theta {
     /// Get the [`NodeId`] of the theta node's condition
     ///
     /// Should be an [`OutputParam`] in the theta's body
-    pub fn condition_id(&self) -> NodeId {
+    pub const fn condition_id(&self) -> NodeId {
         self.condition
     }
 
@@ -120,7 +120,7 @@ impl Theta {
     }
 
     /// Get the [`NodeId`] of the theta body's [`End`] node
-    pub fn end_node_id(&self) -> NodeId {
+    pub const fn end_node_id(&self) -> NodeId {
         self.subgraph.end
     }
 
@@ -144,8 +144,16 @@ impl Theta {
         self.effects.map(|effects| effects.output)
     }
 
+    pub fn effects(&self) -> Option<(InputPort, OutputPort)> {
+        self.effects.map(|effects| (effects.input, effects.output))
+    }
+
+    pub const fn has_effects(&self) -> bool {
+        self.effects.is_some()
+    }
+
     /// Get the theta's output feedback edges
-    pub fn output_feedback(&self) -> &BTreeMap<OutputPort, InputPort> {
+    pub const fn output_feedback(&self) -> &BTreeMap<OutputPort, InputPort> {
         &self.output_feedback
     }
 
@@ -170,7 +178,7 @@ impl Theta {
 impl Theta {
     /// Returns the number of all inputs (variant and invariant) to the theta node,
     /// *not including effect inputs*
-    pub fn total_inputs(&self) -> usize {
+    pub fn inputs_len(&self) -> usize {
         self.invariant_inputs_len() + self.variant_inputs_len()
     }
 
@@ -416,13 +424,13 @@ impl NodeExt for Theta {
     fn input_desc(&self) -> EdgeDescriptor {
         EdgeDescriptor::new(
             EdgeCount::exact(self.input_effect().is_some() as usize),
-            EdgeCount::exact(self.total_inputs()),
+            EdgeCount::exact(self.inputs_len()),
         )
     }
 
     fn all_input_ports(&self) -> TinyVec<[InputPort; 4]> {
         let mut inputs =
-            TinyVec::with_capacity(self.total_inputs() + self.input_effect().is_some() as usize);
+            TinyVec::with_capacity(self.inputs_len() + self.input_effect().is_some() as usize);
 
         inputs.extend(self.input_ports());
         if let Some(input_effect) = self.input_effect() {

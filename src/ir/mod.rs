@@ -43,8 +43,16 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn new(instructions: Vec<Instruction>) -> Self {
-        Self { instructions }
+    pub const fn new() -> Self {
+        Self {
+            instructions: Vec::new(),
+        }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            instructions: Vec::with_capacity(capacity),
+        }
     }
 
     pub fn into_inner(self) -> Vec<Instruction> {
@@ -447,6 +455,7 @@ impl Pretty for Call {
 pub struct Assign {
     pub var: VarId,
     pub value: Expr,
+    pub tag: AssignTag,
 }
 
 impl Assign {
@@ -457,6 +466,29 @@ impl Assign {
         Self {
             var,
             value: value.into(),
+            tag: AssignTag::None,
+        }
+    }
+
+    pub fn input<I>(var: VarId, value: I) -> Self
+    where
+        I: Into<Expr>,
+    {
+        Self {
+            var,
+            value: value.into(),
+            tag: AssignTag::InputParam,
+        }
+    }
+
+    pub fn output<I>(var: VarId, value: I) -> Self
+    where
+        I: Into<Expr>,
+    {
+        Self {
+            var,
+            value: value.into(),
+            tag: AssignTag::OutputParam,
         }
     }
 }
@@ -473,8 +505,20 @@ impl Pretty for Assign {
             .append(allocator.space())
             .append(allocator.text(":="))
             .append(allocator.space())
+            .append(match self.tag {
+                AssignTag::None => allocator.nil(),
+                AssignTag::InputParam => allocator.text("in").append(allocator.space()),
+                AssignTag::OutputParam => allocator.text("out").append(allocator.space()),
+            })
             .append(self.value.pretty(allocator))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AssignTag {
+    None,
+    InputParam,
+    OutputParam,
 }
 
 #[derive(Debug, Clone)]

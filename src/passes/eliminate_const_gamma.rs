@@ -6,14 +6,18 @@ use crate::{
     passes::Pass,
     utils::AssertNone,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    hash::BuildHasherDefault,
+};
+use xxhash_rust::xxh3::Xxh3;
 
 /// Evaluates constant operations within the program
 pub struct ElimConstGamma {
     values: BTreeMap<OutputPort, bool>,
     nodes: Vec<(NodeId, Node)>,
-    input_lookup: HashMap<InputPort, Vec<InputPort>>,
-    output_lookup: HashMap<OutputPort, OutputPort>,
+    input_lookup: HashMap<InputPort, Vec<InputPort>, BuildHasherDefault<Xxh3>>,
+    output_lookup: HashMap<OutputPort, OutputPort, BuildHasherDefault<Xxh3>>,
     changed: bool,
 }
 
@@ -22,8 +26,8 @@ impl ElimConstGamma {
         Self {
             values: BTreeMap::new(),
             nodes: Vec::new(),
-            input_lookup: HashMap::new(),
-            output_lookup: HashMap::new(),
+            input_lookup: HashMap::with_capacity_and_hasher(1024, Default::default()),
+            output_lookup: HashMap::with_capacity_and_hasher(1024, Default::default()),
             changed: false,
         }
     }

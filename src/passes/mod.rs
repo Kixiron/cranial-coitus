@@ -1,28 +1,33 @@
 mod add_sub_loop;
 mod associative_add;
-mod const_dedup;
 mod const_folding;
 mod dce;
 mod eliminate_const_gamma;
+mod expr_dedup;
+mod licm;
 mod mem2reg;
 mod unobserved_store;
 mod zero_loop;
 
 pub use add_sub_loop::AddSubLoop;
 pub use associative_add::AssociativeAdd;
-pub use const_dedup::ConstDedup;
 pub use const_folding::ConstFolding;
 pub use dce::Dce;
 pub use eliminate_const_gamma::ElimConstGamma;
+pub use expr_dedup::ExprDedup;
+pub use licm::Licm;
 pub use mem2reg::Mem2Reg;
 pub use unobserved_store::UnobservedStore;
 pub use zero_loop::ZeroLoop;
 
-use crate::graph::{
-    Add, Bool, End, Eq, Gamma, Input, InputParam, Int, Load, Neg, Node, NodeId, Not, Output,
-    OutputParam, Rvsdg, Start, Store, Theta,
+use crate::{
+    graph::{
+        Add, Bool, End, Eq, Gamma, Input, InputParam, Int, Load, Neg, Node, NodeId, Not, Output,
+        OutputParam, Rvsdg, Start, Store, Theta,
+    },
+    utils::HashSet,
 };
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::VecDeque;
 
 // TODO:
 // - Addition https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.2B_y
@@ -61,6 +66,7 @@ use std::collections::{BTreeSet, VecDeque};
 //   evaluate loops in more generalized situations
 // - Removing equivalent nodes (CSE)
 // - Build dataflow lattices of variant theta values
+// - Lower "find next cell with a value of `N`" to to a `memchr()` invocation
 pub trait Pass {
     /// The name of the current pass
     fn pass_name(&self) -> &str;
@@ -70,19 +76,20 @@ pub trait Pass {
     fn reset(&mut self);
 
     fn visit_graph(&mut self, graph: &mut Rvsdg) -> bool {
-        self.visit_graph_inner(
-            graph,
-            &mut VecDeque::new(),
-            &mut BTreeSet::new(),
-            &mut Vec::new(),
-        )
+        let (mut stack, mut visited, mut buffer) = (
+            VecDeque::with_capacity(graph.node_len() / 2),
+            HashSet::with_capacity_and_hasher(graph.node_len(), Default::default()),
+            Vec::new(),
+        );
+
+        self.visit_graph_inner(graph, &mut stack, &mut visited, &mut buffer)
     }
 
     fn visit_graph_inner(
         &mut self,
         graph: &mut Rvsdg,
         stack: &mut VecDeque<NodeId>,
-        visited: &mut BTreeSet<NodeId>,
+        visited: &mut HashSet<NodeId>,
         buffer: &mut Vec<NodeId>,
     ) -> bool {
         visited.clear();
@@ -173,7 +180,7 @@ pub trait Pass {
         self.did_change()
     }
 
-    fn post_visit_graph(&mut self, _graph: &mut Rvsdg, _visited: &BTreeSet<NodeId>) {}
+    fn post_visit_graph(&mut self, _graph: &mut Rvsdg, _visited: &HashSet<NodeId>) {}
 
     fn visit(&mut self, graph: &mut Rvsdg, node_id: NodeId) {
         // FIXME: These clones are really not good
@@ -217,4 +224,54 @@ pub trait Pass {
     fn visit_gamma(&mut self, _graph: &mut Rvsdg, _gamma: Gamma) {}
     fn visit_input_param(&mut self, _graph: &mut Rvsdg, _input_param: InputParam) {}
     fn visit_output_param(&mut self, _graph: &mut Rvsdg, _output_param: OutputParam) {}
+}
+
+// FIXME: Lower this to a `memchr()` invocation
+test_opts! {
+    // do {
+    //     v1 := int 4
+    //     v2 := add v211, v1
+    //     v3 := load v2 // eff: e251, pred: e230
+    //     v4 := int 0
+    //     v5 := eq v3, v4
+    //     v6 := not v5
+    //     v7 := out v2
+    // } while { v6 }
+    memchr_loop,
+    passes = [ZeroLoop::new()],
+    output = [0],
+    |graph, mut effect| {
+        let mut ptr = graph.int(0).value();
+
+        // Store a non-zero value to the current cell
+        let not_zero = graph.int(255).value();
+        let store = graph.store(ptr, not_zero, effect);
+        effect = store.effect();
+
+        // Create the theta node
+        let theta = graph.theta([], [ptr], effect, |graph, mut effect, _invariant, variant| {
+            let ptr = variant[0];
+
+            let zero = graph.int(0).value();
+            let four = graph.int(4).value();
+
+            let add = graph.add(ptr, four);
+            let load = graph.load(add.value(), effect);
+            effect = load.effect();
+
+            let not_eq_zero = graph.neq(load.value(), zero);
+
+            ThetaData::new([ptr], not_eq_zero.value(), effect)
+        });
+        ptr = theta.outputs()[0];
+        effect = theta.output_effect().unwrap();
+
+        // Load the cell's value
+        let load = graph.load(ptr, effect);
+        effect = load.effect();
+
+        // Output the value at the index (should be zero)
+        let output = graph.output(load.value(), effect);
+        output.effect()
+    },
 }

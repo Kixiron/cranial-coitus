@@ -105,7 +105,7 @@ pub fn lower_tokens(
                             effect,
                             |graph, effect, _invariant_inputs, variant_inputs| {
                                 let [ptr]: [OutputPort; 1] = variant_inputs.try_into().unwrap();
-                                let (effect, ptr) = lower_tokens(graph, ptr, effect, body);
+                                let (ptr, effect) = lower_tokens(graph, ptr, effect, body);
 
                                 let zero = graph.int(0);
                                 let load = graph.load(ptr, effect);
@@ -132,5 +132,5 @@ pub fn lower_tokens(
         }
     }
 
-    (effect, ptr)
+    (ptr, effect)
 }

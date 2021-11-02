@@ -2,14 +2,14 @@ use crate::{
     graph::{Add, Gamma, InputPort, Int, NodeExt, NodeId, OutputPort, Rvsdg, Theta},
     ir::Const,
     passes::Pass,
+    utils::{HashMap, HashSet},
 };
-use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Fuses chained additions based on the law of associative addition
 // TODO: Equality is also associative but it's unclear whether or not
 //       that situation can actually arise within brainfuck programs
 pub struct AssociativeAdd {
-    values: BTreeMap<OutputPort, Const>,
+    values: HashMap<OutputPort, Const>,
     to_be_removed: HashSet<NodeId>,
     changed: bool,
 }
@@ -17,8 +17,8 @@ pub struct AssociativeAdd {
 impl AssociativeAdd {
     pub fn new() -> Self {
         Self {
-            values: BTreeMap::new(),
-            to_be_removed: HashSet::new(),
+            values: HashMap::with_hasher(Default::default()),
+            to_be_removed: HashSet::with_hasher(Default::default()),
             changed: false,
         }
     }
@@ -53,7 +53,7 @@ impl Pass for AssociativeAdd {
         self.changed = false;
     }
 
-    fn post_visit_graph(&mut self, graph: &mut Rvsdg, _visited: &BTreeSet<NodeId>) {
+    fn post_visit_graph(&mut self, graph: &mut Rvsdg, _visited: &HashSet<NodeId>) {
         graph.bulk_remove_nodes(&self.to_be_removed);
     }
 
@@ -121,34 +121,12 @@ impl Pass for AssociativeAdd {
                     let int = graph.int(sum);
                     self.values.insert(int.value(), sum.into());
 
-                    // Make a value edge between the newly fused operand and the dependency
-                    // add node, removing the previous constant input from the dependency
-                    let dependency_add = graph.get_node(dependency_add.node()).to_add();
-
                     graph.remove_input_edges(add.lhs());
                     graph.remove_input_edges(add.rhs());
 
                     let unknown_source = graph.input_source(dependency_unknown);
                     graph.add_value_edge(unknown_source, add.lhs());
                     graph.add_value_edge(int.value(), add.rhs());
-
-                    //if dependency_add.lhs() == dependency_unknown {
-                    //    graph.remove_input_edges(dependency_add.rhs());
-                    //    graph.add_value_edge(int.value(), dependency_add.rhs());
-                    //} else if dependency_add.rhs() == dependency_unknown {
-                    //    graph.remove_input_edges(dependency_add.lhs());
-                    //    graph.add_value_edge(int.value(), dependency_add.lhs());
-                    //} else {
-                    //    unreachable!();
-                    //}
-
-                    // Reroute dependents from the dependency add to the current one,
-                    // the current add node is the one that we've given the fused
-                    // operands to
-                    // graph.rewire_dependents(add.value(), dependency_add.value());
-                    // Remove the now-replaced dependency add
-                    // graph.remove_node(add.node());
-                    // self.to_be_removed.insert(add.node());
 
                     self.changed();
                 }

@@ -33,6 +33,8 @@ impl AddSubLoop {
     /// Addition:
     ///
     /// ```
+    /// // TODO: Account for both orientations of the counter/accum decrementing
+    /// //       and/or use `psi` nodes to make the state disjoint
     /// do {
     ///   // Decrement the counter
     ///   _counter_val := load _counter_ptr
@@ -53,6 +55,8 @@ impl AddSubLoop {
     /// Subtraction:
     ///
     /// ```
+    /// // TODO: Account for both orientations of the counter/accum decrementing
+    /// //       and/or use `psi` nodes to make the state disjoint
     /// do {
     ///   // Decrement the counter
     ///   _counter_val := load _counter_ptr
@@ -397,4 +401,77 @@ impl Default for AddSubLoop {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::passes::{
+        AddSubLoop, AssociativeAdd, ConstFolding, ElimConstGamma, ExprDedup, Mem2Reg,
+        UnobservedStore, ZeroLoop,
+    };
+
+    const TAPE_LEN: usize = 100;
+
+    test_opts! {
+        // ```bf
+        // y[-x+y]x
+        // ```
+        addition_motif_one,
+        passes = [
+            Dce::new(),
+            UnobservedStore::new(),
+            ConstFolding::new(),
+            AssociativeAdd::new(),
+            ZeroLoop::new(),
+            Mem2Reg::new(TAPE_LEN),
+            AddSubLoop::new(),
+            Dce::new(),
+            ElimConstGamma::new(),
+            ConstFolding::new(),
+            ExprDedup::new(),
+        ],
+        tape_size = TAPE_LEN,
+        input = [10, 20],
+        output = [0, 30],
+        |graph, mut effect| {
+            let y_ptr = graph.int(0).value();
+            let x_ptr = graph.int(1).value();
+
+            // Get and store the y value
+            let y_input = graph.input(effect);
+            effect = y_input.effect();
+            let store = graph.store(y_ptr, y_input.value(), effect);
+            effect = store.effect();
+
+            // Get and store the x value
+            let x_input = graph.input(effect);
+            effect = x_input.effect();
+            let store = graph.store(x_ptr, x_input.value(), effect);
+            effect = store.effect();
+
+            // Compile the loop
+            let (x_ptr, mut effect) = compile_brainfuck_into("[->+<]>", graph, y_ptr, effect);
+
+            // Print the y value
+            let y_value = graph.load(y_ptr, effect);
+            effect = y_value.effect();
+            let output = graph.output(y_value.value(), effect);
+            effect = output.effect();
+
+            // Print the x value
+            let x_value = graph.load(x_ptr, effect);
+            effect = x_value.effect();
+            let output = graph.output(x_value.value(), effect);
+            effect = output.effect();
+
+            effect
+        },
+    }
+
+    // TODO: Detect & optimize this motif (post zero-loop optimization)
+    // ```bf
+    // temp0[-]
+    // y[x+temp0+y-]
+    // temp0[y+temp0-]
+    // ```
 }

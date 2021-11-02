@@ -1,0 +1,80 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Coitus Intermediate Representation",
+    "scopeName": "source.cir",
+    "patterns": [
+        {
+            "include": "#statements"
+        },
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#keywords"
+        },
+        {
+            "include": "#variables"
+        },
+        {
+            "include": "#literals"
+        }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "comment": "line comments",
+                    "name": "comment.line.double-slash.cir",
+                    "match": "\\s*//.*"
+                }
+            ]
+        },
+        "literals": {
+            "patterns": [
+                {
+                    "comment": "decimal integers and floats",
+                    "name": "constant.numeric.decimal.cir",
+                    "match": "\\b(-)?\\d+\\b"
+                },
+                {
+                    "comment": "booleans",
+                    "name": "constant.language.bool.cir",
+                    "match": "\\b(true|false)\\b"
+                }
+            ]
+        },
+        "variables": {
+            "patterns": [
+                {
+                    "comment": "variables",
+                    "name": "variable.other.cir",
+                    "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "comment": "control flow keywords",
+                    "name": "keyword.control.cir",
+                    "match": "\\b(do|while|if|else)\\b"
+                },
+                {
+                    "comment": "instruction keywords.cir",
+                    "name": "keyword.operator",
+                    "match": "\\b(add|sub|store|load|neg|not|eq)\\b"
+                },
+                {
+                    "comment": "literal and param types",
+                    "name": "storage.type.cir",
+                    "match": "\\b(int|bool|in|out)\\b"
+                },
+                {
+                    "comment": "assignment operator",
+                    "name": "keyword.operator.cir",
+                    "match": "\\b(:=)\\b"
+                }
+            ]
+        }
+    }
+}

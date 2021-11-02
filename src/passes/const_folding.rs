@@ -253,7 +253,9 @@ impl Pass for ConstFolding {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (input, param) in theta.input_pairs() {
+        // Note: We only propagate **invariant** inputs into the loop, propagating
+        //       variant inputs requires dataflow information
+        for (input, param) in theta.invariant_input_pairs() {
             if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
                 let replaced = visitor.values.insert(param.output(), constant);
                 debug_assert!(replaced.is_none());
@@ -287,7 +289,7 @@ impl Default for ConstFolding {
 
 test_opts! {
     constant_add,
-    passes = [ConstFolding::new()],
+    passes = [ConstFolding::new(), Dce::new()],
     output = [30],
     |graph, effect| {
         let lhs = graph.int(10);
@@ -300,7 +302,7 @@ test_opts! {
 
 test_opts! {
     constant_sub,
-    passes = [ConstFolding::new()],
+    passes = [ConstFolding::new(), Dce::new()],
     output = [245],
     |graph, effect| {
         let lhs = graph.int(10);
@@ -313,7 +315,7 @@ test_opts! {
 
 test_opts! {
     chained_booleans,
-    passes = [ConstFolding::new()],
+    passes = [ConstFolding::new(), Dce::new()],
     output = [1],
     |graph, effect| {
         let t = graph.bool(true);

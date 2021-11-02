@@ -1,0 +1,32 @@
+{
+    "name": "Coitus Intermediate Representation",
+    "version": "0.1.0",
+    "engines": {
+        "vscode": "*"
+    },
+    "publisher": "Chase Wilson",
+    "license": "MIT OR Apache-2.0",
+    "contributes": {
+        "languages": [
+            {
+                "id": "cir",
+                "aliases": [
+                    "Coitus Intermediate Representation",
+                    "Coitus IR",
+                    "CIR"
+                ],
+                "extensions": [
+                    ".cir"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "cir",
+                "scopeName": "source.cir",
+                "path": "./cir.tmLanguage.json"
+            }
+        ]
+    }
+}

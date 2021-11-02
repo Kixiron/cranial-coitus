@@ -1,6 +1,9 @@
-use crate::graph::{
-    EdgeCount, EdgeDescriptor, End, InputParam, InputPort, NodeExt, NodeId, OutputParam,
-    OutputPort, Rvsdg, Start, Subgraph,
+use crate::{
+    graph::{
+        EdgeCount, EdgeDescriptor, End, InputParam, InputPort, NodeExt, NodeId, OutputParam,
+        OutputPort, Rvsdg, Start, Subgraph,
+    },
+    utils::AssertNone,
 };
 use std::collections::BTreeMap;
 use tinyvec::TinyVec;
@@ -134,9 +137,15 @@ impl Theta {
         &mut self.subgraph
     }
 
-    /// Get the input effect's port from the theta node if available
+    /// Get the input effect's port from the theta node if it's available
     pub fn input_effect(&self) -> Option<InputPort> {
         self.effects.map(|effects| effects.input)
+    }
+
+    /// Get a mutable reference to the input effect's port from
+    /// the theta node if it's available
+    pub fn input_effect_mut(&mut self) -> Option<&mut InputPort> {
+        self.effects.as_mut().map(|effects| &mut effects.input)
     }
 
     /// Get the output effect's port from the theta node if available
@@ -171,6 +180,31 @@ impl Theta {
         } else {
             tracing::error!("tried to set output effect on theta without effect edges");
         }
+    }
+
+    pub fn remove_invariant_input(&mut self, input: InputPort) {
+        self.invariant_inputs.remove(&input);
+    }
+
+    pub fn add_invariant_input_raw(&mut self, input: InputPort, param: NodeId) {
+        debug_assert!(self.body().contains_node(param));
+        debug_assert!(self.body().get_node(param).is_input_param());
+
+        self.invariant_inputs
+            .insert(input, param)
+            .debug_unwrap_none();
+    }
+
+    pub fn has_invariant_input(&self, input: InputPort) -> bool {
+        self.invariant_inputs.contains_key(&input)
+    }
+
+    pub fn retain_invariant_inputs<F>(&mut self, mut retain: F)
+    where
+        F: FnMut(InputPort, NodeId) -> bool,
+    {
+        self.invariant_inputs
+            .retain(|&port, &mut param| retain(port, param));
     }
 }
 
@@ -216,13 +250,6 @@ impl Theta {
             .chain(self.variant_input_param_ids())
     }
 
-    pub fn input_pair_ids_with_feedback(
-        &self,
-    ) -> impl Iterator<Item = (InputPort, NodeId, OutputPort)> + '_ {
-        self.invariant_input_pair_ids_with_feedback()
-            .chain(self.variant_input_pair_ids_with_feedback())
-    }
-
     /// Get the number of invariant inputs to the theta node
     pub fn invariant_inputs_len(&self) -> usize {
         self.invariant_inputs.len()
@@ -257,21 +284,6 @@ impl Theta {
     /// Returns the node ids of invariant inputs to the theta node
     pub fn invariant_input_param_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.invariant_inputs.values().copied()
-    }
-
-    pub fn invariant_input_pair_ids_with_feedback(
-        &self,
-    ) -> impl Iterator<Item = (InputPort, NodeId, OutputPort)> + '_ {
-        self.invariant_inputs.iter().map(|(&port, &param)| {
-            (
-                port,
-                param,
-                self.output_feedback
-                    .iter()
-                    .find_map(|(&output, &input)| (input == port).then(|| output))
-                    .unwrap(),
-            )
-        })
     }
 
     pub fn replace_invariant_inputs(&mut self, invariant_inputs: BTreeMap<InputPort, NodeId>) {
@@ -438,6 +450,87 @@ impl NodeExt for Theta {
         }
 
         inputs
+    }
+
+    fn update_input(&mut self, from: InputPort, to: InputPort) {
+        let parent_node = self.node;
+
+        // Try to replace the input effect
+        if let Some(input_effect) = self
+            .input_effect_mut()
+            .filter(|&&mut effect| effect == from)
+        {
+            tracing::trace!(
+                node = ?parent_node,
+                "replaced input effect {:?} of Theta with {:?}",
+                from, to,
+            );
+
+            *input_effect = to;
+
+        // Try to replace the invariant effects
+        } else if let Some(node_id) = {
+            let mut input_node = None;
+            self.invariant_inputs.retain(|&input, &mut node| {
+                if input == from {
+                    debug_assert!(input_node.is_none());
+                    input_node = Some(node);
+
+                    false
+                } else {
+                    true
+                }
+            });
+
+            input_node
+        } {
+            tracing::trace!(
+                node = ?parent_node,
+                "replaced invariant input effect {:?} of Theta with {:?}",
+                from, to,
+            );
+
+            self.invariant_inputs
+                .insert(to, node_id)
+                .debug_unwrap_none();
+
+        // Try to replace the variant effects
+        } else if let Some(node_id) = {
+            let mut input_node = None;
+            self.variant_inputs.retain(|&input, &mut node| {
+                if input == from {
+                    debug_assert!(input_node.is_none());
+                    input_node = Some(node);
+
+                    false
+                } else {
+                    true
+                }
+            });
+
+            input_node
+        } {
+            tracing::trace!(
+                node = ?parent_node,
+                "replaced variant input effect {:?} of Theta with {:?}",
+                from, to,
+            );
+
+            self.variant_inputs.insert(to, node_id).debug_unwrap_none();
+            for feedback in self.output_feedback.values_mut() {
+                if *feedback == from {
+                    *feedback = to;
+                }
+            }
+
+        // Otherwise the theta doesn't have this input port
+        } else {
+            tracing::trace!(
+                node = ?parent_node,
+                "tried to replace input effect {:?} of Theta with {:?} but Theta doesn't have that port",
+                from, to,
+            );
+        }
     }
 
     fn output_desc(&self) -> EdgeDescriptor {

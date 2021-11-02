@@ -3,9 +3,8 @@ use crate::{
         Add, Assign, Block, Call, Const, Eq, Expr, Gamma, Instruction, Load, Neg, Not, Store,
         Theta, Value, VarId,
     },
-    utils::AssertNone,
+    utils::{AssertNone, HashMap},
 };
-use std::collections::HashMap;
 
 type Result<T> = std::result::Result<T, StepLimitReached>;
 
@@ -19,6 +18,8 @@ pub struct Machine<'a> {
     output: Box<dyn FnMut(u8) + 'a>,
     step_limit: usize,
     steps: usize,
+    // TODO: Track and display per-instruction stats
+    pub stats: ExecutionStats,
 }
 
 impl<'a> Machine<'a> {
@@ -29,11 +30,12 @@ impl<'a> Machine<'a> {
     {
         Self {
             tape: vec![0; length],
-            values: HashMap::new(),
+            values: HashMap::with_capacity_and_hasher(2048, Default::default()),
             input: Box::new(input),
             output: Box::new(output),
             step_limit,
             steps: 0,
+            stats: ExecutionStats::new(),
         }
     }
 
@@ -47,6 +49,8 @@ impl<'a> Machine<'a> {
     }
 
     fn handle(&mut self, inst: &Instruction) -> Result<()> {
+        self.stats.instructions += 1;
+
         match inst {
             Instruction::Call(call) => self.call(call).debug_unwrap_none(),
             Instruction::Assign(assign) => self.assign(assign),
@@ -111,6 +115,8 @@ impl<'a> Machine<'a> {
     fn call(&mut self, call: &Call) -> Option<Const> {
         match &*call.function {
             "input" => {
+                self.stats.input_calls += 1;
+
                 if !call.args.is_empty() {
                     panic!("expected zero args for input call")
                 }
@@ -119,6 +125,8 @@ impl<'a> Machine<'a> {
             }
 
             "output" => {
+                self.stats.output_calls += 1;
+
                 let [value]: &[Value; 1] = (&*call.args)
                     .try_into()
                     .expect("expected one arg for output call");
@@ -144,6 +152,8 @@ impl<'a> Machine<'a> {
     fn theta(&mut self, theta: &Theta) -> Result<()> {
         let mut iter = 0;
         loop {
+            self.stats.loop_iterations += 1;
+
             let current_steps = self.steps;
             for inst in &theta.body {
                 self.handle(inst)?;
@@ -203,6 +213,8 @@ impl<'a> Machine<'a> {
     }
 
     fn gamma(&mut self, gamma: &Gamma) -> Result<()> {
+        self.stats.branches += 1;
+
         let cond = self.get_bool(&gamma.cond);
         let branch = if cond { &gamma.truthy } else { &gamma.falsy };
 
@@ -214,6 +226,8 @@ impl<'a> Machine<'a> {
     }
 
     fn store(&mut self, store: &Store) {
+        self.stats.stores += 1;
+
         let ptr = self.get_ptr(&store.ptr);
         let value = self.get_byte(&store.value);
         tracing::trace!(
@@ -226,7 +240,9 @@ impl<'a> Machine<'a> {
         self.tape[ptr] = value;
     }
 
-    fn load(&self, load: &Load) -> Const {
+    fn load(&mut self, load: &Load) -> Const {
+        self.stats.loads += 1;
+
         let ptr = self.get_ptr(&load.ptr);
         tracing::trace!("loaded {} from {}", self.tape[ptr], ptr);
 
@@ -294,5 +310,40 @@ impl<'a> Machine<'a> {
         self.get_const(value)
             .as_bool()
             .expect("expected a boolean constant")
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExecutionStats {
+    pub loads: usize,
+    pub stores: usize,
+    pub loop_iterations: usize,
+    pub branches: usize,
+    pub input_calls: usize,
+    pub output_calls: usize,
+    pub instructions: usize,
+    pub in_branch_instructions: usize,
+    pub in_loop_instructions: usize,
+}
+
+impl ExecutionStats {
+    pub fn new() -> Self {
+        Self {
+            loads: 0,
+            stores: 0,
+            loop_iterations: 0,
+            branches: 0,
+            input_calls: 0,
+            output_calls: 0,
+            instructions: 0,
+            in_branch_instructions: 0,
+            in_loop_instructions: 0,
+        }
+    }
+}
+
+impl Default for ExecutionStats {
+    fn default() -> Self {
+        Self::new()
     }
 }

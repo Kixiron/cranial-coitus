@@ -34,6 +34,14 @@ impl NodeExt for Start {
         TinyVec::new()
     }
 
+    fn update_input(&mut self, from: InputPort, to: InputPort) {
+        tracing::trace!(
+            node = ?self.node,
+            "tried to replace input port {:?} of Start with {:?} but Start doesn't have any inputs",
+            from, to,
+        );
+    }
+
     fn output_desc(&self) -> EdgeDescriptor {
         EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero())
     }
@@ -74,6 +82,24 @@ impl NodeExt for End {
 
     fn all_input_ports(&self) -> TinyVec<[InputPort; 4]> {
         tiny_vec![self.input_effect]
+    }
+
+    fn update_input(&mut self, from: InputPort, to: InputPort) {
+        if self.input_effect == from {
+            tracing::trace!(
+                node = ?self.node,
+                "replaced input effect {:?} of End with {:?}",
+                from, to,
+            );
+
+            self.input_effect = to;
+        } else {
+            tracing::trace!(
+                node = ?self.node,
+                "tried to replace input effect {:?} of End with {:?} but End doesn't have that port",
+                from, to,
+            );
+        }
     }
 
     fn output_desc(&self) -> EdgeDescriptor {
@@ -117,6 +143,14 @@ impl NodeExt for InputParam {
 
     fn all_input_ports(&self) -> TinyVec<[InputPort; 4]> {
         TinyVec::new()
+    }
+
+    fn update_input(&mut self, from: InputPort, to: InputPort) {
+        tracing::trace!(
+            node = ?self.node,
+            "tried to replace input port {:?} of InputParam with {:?} but InputParam doesn't have any inputs",
+            from, to,
+        );
     }
 
     fn output_desc(&self) -> EdgeDescriptor {
@@ -166,6 +200,24 @@ impl NodeExt for OutputParam {
 
     fn all_input_ports(&self) -> TinyVec<[InputPort; 4]> {
         tiny_vec![self.input]
+    }
+
+    fn update_input(&mut self, from: InputPort, to: InputPort) {
+        if self.input == from {
+            tracing::trace!(
+                node = ?self.node,
+                "replaced input port {:?} of OutputParam with {:?}",
+                from, to,
+            );
+
+            self.input = to;
+        } else {
+            tracing::trace!(
+                node = ?self.node,
+                "tried to replace input port {:?} of OutputParam with {:?} but OutputParam doesn't have that port",
+                from, to,
+            );
+        }
     }
 
     fn output_desc(&self) -> EdgeDescriptor {

@@ -1,29 +1,101 @@
-use std::{
-    collections::{BTreeSet, HashSet},
-    fmt::Debug,
-    hash::Hash,
+use crate::{
+    graph::{OutputPort, Rvsdg},
+    lower_tokens, parse,
 };
+use std::{
+    collections::BTreeSet,
+    fmt::Debug,
+    hash::{BuildHasherDefault, Hash},
+    time::Instant,
+};
+use xxhash_rust::xxh3::Xxh3;
 
-pub(crate) trait AssertNone: Debug {
-    fn unwrap_none(&self);
+pub type HashSet<K> = std::collections::HashSet<K, BuildHasherDefault<Xxh3>>;
+pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<Xxh3>>;
 
-    #[inline]
-    #[track_caller]
-    fn debug_unwrap_none(&self) {
-        if cfg!(debug_assertions) {
-            self.unwrap_none();
-        }
+#[non_exhaustive]
+pub struct PerfEvent {}
+
+impl PerfEvent {
+    pub fn new(event_name: &str) -> Self {
+        superluminal_perf::begin_event(event_name);
+
+        Self {}
     }
+}
 
-    fn expect_none(&self, message: &str);
-
-    #[inline]
-    #[track_caller]
-    fn debug_expect_none(&self, message: &str) {
-        if cfg!(debug_assertions) {
-            self.expect_none(message);
-        }
+impl Drop for PerfEvent {
+    fn drop(&mut self) {
+        superluminal_perf::end_event();
     }
+}
+
+pub fn compile_brainfuck(source: &str) -> Rvsdg {
+    let parsing_start = Instant::now();
+
+    let span = tracing::info_span!("parsing");
+    let tokens = span.in_scope(|| {
+        tracing::info!("started parsing source code");
+        let tokens = parse::parse(source);
+
+        let elapsed = parsing_start.elapsed();
+        tracing::info!("finished parsing in {:#?}", elapsed);
+
+        tokens
+    });
+
+    let span = tracing::info_span!("rvsdg-building");
+    span.in_scope(|| {
+        tracing::info!("started building rvsdg");
+        let graph_building_start = Instant::now();
+
+        let mut graph = Rvsdg::new();
+        let start = graph.start();
+
+        let effect = start.effect();
+        let ptr = graph.int(0).value();
+
+        let (_ptr, effect) = lower_tokens::lower_tokens(&mut graph, ptr, effect, &tokens);
+        graph.end(effect);
+
+        let elapsed = graph_building_start.elapsed();
+        tracing::info!("finished building rvsdg in {:#?}", elapsed);
+
+        graph
+    })
+}
+
+pub fn compile_brainfuck_into(
+    source: &str,
+    graph: &mut Rvsdg,
+    ptr: OutputPort,
+    effect: OutputPort,
+) -> (OutputPort, OutputPort) {
+    let parsing_start = Instant::now();
+
+    let span = tracing::info_span!("parsing");
+    let tokens = span.in_scope(|| {
+        tracing::info!("started parsing source code");
+        let tokens = parse::parse(source);
+
+        let elapsed = parsing_start.elapsed();
+        tracing::info!("finished parsing in {:#?}", elapsed);
+
+        tokens
+    });
+
+    let span = tracing::info_span!("rvsdg-building");
+    span.in_scope(|| {
+        tracing::info!("started building rvsdg");
+        let graph_building_start = Instant::now();
+
+        let (ptr, effect) = lower_tokens::lower_tokens(graph, ptr, effect, &tokens);
+
+        let elapsed = graph_building_start.elapsed();
+        tracing::info!("finished building rvsdg in {:#?}", elapsed);
+
+        (ptr, effect)
+    })
 }
 
 pub trait Set<K> {
@@ -62,32 +134,25 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
-pub struct SingletonSet<K>(K);
-
-impl<K> SingletonSet<K> {
-    pub const fn new(element: K) -> Self {
-        Self(element)
-    }
-
-    pub fn into_inner(self) -> K {
-        self.0
-    }
-}
-
-impl<K> Set<K> for SingletonSet<K>
-where
-    K: PartialEq,
-{
-    #[inline]
-    fn contains(&self, value: &K) -> bool {
-        value == &self.0
-    }
+pub(crate) trait AssertNone: Debug {
+    fn unwrap_none(&self);
 
     #[inline]
-    fn is_empty(&self) -> bool {
-        false
+    #[track_caller]
+    fn debug_unwrap_none(&self) {
+        if cfg!(debug_assertions) {
+            self.unwrap_none();
+        }
+    }
+
+    fn expect_none(&self, message: &str);
+
+    #[inline]
+    #[track_caller]
+    fn debug_expect_none(&self, message: &str) {
+        if cfg!(debug_assertions) {
+            self.expect_none(message);
+        }
     }
 }
 
@@ -136,21 +201,23 @@ macro_rules! test_opts {
     (
         $name:ident,
         passes = [$($pass:expr),+ $(,)?],
-        $(tape_size = $tape_size:literal,)?
-        $(step_limit = $step_limit:literal,)?
+        $(tape_size = $tape_size:expr,)?
+        $(step_limit = $step_limit:expr,)?
         $(input = [$($input:expr),* $(,)?],)?
         output = [$($output:expr),* $(,)?],
         $build:expr $(,)?
     ) => {
         #[test]
         fn $name() {
+            #[allow(unused_imports)]
             use crate::{
-                graph::{Rvsdg, OutputPort},
+                graph::{Rvsdg, OutputPort, ThetaData, GammaData},
                 interpreter::Machine,
                 ir::{IrBuilder, Pretty},
-                passes::Pass,
+                passes::{Pass, Dce},
+                utils::{compile_brainfuck_into, HashSet},
             };
-            use std::collections::{BTreeSet, VecDeque};
+            use std::collections::VecDeque;
 
             crate::set_logger();
 
@@ -206,7 +273,7 @@ macro_rules! test_opts {
             let optimized_ir = {
                 let (mut stack, mut visited, mut buffer) = (
                     VecDeque::new(),
-                    BTreeSet::new(),
+                    HashSet::with_hasher(Default::default()),
                     Vec::new(),
                 );
 
@@ -271,9 +338,9 @@ macro_rules! test_opts {
         }
     };
 
-    (@tape_size $tape_size:literal) => { $tape_size };
+    (@tape_size $tape_size:expr) => { $tape_size };
     (@tape_size) => { 30_000 };
 
-    (@step_limit $step_limit:literal) => { $step_limit };
+    (@step_limit $step_limit:expr) => { $step_limit };
     (@step_limit) => { 300_000 };
 }

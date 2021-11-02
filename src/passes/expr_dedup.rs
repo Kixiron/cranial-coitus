@@ -2,19 +2,21 @@ use crate::{
     graph::{Bool, Gamma, InputParam, Int, NodeExt, OutputPort, Rvsdg, Theta},
     ir::Const,
     passes::Pass,
+    utils::HashMap,
 };
-use std::collections::BTreeMap;
 
 /// Deduplicates constants within the graph, reusing them as much as possible
-pub struct ConstDedup {
-    constants: BTreeMap<OutputPort, Const>,
+pub struct ExprDedup {
+    constants: HashMap<OutputPort, Const>,
+    // union_find: UnionFind,
     changed: bool,
 }
 
-impl ConstDedup {
+impl ExprDedup {
     pub fn new() -> Self {
         Self {
-            constants: BTreeMap::new(),
+            constants: HashMap::with_hasher(Default::default()),
+            // union_find: UnionFind::new(),
             changed: false,
         }
     }
@@ -22,12 +24,24 @@ impl ConstDedup {
     fn changed(&mut self) {
         self.changed = true;
     }
+
+    // TODO: Finish implementing egraph deduplication
+    // fn add(&mut self, node: Node) -> Unioned {
+    //     todo!()
+    // }
+    //
+    // fn lookup(&mut self, node: &mut Node) -> Option<Unioned> {
+    //     self.changed |= node.update_inputs(|input| {
+    //
+    //     });
+    // }
 }
 
-// TODO: Propagate constants through regions
-impl Pass for ConstDedup {
+// TODO: Use a union-find to deduplicate all expressions
+// TODO: Deduplicate invariant loop inputs
+impl Pass for ExprDedup {
     fn pass_name(&self) -> &str {
-        "constant-deduplication"
+        "expression-deduplication"
     }
 
     fn did_change(&self) -> bool {
@@ -154,11 +168,53 @@ impl Pass for ConstDedup {
         visitor.visit_graph(theta.body_mut());
         self.changed |= visitor.did_change();
 
+        // Deduplicate invariant parameters
+        let sources: Vec<_> = theta
+            .invariant_input_pairs()
+            .map(|(port, param)| (port, graph.input_source(port), param))
+            .collect();
+        let inputs: Vec<_> = theta.invariant_input_pairs().collect();
+
+        for (port, param) in inputs {
+            let source = graph.input_source(port);
+
+            if theta.has_invariant_input(port) {
+                if let Some((new_port, new_source, new_param)) = sources
+                    .iter()
+                    .find(|&&(input, parm_source, _)| {
+                        theta.has_invariant_input(input) && input != port && source == parm_source
+                    })
+                    .copied()
+                {
+                    tracing::trace!(
+                        old_port = ?port,
+                        old_source = ?source,
+                        old_param = ?param,
+                        ?new_port,
+                        ?new_source,
+                        ?new_param,
+                        ?theta,
+                        "deduplicated invariant theta input {:?} with {:?}",
+                        port,
+                        new_port,
+                    );
+
+                    theta
+                        .body_mut()
+                        .rewire_dependents(param.output(), new_param.output());
+                    theta.remove_invariant_input(port);
+                    theta.body_mut().remove_node(param.node());
+
+                    self.changed();
+                }
+            }
+        }
+
         graph.replace_node(theta.node(), theta);
     }
 }
 
-impl Default for ConstDedup {
+impl Default for ExprDedup {
     fn default() -> Self {
         Self::new()
     }

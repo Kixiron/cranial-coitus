@@ -187,7 +187,7 @@ impl Rvsdg {
     }
 
     #[allow(dead_code)]
-    pub fn total_nodes(&self) -> usize {
+    pub fn node_len(&self) -> usize {
         self.nodes.len()
     }
 
@@ -302,7 +302,10 @@ impl Rvsdg {
 
     #[track_caller]
     pub fn port_parent<P: Port>(&self, port: P) -> NodeId {
-        self.ports[&port.port()].parent
+        self.ports
+            .get(&port.port())
+            .expect("failed to find parent for port")
+            .parent
     }
 
     pub fn incoming_count(&self, node: NodeId) -> usize {
@@ -1234,7 +1237,7 @@ impl Rvsdg {
         output
     }
 
-    fn input_param(&mut self, kind: EdgeKind) -> InputParam {
+    pub fn input_param(&mut self, kind: EdgeKind) -> InputParam {
         let input_id = self.next_node();
 
         let port = self.output_port(input_id, EdgeKind::Value);
@@ -1246,7 +1249,7 @@ impl Rvsdg {
         param
     }
 
-    fn output_param(&mut self, input: OutputPort, kind: EdgeKind) -> OutputParam {
+    pub fn output_param(&mut self, input: OutputPort, kind: EdgeKind) -> OutputParam {
         let output_id = self.next_node();
 
         let port = self.input_port(output_id, EdgeKind::Value);
@@ -2081,6 +2084,7 @@ impl Debug for NodeId {
 
 impl Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_char('n')?;
         Display::fmt(&self.0, f)
     }
 }

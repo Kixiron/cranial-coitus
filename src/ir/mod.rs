@@ -2,6 +2,7 @@ mod builder;
 
 pub use builder::IrBuilder;
 
+use crate::graph::{NodeId, OutputPort, Port};
 use pretty::{Arena, DocAllocator, DocBuilder};
 use std::{
     borrow::Cow,
@@ -11,7 +12,7 @@ use std::{
     time::Instant,
 };
 
-use crate::graph::{OutputPort, Port};
+const COMMENT_ALIGNMENT_OFFSET: usize = 25;
 
 pub trait Pretty {
     fn pretty_print(&self) -> String {
@@ -148,6 +149,7 @@ impl From<Call> for Instruction {
 
 #[derive(Debug, Clone)]
 pub struct Theta {
+    pub node: NodeId,
     pub body: Vec<Instruction>,
     pub cond: Option<Value>,
     pub output_effect: Option<EffectId>,
@@ -158,7 +160,9 @@ pub struct Theta {
 }
 
 impl Theta {
+    #[allow(clippy::too_many_arguments)]
     pub fn new<C, E1, E2>(
+        node: NodeId,
         body: Vec<Instruction>,
         cond: C,
         output_effect: E1,
@@ -173,6 +177,7 @@ impl Theta {
         E2: Into<Option<EffectId>>,
     {
         Self {
+            node,
             body,
             cond: cond.into(),
             output_effect: output_effect.into(),
@@ -193,11 +198,18 @@ impl Pretty for Theta {
     {
         allocator
             .text(match (self.input_effect, self.output_effect) {
-                (None, None) => "// eff: ???, pred: ???".to_owned(),
-                (None, Some(output_effect)) => format!("// eff: {}, pred: ???", output_effect),
-                (Some(input_effect), None) => format!("// eff: ???, pred: {}", input_effect),
+                (None, None) => format!("// node: {}, eff: ???, pred: ???", self.node),
+                (None, Some(output_effect)) => {
+                    format!("// node: {}, eff: {}, pred: ???", self.node, output_effect)
+                }
+                (Some(input_effect), None) => {
+                    format!("// node: {}, eff: ???, pred: {}", self.node, input_effect)
+                }
                 (Some(input_effect), Some(output_effect)) => {
-                    format!("// eff: {}, pred: {}", output_effect, input_effect)
+                    format!(
+                        "// node: {}, eff: {}, pred: {}",
+                        self.node, output_effect, input_effect,
+                    )
                 }
             })
             .append(allocator.hardline())
@@ -219,29 +231,6 @@ impl Pretty for Theta {
                     )
                     .append(allocator.hardline())
             })
-            .append(if self.outputs.is_empty() {
-                allocator.nil()
-            } else {
-                if self.body.is_empty() {
-                    allocator.hardline()
-                } else {
-                    allocator.nil()
-                }
-                .append(
-                    allocator
-                        .text("// outputs: ")
-                        .append(allocator.intersperse(
-                            self.outputs.iter().map(|(var, value)| {
-                                var.pretty(allocator)
-                                    .append(allocator.text(" = "))
-                                    .append(value.pretty(allocator))
-                            }),
-                            allocator.text(", "),
-                        ))
-                        .indent(2),
-                )
-                .append(allocator.hardline())
-            })
             .append(allocator.text("}"))
             .append(allocator.space())
             .append(allocator.text("while"))
@@ -260,6 +249,7 @@ impl Pretty for Theta {
 
 #[derive(Debug, Clone)]
 pub struct Gamma {
+    pub node: NodeId,
     pub cond: Value,
     pub truthy: Vec<Instruction>,
     pub true_outputs: BTreeMap<VarId, Value>,
@@ -270,7 +260,9 @@ pub struct Gamma {
 }
 
 impl Gamma {
+    #[allow(clippy::too_many_arguments)]
     pub fn new<C, E>(
+        node: NodeId,
         cond: C,
         truthy: Vec<Instruction>,
         true_outputs: BTreeMap<VarId, Value>,
@@ -284,6 +276,7 @@ impl Gamma {
         E: Into<Option<EffectId>>,
     {
         Self {
+            node,
             cond: cond.into(),
             truthy,
             true_outputs,
@@ -304,9 +297,12 @@ impl Pretty for Gamma {
     {
         allocator
             .text(if let Some(prev_effect) = self.prev_effect {
-                format!("// eff: {}, pred: {}", self.effect, prev_effect)
+                format!(
+                    "// node: {}, eff: {}, pred: {}",
+                    self.node, self.effect, prev_effect,
+                )
             } else {
-                format!("// eff: {}, pred: ???", self.effect)
+                format!("// node: {}, eff: {}, pred: ???", self.node, self.effect)
             })
             .append(allocator.hardline())
             .append(allocator.text("if"))
@@ -329,29 +325,6 @@ impl Pretty for Gamma {
                     )
                     .append(allocator.hardline())
             })
-            .append(if self.true_outputs.is_empty() {
-                allocator.nil()
-            } else {
-                if self.truthy.is_empty() {
-                    allocator.hardline()
-                } else {
-                    allocator.nil()
-                }
-                .append(
-                    allocator
-                        .text("// outputs: ")
-                        .append(allocator.intersperse(
-                            self.true_outputs.iter().map(|(var, value)| {
-                                var.pretty(allocator)
-                                    .append(allocator.text(" = "))
-                                    .append(value.pretty(allocator))
-                            }),
-                            allocator.text(", "),
-                        ))
-                        .indent(2),
-                )
-                .append(allocator.hardline())
-            })
             .append(allocator.text("}"))
             .append(allocator.space())
             .append(allocator.text("else"))
@@ -372,35 +345,13 @@ impl Pretty for Gamma {
                     )
                     .append(allocator.hardline())
             })
-            .append(if self.false_outputs.is_empty() {
-                allocator.nil()
-            } else {
-                if self.falsy.is_empty() {
-                    allocator.hardline()
-                } else {
-                    allocator.nil()
-                }
-                .append(
-                    allocator
-                        .text("// outputs: ")
-                        .append(allocator.intersperse(
-                            self.false_outputs.iter().map(|(var, value)| {
-                                var.pretty(allocator)
-                                    .append(allocator.text(" = "))
-                                    .append(value.pretty(allocator))
-                            }),
-                            allocator.text(", "),
-                        ))
-                        .indent(2),
-                )
-                .append(allocator.hardline())
-            })
             .append(allocator.text("}"))
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Call {
+    pub node: NodeId,
     pub function: Cow<'static, str>,
     pub args: Vec<Value>,
     pub effect: EffectId,
@@ -408,12 +359,19 @@ pub struct Call {
 }
 
 impl Call {
-    pub fn new<F, E>(function: F, args: Vec<Value>, effect: EffectId, prev_effect: E) -> Self
+    pub fn new<F, E>(
+        node: NodeId,
+        function: F,
+        args: Vec<Value>,
+        effect: EffectId,
+        prev_effect: E,
+    ) -> Self
     where
         F: Into<Cow<'static, str>>,
         E: Into<Option<EffectId>>,
     {
         Self {
+            node,
             function: function.into(),
             args,
             effect,
@@ -429,25 +387,33 @@ impl Pretty for Call {
         D::Doc: Clone,
         A: Clone,
     {
-        allocator
-            .text("call")
-            .append(allocator.space())
-            .append(
-                allocator.text(self.function.clone()).append(
+        allocator.column(move |start_column| {
+            allocator
+                .text("call")
+                .append(allocator.space())
+                .append(
+                    allocator.text(self.function.clone()).append(
+                        allocator
+                            .intersperse(
+                                self.args.iter().map(|arg| arg.pretty(allocator)),
+                                allocator.text(","),
+                            )
+                            .parens(),
+                    ),
+                )
+                .append(allocator.space())
+                .append(allocator.column(move |column| {
                     allocator
-                        .intersperse(
-                            self.args.iter().map(|arg| arg.pretty(allocator)),
-                            allocator.text(","),
-                        )
-                        .parens(),
-                ),
-            )
-            .append(allocator.space())
-            .append(allocator.text(if let Some(prev_effect) = self.prev_effect {
-                format!("// eff: {}, pred: {}", self.effect, prev_effect)
-            } else {
-                format!("// eff: {}, pred: ???", self.effect)
-            }))
+                        .text(if let Some(prev_effect) = self.prev_effect {
+                            format!("// eff: {}, pred: {}", self.effect, prev_effect)
+                        } else {
+                            format!("// eff: {}, pred: ???", self.effect)
+                        })
+                        .indent(COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column))
+                        .into_doc()
+                }))
+                .into_doc()
+        })
     }
 }
 
@@ -470,14 +436,14 @@ impl Assign {
         }
     }
 
-    pub fn input<I>(var: VarId, value: I) -> Self
+    pub fn input<I>(var: VarId, value: I, variance: Variance) -> Self
     where
         I: Into<Expr>,
     {
         Self {
             var,
             value: value.into(),
-            tag: AssignTag::InputParam,
+            tag: AssignTag::InputParam(variance),
         }
     }
 
@@ -500,25 +466,73 @@ impl Pretty for Assign {
         D::Doc: Clone,
         A: Clone,
     {
-        self.var
-            .pretty(allocator)
-            .append(allocator.space())
-            .append(allocator.text(":="))
-            .append(allocator.space())
-            .append(match self.tag {
-                AssignTag::None => allocator.nil(),
-                AssignTag::InputParam => allocator.text("in").append(allocator.space()),
-                AssignTag::OutputParam => allocator.text("out").append(allocator.space()),
-            })
-            .append(self.value.pretty(allocator))
+        allocator.column(move |start_column| {
+            self.var
+                .pretty(allocator)
+                .append(allocator.space())
+                .append(allocator.text(":="))
+                .append(allocator.space())
+                .append(match self.tag {
+                    AssignTag::None => allocator.nil(),
+                    AssignTag::InputParam(_) => allocator.text("in").append(allocator.space()),
+                    AssignTag::OutputParam => allocator.text("out").append(allocator.space()),
+                })
+                .append(self.value.pretty(allocator))
+                .append(if let Expr::Load(load) = &self.value {
+                    allocator.column(move |column| {
+                        allocator
+                            .space()
+                            .append(
+                                allocator
+                                    .text(if let Some(prev_effect) = load.prev_effect {
+                                        format!("// eff: {}, pred: {}", load.effect, prev_effect)
+                                    } else {
+                                        format!("// eff: {}, pred: ???", load.effect)
+                                    })
+                                    .indent(
+                                        COMMENT_ALIGNMENT_OFFSET
+                                            .saturating_sub(column - start_column),
+                                    ),
+                            )
+                            .into_doc()
+                    })
+                } else {
+                    allocator.nil()
+                })
+                .append(allocator.column(move |column| {
+                    if let AssignTag::InputParam(variance) = self.tag {
+                        match variance {
+                            Variance::Invariant => {
+                                allocator.space().append(allocator.text("// invariant"))
+                            }
+                            Variance::Variant { feedback_from } => allocator.space().append(
+                                allocator.text(format!("// variant, feedback: {}", feedback_from)),
+                            ),
+                            Variance::None => return allocator.nil().into_doc(),
+                        }
+                        .indent(COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column))
+                    } else {
+                        allocator.nil()
+                    }
+                    .into_doc()
+                }))
+                .into_doc()
+        })
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssignTag {
     None,
-    InputParam,
+    InputParam(Variance),
     OutputParam,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Variance {
+    Invariant,
+    Variant { feedback_from: VarId },
+    None,
 }
 
 #[derive(Debug, Clone)]
@@ -768,12 +782,6 @@ impl Pretty for Load {
             .text("load")
             .append(allocator.space())
             .append(self.ptr.pretty(allocator))
-            .append(allocator.space())
-            .append(allocator.text(if let Some(prev_effect) = self.prev_effect {
-                format!("// eff: {}, pred: {}", self.effect, prev_effect)
-            } else {
-                format!("// eff: {}, pred: ???", self.effect)
-            }))
     }
 }
 
@@ -806,19 +814,27 @@ impl Pretty for Store {
         D::Doc: Clone,
         A: Clone,
     {
-        allocator
-            .text("store")
-            .append(allocator.space())
-            .append(self.ptr.pretty(allocator))
-            .append(allocator.text(","))
-            .append(allocator.space())
-            .append(self.value.pretty(allocator))
-            .append(allocator.space())
-            .append(allocator.text(if let Some(prev_effect) = self.prev_effect {
-                format!("// eff: {}, pred: {}", self.effect, prev_effect)
-            } else {
-                format!("// eff: {}, pred: ???", self.effect)
-            }))
+        allocator.column(move |start_column| {
+            allocator
+                .text("store")
+                .append(allocator.space())
+                .append(self.ptr.pretty(allocator))
+                .append(allocator.text(","))
+                .append(allocator.space())
+                .append(self.value.pretty(allocator))
+                .append(allocator.space())
+                .append(allocator.column(move |column| {
+                    allocator
+                        .text(if let Some(prev_effect) = self.prev_effect {
+                            format!("// eff: {}, pred: {}", self.effect, prev_effect)
+                        } else {
+                            format!("// eff: {}, pred: ???", self.effect)
+                        })
+                        .indent(COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column))
+                        .into_doc()
+                }))
+                .into_doc()
+        })
     }
 }
 
@@ -830,14 +846,6 @@ pub enum Value {
 }
 
 impl Value {
-    pub fn as_var(&self) -> Option<VarId> {
-        if let Self::Var(var) = *self {
-            Some(var)
-        } else {
-            None
-        }
-    }
-
     /// Returns `true` if the value is [`Missing`].
     ///
     /// [`Missing`]: Value::Missing

@@ -1,8 +1,9 @@
 use crate::{
-    graph::{Node, NodeId, Rvsdg},
+    graph::{Node, NodeExt, NodeId, Rvsdg},
     passes::Pass,
+    utils::HashSet,
 };
-use std::collections::{BTreeSet, VecDeque};
+use std::{collections::VecDeque, mem};
 
 /// Removes dead code from the graph
 pub struct Dce {
@@ -24,9 +25,12 @@ impl Dce {
         &mut self,
         graph: &mut Rvsdg,
         stack: &mut Vec<NodeId>,
-        visited: &mut BTreeSet<NodeId>,
+        visited: &mut HashSet<NodeId>,
         stack_len: usize,
     ) {
+        stack.reserve(graph.node_len());
+        visited.reserve(graph.node_len());
+
         while stack.len() > stack_len {
             if let Some(node_id) = stack.pop() {
                 if visited.insert(node_id) {
@@ -75,16 +79,38 @@ impl Dce {
 
                         Node::Theta(theta) => {
                             stack.reserve(2 + theta.outputs_len() + theta.inputs_len());
+                            visited.reserve(2 + theta.outputs_len() + theta.inputs_len());
 
                             // Push the theta's end node to the stack
                             stack.push(theta.end_node_id());
                             stack.push(theta.condition_id());
                             stack.extend(theta.output_param_ids());
-                            stack.extend(theta.input_param_ids());
+                            stack.extend(theta.variant_input_param_ids());
 
                             // Mark the nodes within the theta's body
                             self.mark_nodes(theta.body_mut(), stack, visited, stack_len);
 
+                            // TODO: Buffer
+                            let invariant_inputs: Vec<_> =
+                                theta.invariant_input_pair_ids().collect();
+
+                            // Remove unused invariant params
+                            for (port, param) in invariant_inputs {
+                                // If the input param wasn't used, remove it from the theta
+                                if !visited.contains(&param) {
+                                    tracing::trace!(
+                                        ?param,
+                                        "removed dead invariant input {:?} from theta {:?}",
+                                        port,
+                                        theta.node(),
+                                    );
+
+                                    theta.remove_invariant_input(port);
+                                    self.changed();
+                                }
+                            }
+
+                            // Remove all dead nodes from the subgraph
                             if theta.body_mut().bulk_retain_nodes(visited) {
                                 self.changed();
                             }
@@ -131,12 +157,11 @@ impl Pass for Dce {
     fn visit_graph_inner(
         &mut self,
         graph: &mut Rvsdg,
-        _queue: &mut VecDeque<NodeId>,
-        visited: &mut BTreeSet<NodeId>,
+        queue: &mut VecDeque<NodeId>,
+        visited: &mut HashSet<NodeId>,
         stack: &mut Vec<NodeId>,
     ) -> bool {
-        // debug_assert_eq!(graph.start_nodes().len(), 1);
-        // debug_assert_eq!(graph.end_nodes().len(), 1);
+        mem::take(queue);
 
         // Initialize the buffer
         stack.extend(graph.end_nodes());

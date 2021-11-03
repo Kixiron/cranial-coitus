@@ -1,6 +1,7 @@
 mod add_sub_loop;
 mod associative_add;
 mod const_folding;
+mod dataflow;
 mod dce;
 mod eliminate_const_gamma;
 mod expr_dedup;
@@ -12,6 +13,7 @@ mod zero_loop;
 pub use add_sub_loop::AddSubLoop;
 pub use associative_add::AssociativeAdd;
 pub use const_folding::ConstFolding;
+pub use dataflow::Dataflow;
 pub use dce::Dce;
 pub use eliminate_const_gamma::ElimConstGamma;
 pub use expr_dedup::ExprDedup;

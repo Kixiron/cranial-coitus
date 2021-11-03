@@ -1,9 +1,11 @@
 use crate::{
     graph::{
-        Bool, EdgeKind, End, Gamma, InputPort, Int, Node, NodeExt, OutputPort, Rvsdg, Start, Theta,
+        Bool, EdgeKind, End, Gamma, InputParam, InputPort, Int, Node, NodeExt, OutputPort, Rvsdg,
+        Start, Theta,
     },
     ir::Const,
     passes::Pass,
+    utils::AssertNone,
 };
 use std::collections::BTreeMap;
 
@@ -386,6 +388,7 @@ impl Pass for ZeroLoop {
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
+        let mut changed = false;
         let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
 
         // For each input into the gamma region, if the input value is a known constant
@@ -395,22 +398,22 @@ impl Pass for ZeroLoop {
             let (_, source, _) = graph.get_input(input);
 
             if let Some(constant) = self.values.get(&source).cloned() {
-                let true_param = gamma.true_branch().get_node(true_param).to_input_param();
-                let replaced = true_visitor
+                let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
+                true_visitor
                     .values
-                    .insert(true_param.output(), constant.clone());
-                debug_assert!(replaced.is_none());
+                    .insert(true_param.output(), constant.clone())
+                    .debug_unwrap_none();
 
-                let false_param = gamma.false_branch().get_node(false_param).to_input_param();
-                let replaced = false_visitor.values.insert(false_param.output(), constant);
-                debug_assert!(replaced.is_none());
+                let false_param = gamma.false_branch().to_node::<InputParam>(false_param);
+                false_visitor
+                    .values
+                    .insert(false_param.output(), constant)
+                    .debug_unwrap_none();
             }
         }
 
-        true_visitor.visit_graph(gamma.true_mut());
-        false_visitor.visit_graph(gamma.false_mut());
-        self.changed |= true_visitor.did_change();
-        self.changed |= false_visitor.did_change();
+        changed |= true_visitor.visit_graph(gamma.true_mut());
+        changed |= false_visitor.visit_graph(gamma.false_mut());
 
         if let Some(target_ptr) = self.is_zero_gamma_store(graph, &false_visitor.values, &gamma) {
             let zero = graph.int(0);
@@ -438,27 +441,29 @@ impl Pass for ZeroLoop {
             }
 
             graph.remove_node(gamma.node());
-
             self.changed();
-        } else {
+        } else if changed {
             graph.replace_node(gamma.node(), gamma);
+            self.changed();
         }
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
+        let mut changed = false;
         let mut visitor = Self::new();
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
         for (input, param) in theta.input_pairs() {
             if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
-                let replaced = visitor.values.insert(param.output(), constant);
-                debug_assert!(replaced.is_none());
+                visitor
+                    .values
+                    .insert(param.output(), constant)
+                    .debug_unwrap_none();
             }
         }
 
-        visitor.visit_graph(theta.body_mut());
-        self.changed |= visitor.did_change();
+        changed |= visitor.visit_graph(theta.body_mut());
 
         if let Some(target_ptr) = self.is_zero_loop(&theta, &visitor.values) {
             tracing::debug!(
@@ -503,10 +508,10 @@ impl Pass for ZeroLoop {
             }
 
             graph.remove_node(theta.node());
-
             self.changed();
-        } else {
+        } else if changed {
             graph.replace_node(theta.node(), theta);
+            self.changed();
         }
     }
 }

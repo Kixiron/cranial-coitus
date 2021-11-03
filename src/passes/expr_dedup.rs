@@ -2,7 +2,7 @@ use crate::{
     graph::{Bool, Gamma, InputParam, Int, NodeExt, OutputPort, Rvsdg, Theta},
     ir::Const,
     passes::Pass,
-    utils::HashMap,
+    utils::{AssertNone, HashMap},
 };
 
 /// Deduplicates constants within the graph, reusing them as much as possible
@@ -81,8 +81,9 @@ impl Pass for ExprDedup {
 
             self.changed();
         } else {
-            let replaced = self.constants.insert(bool.value(), value.into());
-            debug_assert!(replaced.is_none());
+            self.constants
+                .insert(bool.value(), value.into())
+                .debug_unwrap_none();
         }
     }
 
@@ -114,12 +115,14 @@ impl Pass for ExprDedup {
 
             self.changed();
         } else {
-            let replaced = self.constants.insert(int.value(), value.into());
-            debug_assert!(replaced.is_none());
+            self.constants
+                .insert(int.value(), value.into())
+                .debug_unwrap_none();
         }
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
+        let mut changed = false;
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
 
         // For each input into the gamma region, if the input value is a known constant
@@ -128,23 +131,26 @@ impl Pass for ExprDedup {
         {
             if let Some(constant) = self.constants.get(&graph.input_source(input)).cloned() {
                 let param = gamma.true_branch().to_node::<InputParam>(true_param);
-                let replaced = truthy_visitor
+                truthy_visitor
                     .constants
-                    .insert(param.output(), constant.clone());
-                debug_assert!(replaced.is_none());
+                    .insert(param.output(), constant.clone())
+                    .debug_unwrap_none();
 
                 let param = gamma.false_branch().to_node::<InputParam>(false_param);
-                let replaced = falsy_visitor.constants.insert(param.output(), constant);
-                debug_assert!(replaced.is_none());
+                falsy_visitor
+                    .constants
+                    .insert(param.output(), constant)
+                    .debug_unwrap_none();
             }
         }
 
-        truthy_visitor.visit_graph(gamma.true_mut());
-        falsy_visitor.visit_graph(gamma.false_mut());
-        self.changed |= truthy_visitor.did_change();
-        self.changed |= falsy_visitor.did_change();
+        changed |= truthy_visitor.visit_graph(gamma.true_mut());
+        changed |= falsy_visitor.visit_graph(gamma.false_mut());
 
-        graph.replace_node(gamma.node(), gamma);
+        if changed {
+            graph.replace_node(gamma.node(), gamma);
+            self.changed();
+        }
     }
 
     // TODO: There's some push/pull-based things we should do for routing constant values
@@ -154,21 +160,24 @@ impl Pass for ExprDedup {
     //       available. Everything's a tradeoff, the work involved with this one combined
     //       with its potential failure make it a low priority
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
+        let mut changed = false;
         let mut visitor = Self::new();
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
         for (input, param) in theta.input_pairs() {
             if let Some(constant) = self.constants.get(&graph.input_source(input)).cloned() {
-                let replaced = visitor.constants.insert(param.output(), constant);
-                debug_assert!(replaced.is_none());
+                visitor
+                    .constants
+                    .insert(param.output(), constant)
+                    .debug_unwrap_none();
             }
         }
 
-        visitor.visit_graph(theta.body_mut());
-        self.changed |= visitor.did_change();
+        changed |= visitor.visit_graph(theta.body_mut());
 
         // Deduplicate invariant parameters
+        // TODO: Buffers
         let sources: Vec<_> = theta
             .invariant_input_pairs()
             .map(|(port, param)| (port, graph.input_source(port), param))
@@ -205,12 +214,15 @@ impl Pass for ExprDedup {
                     theta.remove_invariant_input(port);
                     theta.body_mut().remove_node(param.node());
 
-                    self.changed();
+                    changed = true;
                 }
             }
         }
 
-        graph.replace_node(theta.node(), theta);
+        if changed {
+            graph.replace_node(theta.node(), theta);
+            self.changed();
+        }
     }
 }
 

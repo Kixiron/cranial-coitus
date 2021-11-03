@@ -1,7 +1,11 @@
 use crate::{
-    graph::{Add, End, Eq, Gamma, Int, Load, Node, NodeExt, Not, OutputPort, Rvsdg, Store, Theta},
+    graph::{
+        Add, End, Eq, Gamma, InputParam, Int, Load, Node, NodeExt, Not, OutputPort, Rvsdg, Store,
+        Theta,
+    },
     ir::Const,
     passes::Pass,
+    utils::AssertNone,
 };
 use std::collections::BTreeMap;
 
@@ -238,6 +242,7 @@ impl Pass for AddSubLoop {
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
+        let mut changed = false;
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
 
         // For each input into the gamma region, if the input value is a known constant
@@ -247,40 +252,45 @@ impl Pass for AddSubLoop {
             let (_, source, _) = graph.get_input(input);
 
             if let Some(constant) = self.values.get(&source).cloned() {
-                let true_param = gamma.true_branch().get_node(true_param).to_input_param();
-                let replaced = truthy_visitor
+                let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
+                truthy_visitor
                     .values
-                    .insert(true_param.output(), constant.clone());
-                debug_assert!(replaced.is_none());
+                    .insert(true_param.output(), constant.clone())
+                    .debug_unwrap_none();
 
-                let false_param = gamma.false_branch().get_node(false_param).to_input_param();
-                let replaced = falsy_visitor.values.insert(false_param.output(), constant);
-                debug_assert!(replaced.is_none());
+                let false_param = gamma.false_branch().to_node::<InputParam>(false_param);
+                falsy_visitor
+                    .values
+                    .insert(false_param.output(), constant)
+                    .debug_unwrap_none();
             }
         }
 
-        truthy_visitor.visit_graph(gamma.true_mut());
-        falsy_visitor.visit_graph(gamma.false_mut());
-        self.changed |= truthy_visitor.did_change();
-        self.changed |= falsy_visitor.did_change();
+        changed |= truthy_visitor.visit_graph(gamma.true_mut());
+        changed |= falsy_visitor.visit_graph(gamma.false_mut());
 
-        graph.replace_node(gamma.node(), gamma);
+        if changed {
+            graph.replace_node(gamma.node(), gamma);
+            self.changed();
+        }
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
+        let mut changed = false;
         let mut visitor = Self::new();
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
         for (input, param) in theta.input_pairs() {
             if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
-                let replaced = visitor.values.insert(param.output(), constant);
-                debug_assert!(replaced.is_none());
+                visitor
+                    .values
+                    .insert(param.output(), constant)
+                    .debug_unwrap_none();
             }
         }
 
-        visitor.visit_graph(theta.body_mut());
-        self.changed |= visitor.did_change();
+        changed |= visitor.visit_graph(theta.body_mut());
 
         if let Some((candidate, counter_ptr, acc_ptr)) =
             self.theta_is_candidate(&visitor.values, &theta)
@@ -391,8 +401,9 @@ impl Pass for AddSubLoop {
 
             graph.remove_node(theta.node());
             self.changed();
-        } else {
+        } else if changed {
             graph.replace_node(theta.node(), theta);
+            self.changed();
         }
     }
 }

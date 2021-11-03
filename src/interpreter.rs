@@ -1,7 +1,7 @@
 use crate::{
     ir::{
-        Add, Assign, Block, Call, Const, Eq, Expr, Gamma, Instruction, Load, Neg, Not, Store,
-        Theta, Value, VarId,
+        Add, Assign, AssignTag, Block, Call, Const, Eq, Expr, Gamma, Instruction, Load, Neg, Not,
+        Store, Theta, Value, VarId, Variance,
     },
     utils::{AssertNone, HashMap},
 };
@@ -40,16 +40,26 @@ impl<'a> Machine<'a> {
     }
 
     #[tracing::instrument(skip_all)]
-    pub fn execute(&mut self, block: &Block) -> Result<&[u8]> {
-        for inst in block.iter() {
+    pub fn execute(&mut self, block: &mut Block) -> Result<&[u8]> {
+        for inst in block.iter_mut() {
             self.handle(inst)?;
         }
 
         Ok(&self.tape)
     }
 
-    fn handle(&mut self, inst: &Instruction) -> Result<()> {
-        self.stats.instructions += 1;
+    fn handle(&mut self, inst: &mut Instruction) -> Result<()> {
+        let is_subgraph_param = matches!(
+            inst,
+            Instruction::Assign(Assign {
+                tag: AssignTag::InputParam(_) | AssignTag::OutputParam,
+                ..
+            })
+        );
+
+        if !is_subgraph_param {
+            self.stats.instructions += 1;
+        }
 
         match inst {
             Instruction::Call(call) => self.call(call).debug_unwrap_none(),
@@ -83,14 +93,16 @@ impl<'a> Machine<'a> {
 
             Err(StepLimitReached)
         } else {
-            // Don't penalize constant assignments
-            if !matches!(
+            let is_var_assign = matches!(
                 inst,
                 Instruction::Assign(Assign {
                     value: Expr::Value(_),
                     ..
-                }),
-            ) {
+                })
+            );
+
+            // Don't penalize constant assignments or subgraph params
+            if !is_subgraph_param && !is_var_assign {
                 self.steps += 1;
             }
 
@@ -98,7 +110,7 @@ impl<'a> Machine<'a> {
         }
     }
 
-    fn eval(&mut self, expr: &Expr) -> Const {
+    fn eval(&mut self, expr: &mut Expr) -> Const {
         match expr {
             Expr::Eq(eq) => self.eq(eq),
             Expr::Add(add) => self.add(add),
@@ -112,7 +124,9 @@ impl<'a> Machine<'a> {
         }
     }
 
-    fn call(&mut self, call: &Call) -> Option<Const> {
+    fn call(&mut self, call: &mut Call) -> Option<Const> {
+        call.invocations += 1;
+
         match &*call.function {
             "input" => {
                 self.stats.input_calls += 1;
@@ -141,21 +155,45 @@ impl<'a> Machine<'a> {
         }
     }
 
-    fn assign(&mut self, assign: &Assign) {
-        let value = self.eval(&assign.value);
+    fn assign(&mut self, assign: &mut Assign) {
+        assign.invocations += 1;
+
+        let value = self.eval(&mut assign.value);
         tracing::trace!("assigned {:?} to {}", value, assign.var);
 
         // Note: Double inserts are allowed here because of loops
         self.values.insert(assign.var, value);
     }
 
-    fn theta(&mut self, theta: &Theta) -> Result<()> {
+    fn theta(&mut self, theta: &mut Theta) -> Result<()> {
         let mut iter = 0;
         loop {
             self.stats.loop_iterations += 1;
+            theta.loops += 1;
 
             let current_steps = self.steps;
-            for inst in &theta.body {
+            for inst in &mut theta.body {
+                theta.body_inst_count += 1;
+
+                // In the first loop iteration we want to execute every single assign instruction,
+                // including variant and invariant ones. The invariant ones will pull the invariant
+                // values into the loop and the variant ones will get the initial values of variant
+                // variables. After the first iteration we don't execute variant or invariant assigns,
+                // invariant assigns already have their proper values and variant ones are set within
+                // the theta's code
+                if iter != 0
+                    && matches!(
+                        inst,
+                        Instruction::Assign(Assign {
+                            tag: AssignTag::InputParam(Variance::Variant { .. })
+                                | AssignTag::InputParam(Variance::Invariant),
+                            ..
+                        })
+                    )
+                {
+                    continue;
+                }
+
                 self.handle(inst)?;
             }
 
@@ -194,7 +232,15 @@ impl<'a> Machine<'a> {
             for (output, value) in &theta.outputs {
                 let input_var = theta.output_feedback[output];
                 let feedback_value = self.get_const(value).clone();
-                self.values.insert(input_var, feedback_value);
+
+                let old_value = self.values.insert(input_var, feedback_value.clone());
+                tracing::trace!(
+                    ?old_value,
+                    "feeding back {:?} from {:?} to {:?}",
+                    feedback_value,
+                    output,
+                    input_var,
+                );
             }
 
             tracing::trace!(
@@ -212,11 +258,17 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
-    fn gamma(&mut self, gamma: &Gamma) -> Result<()> {
+    fn gamma(&mut self, gamma: &mut Gamma) -> Result<()> {
         self.stats.branches += 1;
 
         let cond = self.get_bool(&gamma.cond);
-        let branch = if cond { &gamma.truthy } else { &gamma.falsy };
+        let branch = if cond {
+            gamma.true_branches += 1;
+            &mut gamma.truthy
+        } else {
+            gamma.false_branches += 1;
+            &mut gamma.falsy
+        };
 
         for inst in branch {
             self.handle(inst)?;
@@ -225,8 +277,9 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
-    fn store(&mut self, store: &Store) {
+    fn store(&mut self, store: &mut Store) {
         self.stats.stores += 1;
+        store.stores += 1;
 
         let ptr = self.get_ptr(&store.ptr);
         let value = self.get_byte(&store.value);
@@ -346,4 +399,26 @@ impl Default for ExecutionStats {
     fn default() -> Self {
         Self::new()
     }
+}
+
+test_opts! {
+    addition_loop,
+    passes = [],
+    input = [50, 24],
+    output = [74, 0],
+    |graph, effect| {
+        let ptr = graph.int(0).value();
+        compile_brainfuck_into(",>,[-<+>]<.>.", graph, ptr, effect).1
+    },
+}
+
+test_opts! {
+    branching,
+    passes = [],
+    input = [50, 24, 10, 0],
+    output = [50, 24, 10, 0],
+    |graph, effect| {
+        let ptr = graph.int(0).value();
+        compile_brainfuck_into("+[>,.]", graph, ptr, effect).1
+    },
 }

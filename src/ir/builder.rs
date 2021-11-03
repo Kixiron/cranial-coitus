@@ -308,9 +308,6 @@ impl IrBuilder {
                         );
                     }
 
-                    inputs.insert(input_id, value.clone()).debug_unwrap_none();
-                    input_vars.insert(input, input_id).debug_unwrap_none();
-
                     builder
                         .values
                         .insert(param.output(), input_id.into())

@@ -5,6 +5,7 @@ use crate::{
     },
     ir::Const,
     passes::Pass,
+    utils::AssertNone,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -270,6 +271,8 @@ impl Pass for Mem2Reg {
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
+        let mut changed = false;
+
         // Don't propagate port places into subgraphs
         // FIXME: This is only a implementation limit right now,
         //        gamma nodes aren't iterative so they can have full
@@ -310,25 +313,21 @@ impl Pass for Mem2Reg {
                 .cloned()
             {
                 let param = gamma.true_branch().to_node::<InputParam>(truthy_param);
-                let replaced = truthy_visitor
+                truthy_visitor
                     .values
-                    .insert(param.output(), constant.clone());
-                debug_assert!(replaced.is_none());
+                    .insert(param.output(), constant.clone())
+                    .debug_unwrap_none();
 
                 let param = gamma.false_branch().to_node::<InputParam>(falsy_param);
-                let replaced = falsy_visitor.values.insert(param.output(), constant);
-                debug_assert!(replaced.is_none());
+                falsy_visitor
+                    .values
+                    .insert(param.output(), constant)
+                    .debug_unwrap_none();
             }
         }
 
-        // TODO: Eliminate gamma branches based on gamma condition
-
-        truthy_visitor.visit_graph(gamma.true_mut());
-        falsy_visitor.visit_graph(gamma.false_mut());
-        self.changed |= truthy_visitor.did_change();
-        self.changed |= falsy_visitor.did_change();
-
-        // TODO: Propagate constants out of gamma bodies?
+        changed |= truthy_visitor.visit_graph(gamma.true_mut());
+        changed |= falsy_visitor.visit_graph(gamma.false_mut());
 
         // Figure out if there's any stores within either of the gamma branches
         let (truthy_stores, falsy_stores) = self.with_buffer(|buffer, visited| {
@@ -362,10 +361,14 @@ impl Pass for Mem2Reg {
             tracing::debug!("gamma node does no stores, not invalidating program tape");
         }
 
-        graph.replace_node(gamma.node(), gamma);
+        if changed {
+            graph.replace_node(gamma.node(), gamma);
+            self.changed();
+        }
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
+        let mut changed = false;
         let body_stores = self.with_buffer(|buffer, visited| {
             theta.body().transitive_nodes_into(buffer, visited);
             buffer.drain(..).filter(|node| node.is_store()).count()
@@ -407,16 +410,15 @@ impl Pass for Mem2Reg {
                 .cloned()
             {
                 if !constant.is_port() {
-                    let replaced = visitor.values.insert(param.output(), constant);
-                    debug_assert!(replaced.is_none());
+                    visitor
+                        .values
+                        .insert(param.output(), constant)
+                        .debug_unwrap_none();
                 }
             }
         }
 
-        visitor.visit_graph(theta.body_mut());
-        self.changed |= visitor.did_change();
-
-        // TODO: Propagate constants out of theta bodies?
+        changed |= visitor.visit_graph(theta.body_mut());
 
         // If any stores occur within the theta's body, invalidate the whole tape
         // FIXME: We pessimistically clear out the *entire* tape, but
@@ -436,7 +438,10 @@ impl Pass for Mem2Reg {
             tracing::debug!("theta body does no stores, not invalidating program tape");
         }
 
-        graph.replace_node(theta.node(), theta);
+        if changed {
+            graph.replace_node(theta.node(), theta);
+            self.changed();
+        }
     }
 }
 

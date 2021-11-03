@@ -2,7 +2,10 @@ mod builder;
 
 pub use builder::IrBuilder;
 
-use crate::graph::{NodeId, OutputPort, Port};
+use crate::{
+    graph::{NodeId, OutputPort, Port},
+    utils::percent_total,
+};
 use pretty::{Arena, DocAllocator, DocBuilder};
 use std::{
     borrow::Cow,
@@ -15,11 +18,15 @@ use std::{
 const COMMENT_ALIGNMENT_OFFSET: usize = 25;
 
 pub trait Pretty {
-    fn pretty_print(&self) -> String {
+    fn pretty_print(&self, total_instructions: Option<usize>) -> String {
         let start_time = Instant::now();
 
         let arena = Arena::<()>::new();
-        let pretty = self.pretty(&arena).1.pretty(80).to_string();
+        let pretty = self
+            .pretty(&arena, total_instructions)
+            .1
+            .pretty(80)
+            .to_string();
 
         let elapsed = start_time.elapsed();
         tracing::debug!(
@@ -31,7 +38,11 @@ pub trait Pretty {
         pretty
     }
 
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
@@ -76,7 +87,11 @@ impl DerefMut for Block {
 }
 
 impl Pretty for Block {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
@@ -84,7 +99,9 @@ impl Pretty for Block {
     {
         allocator
             .intersperse(
-                self.instructions.iter().map(|inst| inst.pretty(allocator)),
+                self.instructions
+                    .iter()
+                    .map(|inst| inst.pretty(allocator, total_instructions)),
                 allocator.hardline(),
             )
             .append(allocator.hardline())
@@ -101,18 +118,22 @@ pub enum Instruction {
 }
 
 impl Pretty for Instruction {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
         A: Clone,
     {
         match self {
-            Self::Call(call) => call.pretty(allocator),
-            Self::Assign(assign) => assign.pretty(allocator),
-            Self::Theta(theta) => theta.pretty(allocator),
-            Self::Gamma(gamma) => gamma.pretty(allocator),
-            Self::Store(store) => store.pretty(allocator),
+            Self::Call(call) => call.pretty(allocator, total_instructions),
+            Self::Assign(assign) => assign.pretty(allocator, total_instructions),
+            Self::Theta(theta) => theta.pretty(allocator, total_instructions),
+            Self::Gamma(gamma) => gamma.pretty(allocator, total_instructions),
+            Self::Store(store) => store.pretty(allocator, total_instructions),
         }
     }
 }
@@ -157,6 +178,8 @@ pub struct Theta {
     pub inputs: BTreeMap<VarId, Value>,
     pub outputs: BTreeMap<VarId, Value>,
     pub output_feedback: BTreeMap<VarId, VarId>,
+    pub loops: usize,
+    pub body_inst_count: usize,
 }
 
 impl Theta {
@@ -185,33 +208,62 @@ impl Theta {
             inputs,
             outputs,
             output_feedback,
+            loops: 0,
+            body_inst_count: 0,
         }
     }
 }
 
 impl Pretty for Theta {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
         A: Clone,
     {
+        let mut comment = match (self.input_effect, self.output_effect) {
+            (None, None) => format!("// node: {}, eff: ???, pred: ???", self.node),
+            (None, Some(output_effect)) => {
+                format!("// node: {}, eff: {}, pred: ???", self.node, output_effect)
+            }
+            (Some(input_effect), None) => {
+                format!("// node: {}, eff: ???, pred: {}", self.node, input_effect)
+            }
+            (Some(input_effect), Some(output_effect)) => {
+                format!(
+                    "// node: {}, eff: {}, pred: {}",
+                    self.node, output_effect, input_effect,
+                )
+            }
+        };
+
+        if self.loops != 0 {
+            write!(&mut comment, ", loops: {}", self.loops).unwrap();
+        }
+        if self.body_inst_count != 0 {
+            write!(
+                &mut comment,
+                ", body instructions: {}",
+                self.body_inst_count,
+            )
+            .unwrap();
+
+            if let Some(total_instructions) = total_instructions {
+                write!(
+                    &mut comment,
+                    " ({:.02}%)",
+                    percent_total(total_instructions, self.body_inst_count),
+                )
+                .unwrap();
+            }
+        }
+
         allocator
-            .text(match (self.input_effect, self.output_effect) {
-                (None, None) => format!("// node: {}, eff: ???, pred: ???", self.node),
-                (None, Some(output_effect)) => {
-                    format!("// node: {}, eff: {}, pred: ???", self.node, output_effect)
-                }
-                (Some(input_effect), None) => {
-                    format!("// node: {}, eff: ???, pred: {}", self.node, input_effect)
-                }
-                (Some(input_effect), Some(output_effect)) => {
-                    format!(
-                        "// node: {}, eff: {}, pred: {}",
-                        self.node, output_effect, input_effect,
-                    )
-                }
-            })
+            .text(comment)
             .append(allocator.hardline())
             .append(allocator.text("do"))
             .append(allocator.space())
@@ -224,7 +276,9 @@ impl Pretty for Theta {
                     .append(
                         allocator
                             .intersperse(
-                                self.body.iter().map(|inst| inst.pretty(allocator)),
+                                self.body
+                                    .iter()
+                                    .map(|inst| inst.pretty(allocator, total_instructions)),
                                 allocator.hardline(),
                             )
                             .indent(2),
@@ -238,7 +292,7 @@ impl Pretty for Theta {
             .append(allocator.text("{"))
             .append(allocator.space())
             .append(if let Some(cond) = self.cond.as_ref() {
-                cond.pretty(allocator)
+                cond.pretty(allocator, total_instructions)
             } else {
                 allocator.text("???")
             })
@@ -257,6 +311,8 @@ pub struct Gamma {
     pub false_outputs: BTreeMap<VarId, Value>,
     pub effect: EffectId,
     pub prev_effect: Option<EffectId>,
+    pub true_branches: usize,
+    pub false_branches: usize,
 }
 
 impl Gamma {
@@ -284,30 +340,53 @@ impl Gamma {
             false_outputs,
             effect,
             prev_effect: prev_effect.into(),
+            true_branches: 0,
+            false_branches: 0,
         }
     }
 }
 
 impl Pretty for Gamma {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
         A: Clone,
     {
+        let mut comment = if let Some(prev_effect) = self.prev_effect {
+            format!(
+                "// node: {}, eff: {}, pred: {}",
+                self.node, self.effect, prev_effect,
+            )
+        } else {
+            format!("// node: {}, eff: {}, pred: ???", self.node, self.effect)
+        };
+
+        if self.true_branches + self.false_branches != 0 {
+            write!(
+                &mut comment,
+                ", branches: {}",
+                self.true_branches + self.false_branches,
+            )
+            .unwrap();
+        }
+        if self.true_branches != 0 {
+            write!(&mut comment, ", true branches: {}", self.true_branches).unwrap();
+        }
+        if self.false_branches != 0 {
+            write!(&mut comment, ", false branches: {}", self.false_branches).unwrap();
+        }
+
         allocator
-            .text(if let Some(prev_effect) = self.prev_effect {
-                format!(
-                    "// node: {}, eff: {}, pred: {}",
-                    self.node, self.effect, prev_effect,
-                )
-            } else {
-                format!("// node: {}, eff: {}, pred: ???", self.node, self.effect)
-            })
+            .text(comment)
             .append(allocator.hardline())
             .append(allocator.text("if"))
             .append(allocator.space())
-            .append(self.cond.pretty(allocator))
+            .append(self.cond.pretty(allocator, total_instructions))
             .append(allocator.space())
             .append(allocator.text("{"))
             .append(if self.truthy.is_empty() {
@@ -318,7 +397,9 @@ impl Pretty for Gamma {
                     .append(
                         allocator
                             .intersperse(
-                                self.truthy.iter().map(|inst| inst.pretty(allocator)),
+                                self.truthy
+                                    .iter()
+                                    .map(|inst| inst.pretty(allocator, total_instructions)),
                                 allocator.hardline(),
                             )
                             .indent(2),
@@ -338,7 +419,9 @@ impl Pretty for Gamma {
                     .append(
                         allocator
                             .intersperse(
-                                self.falsy.iter().map(|inst| inst.pretty(allocator)),
+                                self.falsy
+                                    .iter()
+                                    .map(|inst| inst.pretty(allocator, total_instructions)),
                                 allocator.hardline(),
                             )
                             .indent(2),
@@ -356,6 +439,7 @@ pub struct Call {
     pub args: Vec<Value>,
     pub effect: EffectId,
     pub prev_effect: Option<EffectId>,
+    pub invocations: usize,
 }
 
 impl Call {
@@ -376,12 +460,17 @@ impl Call {
             args,
             effect,
             prev_effect: prev_effect.into(),
+            invocations: 0,
         }
     }
 }
 
 impl Pretty for Call {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
@@ -395,7 +484,9 @@ impl Pretty for Call {
                     allocator.text(self.function.clone()).append(
                         allocator
                             .intersperse(
-                                self.args.iter().map(|arg| arg.pretty(allocator)),
+                                self.args
+                                    .iter()
+                                    .map(|arg| arg.pretty(allocator, total_instructions)),
                                 allocator.text(","),
                             )
                             .parens(),
@@ -403,12 +494,27 @@ impl Pretty for Call {
                 )
                 .append(allocator.space())
                 .append(allocator.column(move |column| {
+                    let mut comment = if let Some(prev_effect) = self.prev_effect {
+                        format!("// eff: {}, pred: {}", self.effect, prev_effect)
+                    } else {
+                        format!("// eff: {}, pred: ???", self.effect)
+                    };
+
+                    if self.invocations != 0 {
+                        write!(&mut comment, ", calls: {}", self.invocations).unwrap();
+
+                        if let Some(total_instructions) = total_instructions {
+                            write!(
+                                &mut comment,
+                                " ({:.02}%)",
+                                percent_total(total_instructions, self.invocations),
+                            )
+                            .unwrap();
+                        }
+                    }
+
                     allocator
-                        .text(if let Some(prev_effect) = self.prev_effect {
-                            format!("// eff: {}, pred: {}", self.effect, prev_effect)
-                        } else {
-                            format!("// eff: {}, pred: ???", self.effect)
-                        })
+                        .text(comment)
                         .indent(COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column))
                         .into_doc()
                 }))
@@ -422,6 +528,7 @@ pub struct Assign {
     pub var: VarId,
     pub value: Expr,
     pub tag: AssignTag,
+    pub invocations: usize,
 }
 
 impl Assign {
@@ -433,6 +540,7 @@ impl Assign {
             var,
             value: value.into(),
             tag: AssignTag::None,
+            invocations: 0,
         }
     }
 
@@ -444,6 +552,7 @@ impl Assign {
             var,
             value: value.into(),
             tag: AssignTag::InputParam(variance),
+            invocations: 0,
         }
     }
 
@@ -455,12 +564,17 @@ impl Assign {
             var,
             value: value.into(),
             tag: AssignTag::OutputParam,
+            invocations: 0,
         }
     }
 }
 
 impl Pretty for Assign {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
@@ -468,7 +582,7 @@ impl Pretty for Assign {
     {
         allocator.column(move |start_column| {
             self.var
-                .pretty(allocator)
+                .pretty(allocator, total_instructions)
                 .append(allocator.space())
                 .append(allocator.text(":="))
                 .append(allocator.space())
@@ -477,23 +591,33 @@ impl Pretty for Assign {
                     AssignTag::InputParam(_) => allocator.text("in").append(allocator.space()),
                     AssignTag::OutputParam => allocator.text("out").append(allocator.space()),
                 })
-                .append(self.value.pretty(allocator))
+                .append(self.value.pretty(allocator, total_instructions))
                 .append(if let Expr::Load(load) = &self.value {
                     allocator.column(move |column| {
+                        let mut comment = if let Some(prev_effect) = load.prev_effect {
+                            format!("// eff: {}, pred: {}", load.effect, prev_effect)
+                        } else {
+                            format!("// eff: {}, pred: ???", load.effect)
+                        };
+
+                        if self.invocations != 0 {
+                            write!(&mut comment, ", loads: {}", self.invocations).unwrap();
+
+                            if let Some(total_instructions) = total_instructions {
+                                write!(
+                                    &mut comment,
+                                    " ({:.02}%)",
+                                    percent_total(total_instructions, self.invocations),
+                                )
+                                .unwrap();
+                            }
+                        }
+
                         allocator
                             .space()
-                            .append(
-                                allocator
-                                    .text(if let Some(prev_effect) = load.prev_effect {
-                                        format!("// eff: {}, pred: {}", load.effect, prev_effect)
-                                    } else {
-                                        format!("// eff: {}, pred: ???", load.effect)
-                                    })
-                                    .indent(
-                                        COMMENT_ALIGNMENT_OFFSET
-                                            .saturating_sub(column - start_column),
-                                    ),
-                            )
+                            .append(allocator.text(comment).indent(
+                                COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column),
+                            ))
                             .into_doc()
                     })
                 } else {
@@ -505,10 +629,48 @@ impl Pretty for Assign {
                             Variance::Invariant => {
                                 allocator.space().append(allocator.text("// invariant"))
                             }
+
                             Variance::Variant { feedback_from } => allocator.space().append(
                                 allocator.text(format!("// variant, feedback: {}", feedback_from)),
                             ),
-                            Variance::None => return allocator.nil().into_doc(),
+
+                            Variance::None => {
+                                if self.invocations != 0 {
+                                    let mut comment =
+                                        format!("// invocations: {}", self.invocations);
+
+                                    if let Some(total_instructions) = total_instructions {
+                                        write!(
+                                            &mut comment,
+                                            " ({:.02}%)",
+                                            percent_total(total_instructions, self.invocations),
+                                        )
+                                        .unwrap();
+                                    }
+
+                                    allocator.space().append(allocator.text(comment))
+                                } else {
+                                    return allocator.nil().into_doc();
+                                }
+                            }
+                        }
+                        .indent(COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column))
+                    } else if self.tag == AssignTag::None && !self.value.is_load() {
+                        if self.invocations != 0 {
+                            let mut comment = format!("// invocations: {}", self.invocations);
+
+                            if let Some(total_instructions) = total_instructions {
+                                write!(
+                                    &mut comment,
+                                    " ({:.02}%)",
+                                    percent_total(total_instructions, self.invocations),
+                                )
+                                .unwrap();
+                            }
+
+                            allocator.space().append(allocator.text(comment))
+                        } else {
+                            return allocator.nil().into_doc();
                         }
                         .indent(COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column))
                     } else {
@@ -546,21 +708,34 @@ pub enum Expr {
     Value(Value),
 }
 
+impl Expr {
+    /// Returns `true` if the expr is a [`Load`].
+    ///
+    /// [`Load`]: Expr::Load
+    pub const fn is_load(&self) -> bool {
+        matches!(self, Self::Load(..))
+    }
+}
+
 impl Pretty for Expr {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
         A: Clone,
     {
         match self {
-            Self::Eq(eq) => eq.pretty(allocator),
-            Self::Add(add) => add.pretty(allocator),
-            Self::Not(not) => not.pretty(allocator),
-            Self::Neg(neg) => neg.pretty(allocator),
-            Self::Load(load) => load.pretty(allocator),
-            Self::Call(call) => call.pretty(allocator),
-            Self::Value(value) => value.pretty(allocator),
+            Self::Eq(eq) => eq.pretty(allocator, total_instructions),
+            Self::Add(add) => add.pretty(allocator, total_instructions),
+            Self::Not(not) => not.pretty(allocator, total_instructions),
+            Self::Neg(neg) => neg.pretty(allocator, total_instructions),
+            Self::Load(load) => load.pretty(allocator, total_instructions),
+            Self::Call(call) => call.pretty(allocator, total_instructions),
+            Self::Value(value) => value.pretty(allocator, total_instructions),
         }
     }
 }
@@ -639,7 +814,11 @@ impl Add {
 }
 
 impl Pretty for Add {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
@@ -648,10 +827,10 @@ impl Pretty for Add {
         allocator
             .text("add")
             .append(allocator.space())
-            .append(self.lhs.pretty(allocator))
+            .append(self.lhs.pretty(allocator, total_instructions))
             .append(allocator.text(","))
             .append(allocator.space())
-            .append(self.rhs.pretty(allocator))
+            .append(self.rhs.pretty(allocator, total_instructions))
     }
 }
 
@@ -672,7 +851,11 @@ impl Not {
 }
 
 impl Pretty for Not {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
@@ -681,7 +864,7 @@ impl Pretty for Not {
         allocator
             .text("not")
             .append(allocator.space())
-            .append(self.value.pretty(allocator))
+            .append(self.value.pretty(allocator, total_instructions))
     }
 }
 
@@ -702,7 +885,11 @@ impl Neg {
 }
 
 impl Pretty for Neg {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
@@ -711,7 +898,7 @@ impl Pretty for Neg {
         allocator
             .text("neg")
             .append(allocator.space())
-            .append(self.value.pretty(allocator))
+            .append(self.value.pretty(allocator, total_instructions))
     }
 }
 
@@ -735,7 +922,11 @@ impl Eq {
 }
 
 impl Pretty for Eq {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
@@ -744,10 +935,10 @@ impl Pretty for Eq {
         allocator
             .text("eq")
             .append(allocator.space())
-            .append(self.lhs.pretty(allocator))
+            .append(self.lhs.pretty(allocator, total_instructions))
             .append(allocator.text(","))
             .append(allocator.space())
-            .append(self.rhs.pretty(allocator))
+            .append(self.rhs.pretty(allocator, total_instructions))
     }
 }
 
@@ -772,7 +963,11 @@ impl Load {
 }
 
 impl Pretty for Load {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
@@ -781,7 +976,7 @@ impl Pretty for Load {
         allocator
             .text("load")
             .append(allocator.space())
-            .append(self.ptr.pretty(allocator))
+            .append(self.ptr.pretty(allocator, total_instructions))
     }
 }
 
@@ -791,6 +986,7 @@ pub struct Store {
     pub value: Value,
     pub effect: EffectId,
     pub prev_effect: Option<EffectId>,
+    pub stores: usize,
 }
 
 impl Store {
@@ -803,12 +999,17 @@ impl Store {
             value,
             effect,
             prev_effect: prev_effect.into(),
+            stores: 0,
         }
     }
 }
 
 impl Pretty for Store {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
@@ -818,18 +1019,33 @@ impl Pretty for Store {
             allocator
                 .text("store")
                 .append(allocator.space())
-                .append(self.ptr.pretty(allocator))
+                .append(self.ptr.pretty(allocator, total_instructions))
                 .append(allocator.text(","))
                 .append(allocator.space())
-                .append(self.value.pretty(allocator))
-                .append(allocator.space())
+                .append(self.value.pretty(allocator, total_instructions))
                 .append(allocator.column(move |column| {
+                    let mut comment = if let Some(prev_effect) = self.prev_effect {
+                        format!("// eff: {}, pred: {}", self.effect, prev_effect)
+                    } else {
+                        format!("// eff: {}, pred: ???", self.effect)
+                    };
+
+                    if self.stores != 0 {
+                        write!(&mut comment, ", stores: {}", self.stores).unwrap();
+
+                        if let Some(total_instructions) = total_instructions {
+                            write!(
+                                &mut comment,
+                                " ({:.02}%)",
+                                percent_total(total_instructions, self.stores)
+                            )
+                            .unwrap();
+                        }
+                    }
+
                     allocator
-                        .text(if let Some(prev_effect) = self.prev_effect {
-                            format!("// eff: {}, pred: {}", self.effect, prev_effect)
-                        } else {
-                            format!("// eff: {}, pred: ???", self.effect)
-                        })
+                        .space()
+                        .append(allocator.text(comment))
                         .indent(COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column))
                         .into_doc()
                 }))
@@ -855,15 +1071,19 @@ impl Value {
 }
 
 impl Pretty for Value {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
         A: Clone,
     {
         match self {
-            Self::Var(var) => var.pretty(allocator),
-            Self::Const(constant) => constant.pretty(allocator),
+            Self::Var(var) => var.pretty(allocator, total_instructions),
+            Self::Const(constant) => constant.pretty(allocator, total_instructions),
             Self::Missing => allocator.text("???"),
         }
     }
@@ -997,7 +1217,11 @@ impl ops::Add for &Const {
 }
 
 impl Pretty for Const {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        _total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
@@ -1045,7 +1269,11 @@ impl VarId {
 }
 
 impl Pretty for VarId {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        _total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
@@ -1081,7 +1309,11 @@ impl EffectId {
 }
 
 impl Pretty for EffectId {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        _total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,

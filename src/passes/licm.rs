@@ -206,8 +206,9 @@ impl Pass for Licm {
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
+        let mut changed = false;
         let mut visitor = Self::new().within_theta(true);
-        self.changed |= visitor.visit_graph(theta.body_mut());
+        changed |= visitor.visit_graph(theta.body_mut());
 
         // Pull out any constants that are within the loop body
         let pulled_constants =
@@ -217,22 +218,31 @@ impl Pass for Licm {
             graph.add_value_edge(constant, port);
 
             theta.add_invariant_input_raw(port, param);
+            changed = true;
         }
 
-        graph.replace_node(theta.node(), Node::Theta(Box::new(theta)));
+        if changed {
+            graph.replace_node(theta.node(), theta);
+            self.changed();
+        }
     }
 
+    // TODO: Pull branch invariant code from branches?
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
+        let mut changed = false;
         let mut visitor = Self::new();
 
-        self.changed |= visitor.visit_graph(gamma.true_mut());
+        changed |= visitor.visit_graph(gamma.true_mut());
         visitor.reset();
         // self.pull_out_constants(graph, gamma.true_mut());
 
-        self.changed |= visitor.visit_graph(gamma.false_mut());
+        changed |= visitor.visit_graph(gamma.false_mut());
         // self.pull_out_constants(graph, gamma.false_mut());
 
-        graph.replace_node(gamma.node(), Node::Gamma(Box::new(gamma)));
+        if changed {
+            graph.replace_node(gamma.node(), gamma);
+            self.changed();
+        }
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _value: i32) {

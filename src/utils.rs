@@ -2,16 +2,47 @@ use crate::{
     graph::{OutputPort, Rvsdg},
     lower_tokens, parse,
 };
+use similar::{Algorithm, TextDiff};
 use std::{
     collections::BTreeSet,
     fmt::Debug,
     hash::{BuildHasherDefault, Hash},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use xxhash_rust::xxh3::Xxh3;
 
 pub type HashSet<K> = std::collections::HashSet<K, BuildHasherDefault<Xxh3>>;
 pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<Xxh3>>;
+
+pub fn percent_total(total: usize, subset: usize) -> f64 {
+    let diff = (subset as f64 * 100.0) / total as f64;
+
+    if diff.is_nan() || diff == -0.0 {
+        0.0
+    } else {
+        diff
+    }
+}
+
+pub fn diff_ir(old: &str, new: &str) -> String {
+    let start_time = Instant::now();
+
+    let diff = TextDiff::configure()
+        .algorithm(Algorithm::Patience)
+        .deadline(Instant::now() + Duration::from_secs(1))
+        .diff_lines(old, new);
+
+    let diff = format!("{}", diff.unified_diff());
+
+    let elapsed = start_time.elapsed();
+    tracing::debug!(
+        target: "timings",
+        "took {:#?} to diff ir",
+        elapsed,
+    );
+
+    diff
+}
 
 #[non_exhaustive]
 pub struct PerfEvent {}
@@ -200,7 +231,7 @@ fn panic_none_with_message(value: &dyn Debug, message: &str) -> ! {
 macro_rules! test_opts {
     (
         $name:ident,
-        passes = [$($pass:expr),+ $(,)?],
+        passes = [$($pass:expr),* $(,)?],
         $(tape_size = $tape_size:expr,)?
         $(step_limit = $step_limit:expr,)?
         $(input = [$($input:expr),* $(,)?],)?
@@ -224,7 +255,7 @@ macro_rules! test_opts {
             let tape_size: usize = $crate::test_opts!(@tape_size $($tape_size)?);
             let step_limit: usize = $crate::test_opts!(@step_limit $($step_limit)?);
             let mut passes: Vec<Box<dyn Pass>> = vec![
-                $(Box::new($pass) as Box<dyn Pass>,)+
+                $(Box::new($pass) as Box<dyn Pass>,)*
             ];
             let build: fn(&mut Rvsdg, OutputPort) -> OutputPort = $build;
 
@@ -245,13 +276,15 @@ macro_rules! test_opts {
                 };
                 let output_func = |byte| unoptimized_output.push(byte);
 
-                let unoptimized_graph_ir = IrBuilder::new().translate(&graph);
+                let mut unoptimized_graph_ir = IrBuilder::new().translate(&graph);
+                let unoptimized_text = unoptimized_graph_ir.pretty_print(None);
+
                 let mut machine = Machine::new(step_limit, tape_size, input_func, output_func);
                 machine
-                    .execute(&unoptimized_graph_ir)
+                    .execute(&mut unoptimized_graph_ir)
                     .expect("interpreter step limit reached");
 
-                unoptimized_graph_ir.pretty_print()
+                unoptimized_text
             };
 
             let output_str = String::from_utf8_lossy(&unoptimized_output);
@@ -304,13 +337,15 @@ macro_rules! test_opts {
                 };
                 let output_func = |byte| optimized_output.push(byte);
 
-                let optimized_graph_ir = IrBuilder::new().translate(&graph);
+                let mut optimized_graph_ir = IrBuilder::new().translate(&graph);
+                let optimized_text = optimized_graph_ir.pretty_print(None);
+
                 let mut machine = Machine::new(step_limit, tape_size, input_func, output_func);
                 machine
-                    .execute(&optimized_graph_ir)
+                    .execute(&mut optimized_graph_ir)
                     .expect("interpreter step limit reached");
 
-                optimized_graph_ir.pretty_print()
+                optimized_text
             };
 
             let output_str = String::from_utf8_lossy(&optimized_output);

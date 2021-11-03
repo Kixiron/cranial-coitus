@@ -97,29 +97,36 @@ impl Pass for UnobservedStore {
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
+        let mut changed = false;
+
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
         truthy_visitor.within_gamma = true;
         falsy_visitor.within_gamma = true;
         truthy_visitor.within_theta = self.within_theta;
         falsy_visitor.within_theta = self.within_theta;
 
-        truthy_visitor.visit_graph(gamma.true_mut());
-        falsy_visitor.visit_graph(gamma.false_mut());
-        self.changed |= truthy_visitor.did_change();
-        self.changed |= falsy_visitor.did_change();
+        changed |= truthy_visitor.visit_graph(gamma.true_mut());
+        changed |= falsy_visitor.visit_graph(gamma.false_mut());
 
-        graph.replace_node(gamma.node(), gamma);
+        if changed {
+            graph.replace_node(gamma.node(), gamma);
+            self.changed();
+        }
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
+        let mut changed = false;
+
         let mut visitor = Self::new();
         visitor.within_theta = true;
         visitor.within_gamma = self.within_gamma;
 
-        visitor.visit_graph(theta.body_mut());
-        self.changed |= visitor.did_change();
+        changed |= visitor.visit_graph(theta.body_mut());
 
-        graph.replace_node(theta.node(), theta);
+        if changed {
+            graph.replace_node(theta.node(), theta);
+            self.changed();
+        }
     }
 }
 

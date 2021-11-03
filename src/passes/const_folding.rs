@@ -1,9 +1,11 @@
 use crate::{
     graph::{
-        Add, Bool, EdgeKind, Eq, Gamma, InputPort, Int, Neg, NodeExt, Not, OutputPort, Rvsdg, Theta,
+        Add, Bool, EdgeKind, Eq, Gamma, InputParam, InputPort, Int, Neg, NodeExt, Not, OutputPort,
+        Rvsdg, Theta,
     },
     ir::Const,
     passes::Pass,
+    utils::AssertNone,
 };
 use std::collections::BTreeMap;
 
@@ -176,6 +178,7 @@ impl Pass for ConstFolding {
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
+        let mut changed = false;
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
 
         // For each input into the gamma region, if the input value is a known constant
@@ -186,24 +189,22 @@ impl Pass for ConstFolding {
             let (_, output, _) = graph.get_input(input);
 
             if let Some(constant) = self.values.get(&output).cloned() {
-                let true_param = gamma.true_branch().get_node(truthy_param).to_input_param();
-                let replaced = truthy_visitor
+                let true_param = gamma.true_branch().to_node::<InputParam>(truthy_param);
+                truthy_visitor
                     .values
-                    .insert(true_param.output(), constant.clone());
-                debug_assert!(replaced.is_none());
+                    .insert(true_param.output(), constant.clone())
+                    .debug_unwrap_none();
 
-                let false_param = gamma.false_branch().get_node(falsy_param).to_input_param();
-                let replaced = falsy_visitor.values.insert(false_param.output(), constant);
-                debug_assert!(replaced.is_none());
+                let false_param = gamma.false_branch().to_node::<InputParam>(falsy_param);
+                falsy_visitor
+                    .values
+                    .insert(false_param.output(), constant)
+                    .debug_unwrap_none();
             }
         }
 
-        // TODO: Eliminate gamma branches based on gamma condition
-
-        truthy_visitor.visit_graph(gamma.true_mut());
-        falsy_visitor.visit_graph(gamma.false_mut());
-        self.changed |= truthy_visitor.did_change();
-        self.changed |= falsy_visitor.did_change();
+        changed |= truthy_visitor.visit_graph(gamma.true_mut());
+        changed |= falsy_visitor.visit_graph(gamma.false_mut());
 
         for (&port, &param) in gamma.outputs().iter().zip(gamma.output_params()) {
             let true_output = gamma
@@ -245,10 +246,14 @@ impl Pass for ConstFolding {
             }
         }
 
-        graph.replace_node(gamma.node(), gamma);
+        if changed {
+            graph.replace_node(gamma.node(), gamma);
+            self.changed();
+        }
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
+        let mut changed = false;
         let mut visitor = Self::new();
 
         // For each input into the theta region, if the input value is a known constant
@@ -263,21 +268,12 @@ impl Pass for ConstFolding {
         }
 
         visitor.visit_graph(theta.body_mut());
-        self.changed |= visitor.did_change();
+        changed |= visitor.did_change();
 
-        // FIXME: This is probably incorrect
-        // for (port, param) in theta.output_pairs() {
-        //     if let Some(value) = self
-        //         .values
-        //         .get(&theta.body().get_input(param.input()).1)
-        //         .cloned()
-        //     {
-        //         tracing::trace!("propagating {:?} out of theta node", value);
-        //         self.values.insert(port, value);
-        //     }
-        // }
-
-        graph.replace_node(theta.node(), theta);
+        if changed {
+            graph.replace_node(theta.node(), theta);
+            self.changed();
+        }
     }
 }
 

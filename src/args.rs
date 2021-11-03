@@ -48,4 +48,8 @@ pub struct Debug {
     /// Only run the final optimized program
     #[clap(long)]
     pub only_final_run: bool,
+
+    /// Removes execution step limits
+    #[clap(long)]
+    pub no_step_limit: bool,
 }

@@ -27,13 +27,12 @@ use crate::{
     utils::{HashSet, PerfEvent},
 };
 use clap::Parser;
-use similar::{Algorithm, TextDiff};
 use std::{
     collections::VecDeque,
     fs::{self, File},
     io::{self, BufWriter, Read, Write},
     path::Path,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 // TODO: Write an evaluator so that we can actually verify optimizations
@@ -54,6 +53,12 @@ fn main() {
 }
 
 fn debug(args: Debug, start_time: Instant) {
+    let step_limit = if args.no_step_limit {
+        usize::MAX
+    } else {
+        args.step_limit
+    };
+
     let contents = fs::read_to_string(&args.file).expect("failed to read file");
     let dump_dir = Path::new("./dumps").join(args.file.with_extension("").file_name().unwrap());
 
@@ -105,8 +110,8 @@ fn debug(args: Debug, start_time: Instant) {
     validate(&graph);
 
     let input_stats = graph.stats();
-    let program = IrBuilder::new().translate(&graph);
-    let input_program = program.pretty_print();
+    let mut program = IrBuilder::new().translate(&graph);
+    let input_program = program.pretty_print(None);
     fs::write(dump_dir.join("input.cir"), &input_program).unwrap();
 
     if !args.only_final_run {
@@ -124,8 +129,8 @@ fn debug(args: Debug, start_time: Instant) {
         };
 
         let result = {
-            let mut machine = Machine::new(args.step_limit, args.cells as usize, input, output);
-            machine.execute(&program).map(|_| ())
+            let mut machine = Machine::new(step_limit, args.cells as usize, input, output);
+            machine.execute(&mut program).map(|_| ())
         };
 
         let output_str = String::from_utf8_lossy(&output_vec);
@@ -214,9 +219,9 @@ fn debug(args: Debug, start_time: Instant) {
                 stack.clear();
 
                 let current_graph = IrBuilder::new().translate(&graph);
-                let current_graph_pretty = current_graph.pretty_print();
+                let current_graph_pretty = current_graph.pretty_print(None);
 
-                let diff = diff_ir(&previous_graph, &current_graph_pretty);
+                let diff = utils::diff_ir(&previous_graph, &current_graph_pretty);
 
                 if !diff.is_empty() {
                     fs::write(
@@ -263,10 +268,17 @@ fn debug(args: Debug, start_time: Instant) {
     }
 
     let elapsed = start_time.elapsed();
-    let program = IrBuilder::new().translate(&graph);
-    let output_program = program.pretty_print();
+    let mut program = IrBuilder::new().translate(&graph);
+    let output_program = program.pretty_print(None);
 
     print!("{}", output_program);
+
+    let io_diff = utils::diff_ir(&input_program, &output_program);
+    if !io_diff.is_empty() {
+        fs::write(dump_dir.join("input-output.diff"), io_diff).unwrap();
+    }
+
+    fs::write(dump_dir.join("output.cir"), output_program).unwrap();
 
     let stats = {
         let mut input = vec![b'1', b'0'];
@@ -276,8 +288,8 @@ fn debug(args: Debug, start_time: Instant) {
         let output = |byte| (&mut output_vec).push(byte);
 
         let (result, stats) = {
-            let mut machine = Machine::new(args.step_limit, args.cells as usize, input, output);
-            (machine.execute(&program).map(|_| ()), machine.stats)
+            let mut machine = Machine::new(step_limit, args.cells as usize, input, output);
+            (machine.execute(&mut program).map(|_| ()), machine.stats)
         };
 
         let output_str = String::from_utf8_lossy(&output_vec);
@@ -367,26 +379,22 @@ fn debug(args: Debug, start_time: Instant) {
         difference.io_ops,
         stats.instructions,
         stats.loads,
-        percent_total(stats.instructions, stats.loads),
+        utils::percent_total(stats.instructions, stats.loads),
         stats.stores,
-        percent_total(stats.instructions, stats.stores),
+        utils::percent_total(stats.instructions, stats.stores),
         stats.loop_iterations,
         stats.branches,
         stats.input_calls,
-        percent_total(stats.instructions, stats.input_calls),
+        utils::percent_total(stats.instructions, stats.input_calls),
         stats.output_calls,
-        percent_total(stats.instructions, stats.output_calls),
+        utils::percent_total(stats.instructions, stats.output_calls),
     );
 
     print!("{}", change);
-    fs::write(dump_dir.join("change.txt"), &change).unwrap();
+    fs::write(dump_dir.join("change.txt"), change).unwrap();
 
-    let io_diff = diff_ir(&input_program, &output_program);
-    if !io_diff.is_empty() {
-        fs::write(dump_dir.join("input-output.diff"), io_diff).unwrap();
-    }
-
-    fs::write(dump_dir.join("output.cir"), output_program).unwrap();
+    let annotated_program = program.pretty_print(Some(stats.instructions));
+    fs::write(dump_dir.join("annotated_output.cir"), annotated_program).unwrap();
 }
 
 fn run(args: Run, start_time: Instant) {
@@ -431,13 +439,13 @@ fn run(args: Run, start_time: Instant) {
         Box::new(UnobservedStore::new()),
         Box::new(ConstFolding::new()),
         Box::new(AssociativeAdd::new()),
-        // Box::new(ZeroLoop::new()),
+        Box::new(ZeroLoop::new()),
         Box::new(Mem2Reg::new(args.cells as usize)),
-        // Box::new(AddSubLoop::new()),
+        Box::new(AddSubLoop::new()),
         Box::new(Dce::new()),
         Box::new(ElimConstGamma::new()),
         Box::new(ConstFolding::new()),
-        // Box::new(Licm::new()),
+        Box::new(Licm::new()),
         Box::new(ExprDedup::new()),
     ];
     let (mut pass_num, mut stack, mut visited, mut buffer) = (
@@ -490,7 +498,7 @@ fn run(args: Run, start_time: Instant) {
         }
     }
 
-    let program = IrBuilder::new().translate(&graph);
+    let mut program = IrBuilder::new().translate(&graph);
     let elapsed = start_time.elapsed();
 
     let output_stats = graph.stats();
@@ -578,7 +586,7 @@ fn run(args: Run, start_time: Instant) {
             input,
             output,
         );
-        let result = machine.execute(&program).map(|_| ());
+        let result = machine.execute(&mut program).map(|_| ());
 
         (result, machine.stats)
     };
@@ -601,15 +609,15 @@ fn run(args: Run, start_time: Instant) {
                 runtime,
                 stats.instructions,
                 stats.loads,
-                percent_total(stats.instructions, stats.loads),
+                utils::percent_total(stats.instructions, stats.loads),
                 stats.stores,
-                percent_total(stats.instructions, stats.stores),
+                utils::percent_total(stats.instructions, stats.stores),
                 stats.loop_iterations,
                 stats.branches,
                 stats.input_calls,
-                percent_total(stats.instructions, stats.input_calls),
+                utils::percent_total(stats.instructions, stats.input_calls),
                 stats.output_calls,
-                percent_total(stats.instructions, stats.output_calls),
+                utils::percent_total(stats.instructions, stats.output_calls),
             );
         }
 
@@ -630,48 +638,18 @@ fn run(args: Run, start_time: Instant) {
                 runtime,
                 stats.instructions,
                 stats.loads,
-                percent_total(stats.instructions, stats.loads),
+                utils::percent_total(stats.instructions, stats.loads),
                 stats.stores,
-                percent_total(stats.instructions, stats.stores),
+                utils::percent_total(stats.instructions, stats.stores),
                 stats.loop_iterations,
                 stats.branches,
                 stats.input_calls,
-                percent_total(stats.instructions, stats.input_calls),
+                utils::percent_total(stats.instructions, stats.input_calls),
                 stats.output_calls,
-                percent_total(stats.instructions, stats.output_calls),
+                utils::percent_total(stats.instructions, stats.output_calls),
             );
         }
     }
-}
-
-fn percent_total(total: usize, subset: usize) -> f64 {
-    let diff = (subset as f64 * 100.0) / total as f64;
-
-    if diff.is_nan() || diff == -0.0 {
-        0.0
-    } else {
-        diff
-    }
-}
-
-fn diff_ir(old: &str, new: &str) -> String {
-    let start_time = Instant::now();
-
-    let diff = TextDiff::configure()
-        .algorithm(Algorithm::Patience)
-        .deadline(Instant::now() + Duration::from_secs(1))
-        .diff_lines(old, new);
-
-    let diff = format!("{}", diff.unified_diff());
-
-    let elapsed = start_time.elapsed();
-    tracing::debug!(
-        target: "timings",
-        "took {:#?} to diff ir",
-        elapsed,
-    );
-
-    diff
 }
 
 // TODO: Turn validation into a pass

@@ -345,20 +345,20 @@ impl Pass for ElimConstGamma {
 
         // If we can't find a constant condition for this gamma, just visit all of its branches
         } else {
-            truthy_visitor.visit_graph(gamma.true_mut());
-            falsy_visitor.visit_graph(gamma.false_mut());
+            let mut changed = false;
+            changed |= truthy_visitor.visit_graph(gamma.true_mut());
+            changed |= falsy_visitor.visit_graph(gamma.false_mut());
 
-            self.changed |= truthy_visitor.did_change();
-            self.changed |= falsy_visitor.did_change();
-
-            graph.replace_node(gamma.node(), gamma);
+            if changed {
+                graph.replace_node(gamma.node(), gamma);
+                self.changed();
+            }
         }
-
-        // TODO: Propagate constants out of gamma bodies?
     }
 
     // FIXME: Inlining gamma bodies is broken rn
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
+        let mut changed = false;
         let mut visitor = Self::new();
 
         // For each input into the theta region, if the input value is a known constant
@@ -372,8 +372,7 @@ impl Pass for ElimConstGamma {
             }
         }
 
-        visitor.visit_graph(theta.body_mut());
-        self.changed |= visitor.did_change();
+        changed |= visitor.visit_graph(theta.body_mut());
 
         let cond_out = theta.condition();
         let cond_source = theta.body().input_source(cond_out.input());
@@ -622,9 +621,9 @@ impl Pass for ElimConstGamma {
 
             graph.remove_node(theta.node());
             self.changed();
-        } else {
-            // TODO: Propagate constants out of theta bodies?
+        } else if changed {
             graph.replace_node(theta.node(), theta);
+            self.changed();
         }
     }
 }

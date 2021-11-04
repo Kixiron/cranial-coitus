@@ -1,3 +1,5 @@
+use similar::algorithms::DiffHook;
+
 use crate::{
     graph::{Node, NodeExt, NodeId, Rvsdg},
     passes::Pass,
@@ -48,14 +50,9 @@ impl Dce {
                                 // Push the gamma's true branch end node to the stack
                                 stack.push(gamma.ends()[0]);
                                 stack.extend(gamma.output_params().iter().map(|&[param, _]| param));
-                                stack.extend(gamma.input_params().iter().map(|&[param, _]| param));
 
                                 // Mark the nodes within the gamma's true branch
                                 self.mark_nodes(gamma.true_mut(), stack, visited, stack_len);
-
-                                if gamma.true_mut().bulk_retain_nodes(visited) {
-                                    self.changed();
-                                }
                             }
 
                             // The stack shouldn't have any extra items on it
@@ -66,14 +63,60 @@ impl Dce {
                                 // Push the gamma's false branch end node to the stack
                                 stack.push(gamma.ends()[1]);
                                 stack.extend(gamma.output_params().iter().map(|&[_, param]| param));
-                                stack.extend(gamma.input_params().iter().map(|&[param, _]| param));
 
                                 // Mark the nodes within the gamma's false branch
                                 self.mark_nodes(gamma.false_mut(), stack, visited, stack_len);
+                            }
 
-                                if gamma.false_mut().bulk_retain_nodes(visited) {
+                            // TODO: Buffer
+                            let inputs: Vec<_> = gamma
+                                .inputs()
+                                .iter()
+                                .zip(gamma.input_params())
+                                .map(|(&input, &params)| (input, params))
+                                .enumerate()
+                                .collect();
+
+                            // Remove unused invariant params
+                            let mut offset = 0;
+                            for (idx, (port, [true_param, false_param])) in inputs {
+                                // If neither params were used, remove them from the gamma
+                                // FIXME: Once we can distinguish between params on either side of the gamma
+                                //        we can remove them individually
+                                if !visited.contains(&true_param) && !visited.contains(&false_param)
+                                {
+                                    tracing::trace!(
+                                        ?true_param,
+                                        ?false_param,
+                                        "removed dead input {:?} from gamma {:?}",
+                                        port,
+                                        gamma.node(),
+                                    );
+
+                                    let index = idx - offset;
+                                    dbg!(index, idx, offset);
+                                    gamma.inputs_mut().remove(index);
+                                    gamma.input_params_mut().remove(index);
+
+                                    gamma.true_mut().remove_node(true_param);
+                                    gamma.false_mut().remove_node(false_param);
+
+                                    offset += 1;
+
                                     self.changed();
+                                } else {
+                                    // Make sure we don't remove redundant inputs when one of them is still used
+                                    // FIXME: Distinguish between gamma sides
+                                    visited.insert(true_param);
+                                    visited.insert(false_param);
                                 }
+                            }
+
+                            if gamma.true_mut().bulk_retain_nodes(visited) {
+                                self.changed();
+                            }
+                            if gamma.false_mut().bulk_retain_nodes(visited) {
+                                self.changed();
                             }
                         }
 

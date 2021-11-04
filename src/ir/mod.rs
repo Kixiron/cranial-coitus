@@ -253,12 +253,11 @@ impl Pretty for Theta {
             .unwrap();
 
             if let Some(total_instructions) = total_instructions {
-                write!(
-                    &mut comment,
-                    " ({:.02}%)",
-                    percent_total(total_instructions, self.body_inst_count),
-                )
-                .unwrap();
+                let percentage = percent_total(total_instructions, self.body_inst_count);
+
+                if (percentage * 100.0).trunc() / 100.0 != 0.00 {
+                    write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                }
             }
         }
 
@@ -504,12 +503,11 @@ impl Pretty for Call {
                         write!(&mut comment, ", calls: {}", self.invocations).unwrap();
 
                         if let Some(total_instructions) = total_instructions {
-                            write!(
-                                &mut comment,
-                                " ({:.02}%)",
-                                percent_total(total_instructions, self.invocations),
-                            )
-                            .unwrap();
+                            let percentage = percent_total(total_instructions, self.invocations);
+
+                            if (percentage * 100.0).trunc() / 100.0 != 0.00 {
+                                write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                            }
                         }
                     }
 
@@ -604,12 +602,12 @@ impl Pretty for Assign {
                             write!(&mut comment, ", loads: {}", self.invocations).unwrap();
 
                             if let Some(total_instructions) = total_instructions {
-                                write!(
-                                    &mut comment,
-                                    " ({:.02}%)",
-                                    percent_total(total_instructions, self.invocations),
-                                )
-                                .unwrap();
+                                let percentage =
+                                    percent_total(total_instructions, self.invocations);
+
+                                if (percentage * 100.0).trunc() / 100.0 != 0.00 {
+                                    write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                                }
                             }
                         }
 
@@ -640,12 +638,12 @@ impl Pretty for Assign {
                                         format!("// invocations: {}", self.invocations);
 
                                     if let Some(total_instructions) = total_instructions {
-                                        write!(
-                                            &mut comment,
-                                            " ({:.02}%)",
-                                            percent_total(total_instructions, self.invocations),
-                                        )
-                                        .unwrap();
+                                        let percentage =
+                                            percent_total(total_instructions, self.invocations);
+
+                                        if (percentage * 100.0).trunc() / 100.0 != 0.00 {
+                                            write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                                        }
                                     }
 
                                     allocator.space().append(allocator.text(comment))
@@ -660,12 +658,12 @@ impl Pretty for Assign {
                             let mut comment = format!("// invocations: {}", self.invocations);
 
                             if let Some(total_instructions) = total_instructions {
-                                write!(
-                                    &mut comment,
-                                    " ({:.02}%)",
-                                    percent_total(total_instructions, self.invocations),
-                                )
-                                .unwrap();
+                                let percentage =
+                                    percent_total(total_instructions, self.invocations);
+
+                                if (percentage * 100.0).trunc() / 100.0 != 0.00 {
+                                    write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                                }
                             }
 
                             allocator.space().append(allocator.text(comment))
@@ -1034,12 +1032,11 @@ impl Pretty for Store {
                         write!(&mut comment, ", stores: {}", self.stores).unwrap();
 
                         if let Some(total_instructions) = total_instructions {
-                            write!(
-                                &mut comment,
-                                " ({:.02}%)",
-                                percent_total(total_instructions, self.stores)
-                            )
-                            .unwrap();
+                            let percentage = percent_total(total_instructions, self.stores);
+
+                            if (percentage * 100.0).trunc() / 100.0 != 0.00 {
+                                write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                            }
                         }
                     }
 

@@ -71,7 +71,7 @@ impl Gamma {
         &self.inputs
     }
 
-    pub(super) fn inputs_mut(&mut self) -> &mut TinyVec<[InputPort; 5]> {
+    pub fn inputs_mut(&mut self) -> &mut TinyVec<[InputPort; 5]> {
         &mut self.inputs
     }
 
@@ -91,6 +91,10 @@ impl Gamma {
         &self.input_params
     }
 
+    pub fn input_params_mut(&mut self) -> &mut TinyVec<[[NodeId; 2]; 5]> {
+        &mut self.input_params
+    }
+
     pub fn outputs(&self) -> &[OutputPort] {
         &self.outputs
     }
@@ -102,6 +106,10 @@ impl Gamma {
 
     pub fn output_params(&self) -> &[[NodeId; 2]] {
         &self.output_params
+    }
+
+    pub fn output_params_mut(&mut self) -> &mut TinyVec<[[NodeId; 2]; 5]> {
+        &mut self.output_params
     }
 
     pub const fn true_branch(&self) -> &Rvsdg {

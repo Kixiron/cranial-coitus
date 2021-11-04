@@ -1,7 +1,7 @@
 use crate::{
     graph::{
         Add, Bool, EdgeKind, Eq, Gamma, InputPort, Int, Neg, Node, NodeExt, NodeId, Not,
-        OutputPort, Rvsdg, Theta,
+        OutputParam, OutputPort, Rvsdg, Theta,
     },
     passes::Pass,
     utils::{AssertNone, HashMap, HashSet},
@@ -221,6 +221,35 @@ impl Pass for Licm {
             changed = true;
         }
 
+        // If a variant input is a constant, make it invariant
+        let outputs: Vec<_> = theta.output_pairs().collect();
+        for (output, output_param) in outputs {
+            if let Some(input_param) = theta
+                .body()
+                .input_source_node(output_param.input())
+                .as_input_param()
+            {
+                let input = theta
+                    .variant_input_pair_ids()
+                    .find_map(|(input, param)| (param == input_param.node()).then(|| input));
+
+                if let Some(input) = input {
+                    tracing::trace!(
+                        "demoting variant input {:?} (feedback from {:?}) to an invariant input",
+                        input,
+                        output,
+                    );
+
+                    let source = graph.input_source(input);
+                    graph.rewire_dependents(output, source);
+                    theta.remove_variant_input(input);
+                    theta.add_invariant_input_raw(input, input_param.node());
+
+                    changed = true;
+                }
+            }
+        }
+
         if changed {
             graph.replace_node(theta.node(), theta);
             self.changed();
@@ -234,10 +263,78 @@ impl Pass for Licm {
 
         changed |= visitor.visit_graph(gamma.true_mut());
         visitor.reset();
-        // self.pull_out_constants(graph, gamma.true_mut());
-
         changed |= visitor.visit_graph(gamma.false_mut());
-        // self.pull_out_constants(graph, gamma.false_mut());
+
+        let outputs: Vec<_> = gamma
+            .outputs()
+            .iter()
+            .copied()
+            .zip(gamma.output_params().iter().copied())
+            .collect();
+
+        for (output, [true_out, false_out]) in outputs {
+            let (true_out, false_out) = (
+                gamma.true_branch().to_node::<OutputParam>(true_out),
+                gamma.false_branch().to_node::<OutputParam>(false_out),
+            );
+
+            let (true_in, false_in) = (
+                gamma
+                    .true_branch()
+                    .input_source_node(true_out.input())
+                    .as_input_param(),
+                gamma
+                    .false_branch()
+                    .input_source_node(false_out.input())
+                    .as_input_param(),
+            );
+
+            if let Some((true_in, false_in)) = true_in.zip(false_in) {
+                let true_input = *gamma
+                    .inputs()
+                    .iter()
+                    .zip(gamma.input_params())
+                    .find(|(_, &[param, _])| param == true_in.node())
+                    .unwrap()
+                    .0;
+                let false_input = *gamma
+                    .inputs()
+                    .iter()
+                    .zip(gamma.input_params())
+                    .find(|(_, &[_, param])| param == false_in.node())
+                    .unwrap()
+                    .0;
+
+                if true_input == false_input {
+                    let input = true_input;
+
+                    tracing::trace!(
+                        "hoisting gamma output {:?} (input from {:?}) to a direct dependency",
+                        output,
+                        input,
+                    );
+
+                    // Rewire dependents to consume directly from the source
+                    let input_source = graph.input_source(input);
+                    graph.rewire_dependents(output, input_source);
+
+                    // Remove the output entries on the gamma node
+                    let output_index = gamma
+                        .outputs()
+                        .iter()
+                        .position(|&out| out == output)
+                        .unwrap();
+                    gamma.outputs_mut().remove(output_index);
+                    gamma.output_params_mut().remove(output_index);
+
+                    // Remove the output nodes from the gamma body
+                    gamma.true_mut().remove_node(true_out.node());
+                    gamma.false_mut().remove_node(false_out.node());
+
+                    changed = true;
+                }
+            }
+        }
 
         if changed {
             graph.replace_node(gamma.node(), gamma);

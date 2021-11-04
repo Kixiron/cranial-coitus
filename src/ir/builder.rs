@@ -446,7 +446,7 @@ impl IrBuilder {
 
                     truthy_builder
                         .values
-                        .insert(input_param.output(), value)
+                        .insert(input_param.output(), input_id.into())
                         .debug_unwrap_none();
                 }
 
@@ -509,7 +509,7 @@ impl IrBuilder {
 
                     falsy_builder
                         .values
-                        .insert(input_param.output(), value)
+                        .insert(input_param.output(), input_id.into())
                         .debug_unwrap_none();
                 }
 

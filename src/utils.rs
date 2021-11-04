@@ -166,6 +166,8 @@ where
 }
 
 pub(crate) trait AssertNone: Debug {
+    fn debug_unwrap(self);
+
     fn unwrap_none(&self);
 
     #[inline]
@@ -191,6 +193,14 @@ impl<T> AssertNone for Option<T>
 where
     T: Debug,
 {
+    #[inline]
+    #[track_caller]
+    fn debug_unwrap(self) {
+        if cfg!(debug_assertions) {
+            self.unwrap();
+        }
+    }
+
     #[inline]
     #[track_caller]
     fn unwrap_none(&self) {

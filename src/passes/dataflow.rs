@@ -1,5 +1,9 @@
 use crate::{
-    graph::{Gamma, InputParam, NodeExt, OutputPort, Rvsdg, Theta},
+    graph::{
+        Add, Bool, Eq, Gamma, InputParam, InputPort, Int, Load, NodeExt, OutputPort, Rvsdg, Store,
+        Theta,
+    },
+    ir::Const,
     passes::Pass,
     utils::{AssertNone, HashMap},
 };
@@ -8,6 +12,8 @@ use crate::{
 pub struct Dataflow {
     changed: bool,
     facts: HashMap<OutputPort, Facts>,
+    constants: HashMap<OutputPort, Const>,
+    tape: Vec<(Option<Facts>, Option<Const>)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -30,10 +36,12 @@ pub enum Sign {
 }
 
 impl Dataflow {
-    pub fn new() -> Self {
+    pub fn new(cells: usize) -> Self {
         Self {
             changed: false,
             facts: HashMap::with_hasher(Default::default()),
+            constants: HashMap::with_hasher(Default::default()),
+            tape: vec![(None, None); cells],
         }
     }
 
@@ -46,6 +54,15 @@ impl Dataflow {
     fn is_zero(&self, port: OutputPort) -> bool {
         self.facts
             .get(&port)
+            .and_then(|facts| facts.is_zero)
+            .unwrap_or(false)
+    }
+
+    /// Returns `true` if `port` is zero. `false` means that the zero-ness
+    /// of `port` is unspecified
+    fn source_is_zero(&self, graph: &Rvsdg, port: InputPort) -> bool {
+        self.facts
+            .get(&graph.input_source(port))
             .and_then(|facts| facts.is_zero)
             .unwrap_or(false)
     }
@@ -74,28 +91,60 @@ impl Pass for Dataflow {
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
-        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) = (
+            Self {
+                tape: self.tape.clone(),
+                ..Self::new(self.tape.len())
+            },
+            Self {
+                tape: self.tape.clone(),
+                ..Self::new(self.tape.len())
+            },
+        );
 
         for (&input, &[true_param, false_param]) in gamma.inputs().iter().zip(gamma.input_params())
         {
-            if let Some(facts) = self.facts.get(&graph.input_source(input)).cloned() {
-                let (true_param, false_param) = (
-                    graph.to_node::<InputParam>(true_param),
-                    graph.to_node::<InputParam>(false_param),
-                );
+            let source = graph.input_source(input);
+            let (true_param, false_param) = (
+                gamma.true_branch().to_node::<InputParam>(true_param),
+                gamma.false_branch().to_node::<InputParam>(false_param),
+            );
 
+            // Propagate facts
+            if let Some(facts) = self.facts.get(&source).cloned() {
                 true_visitor
                     .facts
                     .insert(true_param.output(), facts.clone())
                     .debug_unwrap_none();
+
                 false_visitor
                     .facts
                     .insert(false_param.output(), facts)
                     .debug_unwrap_none();
             }
+
+            // Propagate constants
+            if let Some(constant) = self.constants.get(&source).cloned() {
+                true_visitor
+                    .constants
+                    .insert(true_param.output(), constant.clone())
+                    .debug_unwrap_none();
+
+                false_visitor
+                    .constants
+                    .insert(false_param.output(), constant)
+                    .debug_unwrap_none();
+            }
         }
 
         let mut zero_fact_true_branch = |source, is_zero| {
+            tracing::trace!(
+                "inferred that {:?} is{} zero within {:?}'s true branch",
+                source,
+                if is_zero { "" } else { "n't" },
+                gamma.node(),
+            );
+
             true_visitor
                 .facts
                 .entry(source)
@@ -106,6 +155,13 @@ impl Pass for Dataflow {
                 });
         };
         let mut zero_fact_false_branch = |source, is_zero| {
+            tracing::trace!(
+                "inferred that {:?} is{} zero within {:?}'s false branch",
+                source,
+                if is_zero { "" } else { "n't" },
+                gamma.node(),
+            );
+
             false_visitor
                 .facts
                 .entry(source)
@@ -189,28 +245,232 @@ impl Pass for Dataflow {
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
-        let mut visitor = Self::new();
+        // FIXME: Some tape values can be preserved within the loop
+        let mut visitor = Self::new(self.tape.len());
 
         for (input, param) in theta.invariant_input_pairs() {
-            if let Some(facts) = self.facts.get(&graph.input_source(input)).cloned() {
+            let source = graph.input_source(input);
+
+            // Propagate facts
+            if let Some(facts) = self.facts.get(&source).cloned() {
                 visitor
                     .facts
                     .insert(param.output(), facts)
+                    .debug_unwrap_none();
+            }
+
+            // Propagate constants
+            if let Some(constant) = self.constants.get(&source).cloned() {
+                visitor
+                    .constants
+                    .insert(param.output(), constant)
                     .debug_unwrap_none();
             }
         }
 
         changed |= visitor.visit_graph(theta.body_mut());
 
+        // After a loop's body has completed, if the condition is `!(x == 0)` then `x` will
+        // be zero afterwards
+        if let Some(not) = theta
+            .body()
+            .input_source_node(theta.condition().input())
+            .as_not()
+        {
+            if let Some(eq) = theta.body().input_source_node(not.input()).as_eq() {
+                let (lhs_src, rhs_src) = (
+                    theta.body().input_source(eq.lhs()),
+                    theta.body().input_source(eq.rhs()),
+                );
+
+                let zeroed_val = if visitor.is_zero(lhs_src) {
+                    Some(lhs_src)
+                } else if visitor.is_zero(rhs_src) {
+                    Some(rhs_src)
+                } else {
+                    None
+                };
+
+                if let Some(zeroed) = zeroed_val {
+                    // If the zeroed value is an output param, propagate that directly
+                    if let Some((output, _)) = theta
+                        .output_pairs()
+                        .find(|(_, param)| theta.body().input_source(param.input()) == rhs_src)
+                    {
+                        tracing::trace!(theta = ?theta.node(), "inferred that loop output variable {:?} was zero", output);
+
+                        self.facts
+                            .entry(output)
+                            .and_modify(|fact| fact.is_zero = Some(true))
+                            .or_insert_with(|| Facts {
+                                is_zero: Some(true),
+                                ..Default::default()
+                            });
+                    }
+
+                    // If the value was loaded from an address, propagate that info to stores
+                    if let Some(load) = theta
+                        .body()
+                        .cast_node::<Load>(theta.body().port_parent(zeroed))
+                    {
+                        let load_ptr_src = theta.body().input_source(load.ptr());
+                        dbg!(load_ptr_src, load,);
+
+                        if let Some(store) = theta
+                            .body()
+                            .input_source_node(theta.end_node().input_effect())
+                            .as_store()
+                        {
+                            dbg!(
+                                load_ptr_src,
+                                load,
+                                theta.body().input_source(store.ptr()),
+                                store
+                            );
+                            if load_ptr_src == theta.body().input_source(store.ptr()) {
+                                tracing::trace!(
+                                    theta = ?theta.node(),
+                                    "inferred that zeroed store to address {:?} was zero",
+                                    load_ptr_src,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if changed {
             graph.replace_node(theta.node(), theta);
             self.changed();
         }
     }
-}
 
-impl Default for Dataflow {
-    fn default() -> Self {
-        Self::new()
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+        self.constants.insert(int.value(), value.into());
+
+        if value == 0 {
+            tracing::trace!("got zero value {:?}", int.value());
+
+            self.facts
+                .entry(int.value())
+                .and_modify(|facts| facts.is_zero = Some(true))
+                .or_insert_with(|| Facts {
+                    is_zero: Some(true),
+                    ..Default::default()
+                });
+        } else {
+            self.facts
+                .entry(int.value())
+                .and_modify(|facts| facts.is_zero = Some(false))
+                .or_insert_with(|| Facts {
+                    is_zero: Some(false),
+                    ..Default::default()
+                });
+        }
+
+        if value.is_positive() {
+            self.facts
+                .entry(int.value())
+                .and_modify(|facts| facts.sign = Some(Sign::Positive))
+                .or_insert_with(|| Facts {
+                    sign: Some(Sign::Positive),
+                    ..Default::default()
+                });
+        } else if value.is_negative() {
+            self.facts
+                .entry(int.value())
+                .and_modify(|facts| facts.sign = Some(Sign::Negative))
+                .or_insert_with(|| Facts {
+                    sign: Some(Sign::Negative),
+                    ..Default::default()
+                });
+        }
+
+        if value.rem_euclid(2) == 1 {
+            self.facts
+                .entry(int.value())
+                .and_modify(|facts| facts.parity = Some(Parity::Even))
+                .or_insert_with(|| Facts {
+                    parity: Some(Parity::Even),
+                    ..Default::default()
+                });
+        } else {
+            self.facts
+                .entry(int.value())
+                .and_modify(|facts| facts.parity = Some(Parity::Odd))
+                .or_insert_with(|| Facts {
+                    parity: Some(Parity::Odd),
+                    ..Default::default()
+                });
+        }
+    }
+
+    fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
+        self.constants.insert(bool.value(), value.into());
+    }
+
+    fn visit_eq(&mut self, graph: &mut Rvsdg, eq: Eq) {
+        if self.source_is_zero(graph, eq.lhs()) && self.source_is_zero(graph, eq.rhs()) {
+            tracing::trace!(?eq, "replaced comparison with zero with true");
+
+            let evaluated = graph.bool(true);
+            graph.rewire_dependents(eq.value(), evaluated.value());
+
+            self.changed();
+        }
+    }
+
+    fn visit_add(&mut self, graph: &mut Rvsdg, add: Add) {
+        let (lhs, rhs) = (graph.input_source(add.lhs()), graph.input_source(add.rhs()));
+
+        if self.is_zero(lhs) {
+            tracing::trace!(?add, "replaced addition by zero to the non-zero side");
+
+            graph.rewire_dependents(add.value(), rhs);
+            self.changed();
+        } else if self.is_zero(rhs) {
+            tracing::trace!(?add, "replaced addition by zero to the non-zero side");
+
+            graph.rewire_dependents(add.value(), lhs);
+            self.changed();
+        }
+    }
+
+    fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
+        if let Some(ptr) = self
+            .constants
+            .get(&graph.input_source(store.ptr()))
+            .and_then(Const::convert_to_i32)
+        {
+            let value_src = graph.input_source(store.value());
+            let value_facts = self.facts.get(&value_src).cloned();
+            let value_consts = self.constants.get(&value_src).cloned();
+
+            let ptr = ptr.rem_euclid(self.tape.len() as i32) as usize;
+            self.tape[ptr] = (value_facts, value_consts);
+        } else {
+            for cell in &mut self.tape {
+                *cell = (None, None);
+            }
+        }
+    }
+
+    fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
+        if let Some(ptr) = self
+            .constants
+            .get(&graph.input_source(load.ptr()))
+            .and_then(Const::convert_to_i32)
+        {
+            let ptr = ptr.rem_euclid(self.tape.len() as i32) as usize;
+            let (facts, consts) = self.tape[ptr].clone();
+
+            if let Some(facts) = facts {
+                self.facts.insert(load.value(), facts);
+            }
+            if let Some(consts) = consts {
+                self.constants.insert(load.value(), consts);
+            }
+        }
     }
 }

@@ -206,6 +206,20 @@ impl Theta {
         self.invariant_inputs
             .retain(|&port, &mut param| retain(port, param));
     }
+
+    /// Removes a variant input, the output it's fed from and the feedback entry for them
+    pub fn remove_variant_input(&mut self, input: InputPort) {
+        self.variant_inputs.remove(&input).debug_unwrap();
+
+        let output = self
+            .output_feedback
+            .iter()
+            .find_map(|(&output, &port)| (port == input).then(|| output))
+            .unwrap();
+
+        self.output_feedback.remove(&output).debug_unwrap();
+        self.outputs.remove(&output).debug_unwrap();
+    }
 }
 
 /// Input/Output port related functions

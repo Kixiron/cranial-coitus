@@ -724,6 +724,18 @@ impl Rvsdg {
     }
 
     #[tracing::instrument(skip(self))]
+    pub fn remove_input_port(&mut self, input: InputPort) {
+        tracing::trace!(
+            "removing input port {:?} from {:?}",
+            input,
+            self.port_parent(input),
+        );
+
+        self.remove_input_edges(input);
+        self.ports.remove(&input.port());
+    }
+
+    #[tracing::instrument(skip(self))]
     pub fn remove_output_port(&mut self, output: OutputPort) {
         tracing::trace!(
             "removing output port {:?} from {:?}",

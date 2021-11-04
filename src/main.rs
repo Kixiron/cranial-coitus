@@ -21,8 +21,8 @@ use crate::{
     ir::{IrBuilder, Pretty},
     parse::Token,
     passes::{
-        AddSubLoop, AssociativeAdd, ConstFolding, Dce, ElimConstGamma, ExprDedup, Licm, Mem2Reg,
-        Pass, UnobservedStore, ZeroLoop,
+        AddSubLoop, AssociativeAdd, ConstFolding, Dataflow, Dce, ElimConstGamma, ExprDedup, Licm,
+        Mem2Reg, Pass, UnobservedStore, ZeroLoop,
     },
     utils::{HashSet, PerfEvent},
 };
@@ -168,6 +168,7 @@ fn debug(args: Debug, start_time: Instant) {
         Box::new(Mem2Reg::new(args.cells as usize)),
         Box::new(AddSubLoop::new()),
         Box::new(Dce::new()),
+        Box::new(Dataflow::new(args.cells as usize)),
         Box::new(ElimConstGamma::new()),
         Box::new(ConstFolding::new()),
         Box::new(Licm::new()),
@@ -443,6 +444,7 @@ fn run(args: Run, start_time: Instant) {
         Box::new(Mem2Reg::new(args.cells as usize)),
         Box::new(AddSubLoop::new()),
         Box::new(Dce::new()),
+        Box::new(Dataflow::new(args.cells as usize)),
         Box::new(ElimConstGamma::new()),
         Box::new(ConstFolding::new()),
         Box::new(Licm::new()),

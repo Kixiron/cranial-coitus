@@ -52,4 +52,8 @@ pub struct Debug {
     /// Removes execution step limits
     #[clap(long)]
     pub no_step_limit: bool,
+
+    /// Prints the final optimized IR
+    #[clap(long)]
+    pub print_output_ir: bool,
 }

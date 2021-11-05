@@ -45,13 +45,21 @@ pub fn diff_ir(old: &str, new: &str) -> String {
 }
 
 #[non_exhaustive]
-pub struct PerfEvent {}
+pub struct PerfEvent {
+    start_time: Instant,
+}
 
 impl PerfEvent {
     pub fn new(event_name: &str) -> Self {
         superluminal_perf::begin_event(event_name);
 
-        Self {}
+        Self {
+            start_time: Instant::now(),
+        }
+    }
+
+    pub fn finish(self) -> Duration {
+        self.start_time.elapsed()
     }
 }
 
@@ -59,41 +67,6 @@ impl Drop for PerfEvent {
     fn drop(&mut self) {
         superluminal_perf::end_event();
     }
-}
-
-pub fn compile_brainfuck(source: &str) -> Rvsdg {
-    let parsing_start = Instant::now();
-
-    let span = tracing::info_span!("parsing");
-    let tokens = span.in_scope(|| {
-        tracing::info!("started parsing source code");
-        let tokens = parse::parse(source);
-
-        let elapsed = parsing_start.elapsed();
-        tracing::info!("finished parsing in {:#?}", elapsed);
-
-        tokens
-    });
-
-    let span = tracing::info_span!("rvsdg-building");
-    span.in_scope(|| {
-        tracing::info!("started building rvsdg");
-        let graph_building_start = Instant::now();
-
-        let mut graph = Rvsdg::new();
-        let start = graph.start();
-
-        let effect = start.effect();
-        let ptr = graph.int(0).value();
-
-        let (_ptr, effect) = lower_tokens::lower_tokens(&mut graph, ptr, effect, &tokens);
-        graph.end(effect);
-
-        let elapsed = graph_building_start.elapsed();
-        tracing::info!("finished building rvsdg in {:#?}", elapsed);
-
-        graph
-    })
 }
 
 pub fn compile_brainfuck_into(
@@ -235,6 +208,28 @@ fn panic_none_with_message(value: &dyn Debug, message: &str) -> ! {
     )
 }
 
+#[macro_export]
+macro_rules! vec_deque {
+    () => { ::std::collections::VecDeque::new() };
+
+    ($elem:expr; $n:expr) => {{
+        let len: usize = $n;
+
+        let mut vec = ::std::collections::VecDeque::with_capacity(len);
+        for _ in 0..len {
+            vec.push_back($x);
+        }
+
+        vec
+    }};
+
+    ($($x:expr),+ $(,)?) => {{
+        let mut vec = ::std::collections::VecDeque::with_capacity($({ ::std::stringify!($x); 1 } +)+ 0);
+        $(vec.push_back($x);)+
+        vec
+    }};
+}
+
 // FIXME: Check for structural equivalence between the optimized graph
 //        and an expected graph
 #[macro_export]
@@ -291,7 +286,7 @@ macro_rules! test_opts {
 
                 let mut machine = Machine::new(step_limit, tape_size, input_func, output_func);
                 machine
-                    .execute(&mut unoptimized_graph_ir)
+                    .execute(&mut unoptimized_graph_ir, false)
                     .expect("interpreter step limit reached");
 
                 unoptimized_text
@@ -352,7 +347,7 @@ macro_rules! test_opts {
 
                 let mut machine = Machine::new(step_limit, tape_size, input_func, output_func);
                 machine
-                    .execute(&mut optimized_graph_ir)
+                    .execute(&mut optimized_graph_ir, false)
                     .expect("interpreter step limit reached");
 
                 optimized_text

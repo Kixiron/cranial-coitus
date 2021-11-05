@@ -39,16 +39,15 @@ impl<'a> Machine<'a> {
         }
     }
 
-    #[tracing::instrument(skip_all)]
-    pub fn execute(&mut self, block: &mut Block) -> Result<&[u8]> {
+    pub fn execute(&mut self, block: &mut Block, should_profile: bool) -> Result<&[u8]> {
         for inst in block.iter_mut() {
-            self.handle(inst)?;
+            self.handle(inst, should_profile)?;
         }
 
         Ok(&self.tape)
     }
 
-    fn handle(&mut self, inst: &mut Instruction) -> Result<()> {
+    fn handle(&mut self, inst: &mut Instruction, should_profile: bool) -> Result<()> {
         let is_subgraph_param = matches!(
             inst,
             Instruction::Assign(Assign {
@@ -62,11 +61,11 @@ impl<'a> Machine<'a> {
         }
 
         match inst {
-            Instruction::Call(call) => self.call(call).debug_unwrap_none(),
-            Instruction::Assign(assign) => self.assign(assign),
-            Instruction::Theta(theta) => self.theta(theta)?,
-            Instruction::Gamma(gamma) => self.gamma(gamma)?,
-            Instruction::Store(store) => self.store(store),
+            Instruction::Call(call) => self.call(call, should_profile).debug_unwrap_none(),
+            Instruction::Assign(assign) => self.assign(assign, should_profile),
+            Instruction::Theta(theta) => self.theta(theta, should_profile)?,
+            Instruction::Gamma(gamma) => self.gamma(gamma, should_profile)?,
+            Instruction::Store(store) => self.store(store, should_profile),
         }
 
         if self.steps >= self.step_limit {
@@ -110,7 +109,7 @@ impl<'a> Machine<'a> {
         }
     }
 
-    fn eval(&mut self, expr: &mut Expr) -> Const {
+    fn eval(&mut self, expr: &mut Expr, should_profile: bool) -> Const {
         match expr {
             Expr::Eq(eq) => self.eq(eq),
             Expr::Add(add) => self.add(add),
@@ -119,13 +118,15 @@ impl<'a> Machine<'a> {
             Expr::Value(value) => self.get_const(value).clone(),
             Expr::Load(load) => self.load(load),
             Expr::Call(call) => self
-                .call(call)
+                .call(call, should_profile)
                 .expect("expected a call that produces output"),
         }
     }
 
-    fn call(&mut self, call: &mut Call) -> Option<Const> {
-        call.invocations += 1;
+    fn call(&mut self, call: &mut Call, should_profile: bool) -> Option<Const> {
+        if should_profile {
+            call.invocations += 1;
+        }
 
         match &*call.function {
             "input" => {
@@ -155,21 +156,25 @@ impl<'a> Machine<'a> {
         }
     }
 
-    fn assign(&mut self, assign: &mut Assign) {
-        assign.invocations += 1;
+    fn assign(&mut self, assign: &mut Assign, should_profile: bool) {
+        if should_profile {
+            assign.invocations += 1;
+        }
 
-        let value = self.eval(&mut assign.value);
+        let value = self.eval(&mut assign.value, should_profile);
         tracing::trace!("assigned {:?} to {}", value, assign.var);
 
         // Note: Double inserts are allowed here because of loops
         self.values.insert(assign.var, value);
     }
 
-    fn theta(&mut self, theta: &mut Theta) -> Result<()> {
+    fn theta(&mut self, theta: &mut Theta, should_profile: bool) -> Result<()> {
         let mut iter = 0;
         loop {
             self.stats.loop_iterations += 1;
-            theta.loops += 1;
+            if should_profile {
+                theta.loops += 1;
+            }
 
             let current_steps = self.steps;
             for inst in &mut theta.body {
@@ -192,7 +197,7 @@ impl<'a> Machine<'a> {
                     continue;
                 }
 
-                self.handle(inst)?;
+                self.handle(inst, should_profile)?;
 
                 let is_subgraph_param = matches!(
                     inst,
@@ -201,7 +206,7 @@ impl<'a> Machine<'a> {
                         ..
                     })
                 );
-                if !is_subgraph_param {
+                if should_profile && !is_subgraph_param {
                     theta.body_inst_count += 1;
                 }
             }
@@ -267,28 +272,36 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
-    fn gamma(&mut self, gamma: &mut Gamma) -> Result<()> {
+    fn gamma(&mut self, gamma: &mut Gamma, should_profile: bool) -> Result<()> {
         self.stats.branches += 1;
 
         let cond = self.get_bool(&gamma.cond);
         let branch = if cond {
-            gamma.true_branches += 1;
+            if should_profile {
+                gamma.true_branches += 1;
+            }
+
             &mut gamma.truthy
         } else {
-            gamma.false_branches += 1;
+            if should_profile {
+                gamma.false_branches += 1;
+            }
+
             &mut gamma.falsy
         };
 
         for inst in branch {
-            self.handle(inst)?;
+            self.handle(inst, should_profile)?;
         }
 
         Ok(())
     }
 
-    fn store(&mut self, store: &mut Store) {
+    fn store(&mut self, store: &mut Store, should_profile: bool) {
         self.stats.stores += 1;
-        store.stores += 1;
+        if should_profile {
+            store.stores += 1;
+        }
 
         let ptr = self.get_ptr(&store.ptr);
         let value = self.get_byte(&store.value);

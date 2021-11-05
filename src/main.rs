@@ -4,6 +4,7 @@
 mod utils;
 mod args;
 mod codegen;
+mod driver;
 mod graph;
 mod interpreter;
 mod ir;
@@ -17,16 +18,16 @@ mod union_find;
 use crate::{
     args::{Args, Debug, Run},
     graph::{EdgeKind, Node, Rvsdg},
-    interpreter::{Machine, StepLimitReached},
+    interpreter::StepLimitReached,
     ir::{IrBuilder, Pretty},
-    parse::Token,
     utils::{HashSet, PerfEvent},
 };
+use anyhow::Result;
 use clap::Parser;
 use std::{
     collections::VecDeque,
     fs::{self, File},
-    io::{self, BufWriter, Read, Write},
+    io::{BufWriter, Write},
     path::Path,
     time::Instant,
 };
@@ -38,7 +39,7 @@ use std::{
 //       https://github.com/eclipse/elk/pull/106
 //       https://rtsys.informatik.uni-kiel.de/elklive/examples.html
 //       https://rtsys.informatik.uni-kiel.de/elklive/elkgraph.html?compressedContent=IYGw5g9gTglgLgCwLYC4AEJgE8CmUcAmAUEQHYQE5qI5zBoDeRaLaOIA1gHQEz4DGcGBFLoAIgHkA6gDlmrAA7Q4AYREBnOFGAxScdegBiAJQCip+S3KUAMsABG7dVwWZ+OJDj3oARAEkZAGU-MVM0ADUAfQAVCQAFNAAJSJtTQ2ifSzQlKDgAQRAYMFJPPR4cADNgAFcQOHE-QOjjPwAhAFVo0zEs3XUYSkD2CpsICAVnYEEYADdgOBx0LWqcElYMB3Y0HwBxYCQkYEysnLg0XQVquABGRiz1gD1Trn7KdBkJY2jErIBfE+U51IlzgACY7utHs9Xos0B8vj91v91qc0Jp5jhIroIZCWE9lC8BrD4d8-mtWNYqMACAQcbjKXZHCBnK4ph4vPVtgFgqEIpEVKYZF1jEl+YLhZlcSxTgUiiUOeUqrVOWJGs02p1uuTcZgmds8jTjlLsoCQAh1HTjWh8blCW84Z9SVbWLqtj4zepJVLkVLUVBzZbjTa4HbiY7Ec6NnqfP7PfdWP949LAXMQCtA1Lg6H0IEJJ0I7ifSxEyjARAriDbkwg9CiTm806EwDcmi6AtIuWztXM7X7bn82SsoQwFQaHQuBcrrcALQAPjQ1IIXA9Q4II+oCFowAnwKu4LnC5pXFjq-Xi64qfTB7H287laIieHo8347vU7Q15f28nYKIT43W4vG2mLYp+gHou2naWn0RJDCAIxjBMXBYBASxQCsD5EEAA
-fn main() {
+fn main() -> Result<()> {
     set_logger();
 
     let start_time = Instant::now();
@@ -48,120 +49,123 @@ fn main() {
     }
 }
 
-fn debug(args: Debug, start_time: Instant) {
+fn debug(args: Debug, start_time: Instant) -> Result<()> {
+    let cells = args.cells as usize;
     let step_limit = if args.no_step_limit {
         usize::MAX
     } else {
         args.step_limit
     };
 
-    let contents = fs::read_to_string(&args.file).expect("failed to read file");
+    let source = fs::read_to_string(&args.file).expect("failed to read file");
     let dump_dir = Path::new("./dumps").join(args.file.with_extension("").file_name().unwrap());
 
-    let _ = fs::remove_dir_all(&dump_dir);
-    fs::create_dir_all(&dump_dir).unwrap();
+    driver::create_dump_dir(&dump_dir)?;
 
-    let span = tracing::info_span!("parsing");
-    let tokens = span.in_scope(|| {
-        tracing::info!("started parsing {}", args.file.display());
+    // Parse the input program and turn it into a graph
+    let tokens = driver::parse_source(&args.file, &source);
+    let mut graph = driver::build_graph(&tokens);
 
-        let tokens = parse::parse(&contents);
+    // Sequentialize the input program
+    let (mut input_program, input_program_ir) =
+        driver::sequentialize_graph(&graph, Some(&dump_dir.join("input.cir")), None)?;
+    let input_graph_stats = graph.stats();
 
-        let elapsed = start_time.elapsed();
-        tracing::info!("finished parsing {} in {:#?}", args.file.display(), elapsed);
-
-        if cfg!(debug_assertions) {
-            let start_time = Instant::now();
-
-            let token_file = BufWriter::new(File::create(dump_dir.join("tokens")).unwrap());
-            Token::debug_tokens(&tokens, token_file);
-
-            let elapsed = start_time.elapsed();
-            tracing::info!(
-                "finished debugging tokens for {} in {:#?}",
-                args.file.display(),
-                elapsed,
-            );
-        }
-
-        tokens
-    });
-
-    tracing::info!("started building rvsdg");
-    let graph_building_start = Instant::now();
-
-    let mut graph = Rvsdg::new();
-    let start = graph.start();
-
-    let effect = start.effect();
-    let ptr = graph.int(0).value();
-
-    let (_ptr, effect) = lower_tokens::lower_tokens(&mut graph, ptr, effect, &tokens);
-    graph.end(effect);
-    drop(tokens);
-
-    let elapsed = graph_building_start.elapsed();
-    tracing::info!("finished building rvsdg in {:#?}", elapsed);
-
+    // Validate the initial program
+    // Note: This happens *after* we print out the initial graph for better debugging
     validate(&graph);
 
-    let input_stats = graph.stats();
-    let mut program = IrBuilder::new().translate(&graph);
-    let input_program = program.pretty_print(None);
-    fs::write(dump_dir.join("input.cir"), &input_program).unwrap();
-
     if !args.only_final_run {
-        let mut input = vec![b'1', b'0'];
-        let input = move || {
-            let byte = if input.is_empty() { 0 } else { input.remove(0) };
-            tracing::trace!("got input {}", byte);
-            byte
-        };
+        // FIXME: Allow user supplied input
+        let mut input = vec_deque![b'1', b'0'];
+        let input = driver::array_input(&mut input);
 
         let mut output_vec = Vec::new();
-        let output = |byte| {
-            tracing::trace!("got output {}", byte);
-            (&mut output_vec).push(byte)
-        };
+        let output = driver::array_output(&mut output_vec);
 
-        let result = {
-            let mut machine = Machine::new(step_limit, args.cells as usize, input, output);
-            machine.execute(&mut program).map(|_| ())
-        };
+        let (result, stats, execution_duration) =
+            driver::execute(step_limit, cells, input, output, false, &mut input_program);
 
+        // FIXME: Utility function
         let output_str = String::from_utf8_lossy(&output_vec);
         match result {
             Ok(()) => {
                 println!(
-                    "Unoptimized program's output (bytes): {:?}\n\
+                    "Unoptimized program finished execution in {:#?}\n\
+                     Execution stats:\n  \
+                       instructions : {}\n  \
+                       loads        : {}, {:.02}%\n  \
+                       stores       : {}, {:.02}%\n  \
+                       loop iters   : {}\n  \
+                       branches     : {}\n  \
+                       input calls  : {}, {:.02}%\n  \
+                       output calls : {}, {:.02}%\n\
+                     output (bytes): {:?}\n\
                      output (escaped): {:?}\n\
                      output (utf8):\n{}",
-                    output_vec, output_str, output_str,
+                    execution_duration,
+                    stats.instructions,
+                    stats.loads,
+                    utils::percent_total(stats.instructions, stats.loads),
+                    stats.stores,
+                    utils::percent_total(stats.instructions, stats.stores),
+                    stats.loop_iterations,
+                    stats.branches,
+                    stats.input_calls,
+                    utils::percent_total(stats.instructions, stats.input_calls),
+                    stats.output_calls,
+                    utils::percent_total(stats.instructions, stats.output_calls),
+                    output_vec,
+                    output_str,
+                    output_str,
                 );
             }
 
             Err(_) => {
                 println!(
-                    "Unoptimized program hit the step limit of {} steps\n\
+                    "Unoptimized program hit the step limit of {} steps in {:#?}\n\
+                     Execution stats:\n  \
+                       instructions : {}\n  \
+                       loads        : {}, {:.02}%\n  \
+                       stores       : {}, {:.02}%\n  \
+                       loop iters   : {}\n  \
+                       branches     : {}\n  \
+                       input calls  : {}, {:.02}%\n  \
+                       output calls : {}, {:.02}%\n\
                      output (bytes): {:?}\n\
                      output (escaped): {:?}\n\
                      output (utf8): {}",
-                    args.step_limit, output_vec, output_str, output_str,
+                    args.step_limit,
+                    execution_duration,
+                    stats.instructions,
+                    stats.loads,
+                    utils::percent_total(stats.instructions, stats.loads),
+                    stats.stores,
+                    utils::percent_total(stats.instructions, stats.stores),
+                    stats.loop_iterations,
+                    stats.branches,
+                    stats.input_calls,
+                    utils::percent_total(stats.instructions, stats.input_calls),
+                    stats.output_calls,
+                    utils::percent_total(stats.instructions, stats.output_calls),
+                    output_vec,
+                    output_str,
+                    output_str,
                 );
             }
         }
     }
 
     let mut evolution = BufWriter::new(File::create(dump_dir.join("evolution.diff")).unwrap());
-    write!(&mut evolution, ">>>>> input\n{}", input_program).unwrap();
+    write!(&mut evolution, ">>>>> input\n{}", input_program_ir).unwrap();
 
     let mut passes = passes::default_passes(args.cells as usize);
-    let (mut pass_num, mut stack, mut visited, mut buffer, mut previous_graph) = (
+    let (mut pass_num, mut stack, mut visited, mut buffer, mut previous_program_ir) = (
         1,
         VecDeque::new(),
         HashSet::with_hasher(Default::default()),
         Vec::new(),
-        input_program.clone(),
+        input_program_ir.clone(),
     );
 
     loop {
@@ -178,12 +182,9 @@ fn debug(args: Debug, start_time: Instant) {
                 );
 
                 let event = PerfEvent::new(pass.pass_name());
-                let start_time = Instant::now();
                 changed |=
                     pass.visit_graph_inner(&mut graph, &mut stack, &mut visited, &mut buffer);
-
-                let elapsed = start_time.elapsed();
-                drop(event);
+                let elapsed = event.finish();
 
                 tracing::info!(
                     "finished running {} in {:#?} (pass #{}.{}, {})",
@@ -201,10 +202,10 @@ fn debug(args: Debug, start_time: Instant) {
                 pass.reset();
                 stack.clear();
 
-                let current_graph = IrBuilder::new().translate(&graph);
-                let current_graph_pretty = current_graph.pretty_print(None);
+                let (_output_program, output_program_ir) =
+                    driver::sequentialize_graph(&graph, None, None)?;
 
-                let diff = utils::diff_ir(&previous_graph, &current_graph_pretty);
+                let diff = utils::diff_ir(&previous_program_ir, &output_program_ir);
 
                 if !diff.is_empty() {
                     fs::write(
@@ -214,7 +215,7 @@ fn debug(args: Debug, start_time: Instant) {
                             pass_num,
                             pass_idx,
                         )),
-                        &current_graph_pretty,
+                        &output_program_ir,
                     )
                     .unwrap();
 
@@ -240,8 +241,10 @@ fn debug(args: Debug, start_time: Instant) {
                     .unwrap();
                 }
 
-                previous_graph = current_graph_pretty;
-            });
+                previous_program_ir = output_program_ir;
+
+                Result::<()>::Ok(())
+            })?;
         }
 
         pass_num += 1;
@@ -251,50 +254,54 @@ fn debug(args: Debug, start_time: Instant) {
     }
 
     let elapsed = start_time.elapsed();
-    let mut program = IrBuilder::new().translate(&graph);
-    let output_program = program.pretty_print(None);
 
-    print!("{}", output_program);
+    let output_graph_stats = graph.stats();
+    let (mut output_program, output_program_ir) = driver::sequentialize_graph(
+        &graph,
+        Some(&dump_dir.join("output.cir")),
+        Some(output_graph_stats.instructions),
+    )?;
 
-    let io_diff = utils::diff_ir(&input_program, &output_program);
+    if args.print_output_ir {
+        print!("{}", output_program_ir);
+    }
+
+    let io_diff = utils::diff_ir(&input_program_ir, &output_program_ir);
     if !io_diff.is_empty() {
         fs::write(dump_dir.join("input-output.diff"), io_diff).unwrap();
     }
 
-    fs::write(dump_dir.join("output.cir"), output_program).unwrap();
-
     let (stats, execution_duration) = {
-        let mut input = vec![b'1', b'0'];
-        let input = move || if input.is_empty() { 0 } else { input.remove(0) };
+        // FIXME: Allow user supplied input
+        let mut input = vec_deque![b'1', b'0'];
+        let input = driver::array_input(&mut input);
 
         let mut output_vec = Vec::new();
-        let output = |byte| (&mut output_vec).push(byte);
+        let output = driver::array_output(&mut output_vec);
 
-        let start_time = Instant::now();
-        let (result, stats) = {
-            let mut machine = Machine::new(step_limit, args.cells as usize, input, output);
-            (machine.execute(&mut program).map(|_| ()), machine.stats)
-        };
-        let execution_duration = start_time.elapsed();
+        let (result, stats, execution_duration) =
+            driver::execute(step_limit, cells, input, output, true, &mut output_program);
 
+        // FIXME: Utility function
         let output_str = String::from_utf8_lossy(&output_vec);
         match result {
             Ok(()) => {
                 println!(
-                    "Optimized program's output (bytes): {:?}\n\
+                    "Optimized program finished execution in {:#?}\n\
+                     output (bytes): {:?}\n\
                      output (escaped): {:?}\n\
-                     output (utf8):{}",
-                    output_vec, output_str, output_str,
+                     output (utf8):\n{}",
+                    execution_duration, output_vec, output_str, output_str,
                 );
             }
 
             Err(_) => {
                 println!(
-                    "Optimized program hit the step limit of {} steps\n\
+                    "Optimized program hit the step limit of {} steps in {:#?}\n\
                      output (bytes): {:?}\n\
                      output (escaped): {:?}\n\
                      output (utf8): {}",
-                    args.step_limit, output_vec, output_str, output_str,
+                    args.step_limit, execution_duration, output_vec, output_str, output_str,
                 );
             }
         }
@@ -302,8 +309,8 @@ fn debug(args: Debug, start_time: Instant) {
         (stats, execution_duration)
     };
 
-    let output_stats = graph.stats();
-    let difference = input_stats.difference(output_stats);
+    // FIXME: Utility function
+    let difference = input_graph_stats.difference(output_graph_stats);
     let change = format!(
         "Optimized Program (took {} iterations and {:#?})\n\
          Input:\n  \
@@ -342,20 +349,20 @@ fn debug(args: Debug, start_time: Instant) {
         ",
         pass_num,
         elapsed,
-        input_stats.instructions,
-        input_stats.branches,
-        input_stats.loops,
-        input_stats.loads,
-        input_stats.stores,
-        input_stats.constants,
-        input_stats.io_ops,
-        output_stats.instructions,
-        output_stats.branches,
-        output_stats.loops,
-        output_stats.loads,
-        output_stats.stores,
-        output_stats.constants,
-        output_stats.io_ops,
+        input_graph_stats.instructions,
+        input_graph_stats.branches,
+        input_graph_stats.loops,
+        input_graph_stats.loads,
+        input_graph_stats.stores,
+        input_graph_stats.constants,
+        input_graph_stats.io_ops,
+        output_graph_stats.instructions,
+        output_graph_stats.branches,
+        output_graph_stats.loops,
+        output_graph_stats.loads,
+        output_graph_stats.stores,
+        output_graph_stats.constants,
+        output_graph_stats.io_ops,
         difference.instructions,
         difference.branches,
         difference.loops,
@@ -380,11 +387,16 @@ fn debug(args: Debug, start_time: Instant) {
     print!("{}", change);
     fs::write(dump_dir.join("change.txt"), change).unwrap();
 
-    let annotated_program = program.pretty_print(Some(stats.instructions));
+    let annotated_program = output_program.pretty_print(Some(stats.instructions));
     fs::write(dump_dir.join("annotated_output.cir"), annotated_program).unwrap();
+
+    Ok(())
 }
 
-fn run(args: Run, start_time: Instant) {
+fn run(args: Run, start_time: Instant) -> Result<()> {
+    let cells = args.cells as usize;
+    let step_limit = args.step_limit.unwrap_or(usize::MAX);
+
     let contents = fs::read_to_string(&args.file).expect("failed to read file");
 
     let mut graph = {
@@ -478,6 +490,7 @@ fn run(args: Run, start_time: Instant) {
     let output_stats = graph.stats();
     let difference = input_stats.difference(output_stats);
 
+    // FIXME: Utility function
     println!(
         "Optimized Program (took {} iterations and {:#?})\n\
          Input:\n  \
@@ -530,42 +543,12 @@ fn run(args: Run, start_time: Instant) {
         difference.io_ops,
     );
 
-    let execution_start = Instant::now();
-    let (result, stats) = {
-        let stdout = io::stdout();
-        let mut stdout = stdout.lock();
+    let input = driver::stdin_input();
+    let output = driver::stdout_output();
+    let (result, stats, execution_duration) =
+        driver::execute(step_limit, cells, input, output, true, &mut program);
 
-        let stdin = io::stdin();
-        let mut stdin = stdin.lock();
-
-        let input = move || {
-            let mut buf = [0];
-            stdin
-                .read_exact(&mut buf)
-                .expect("failed to read from stdin");
-
-            buf[0]
-        };
-
-        let output = |byte| {
-            stdout
-                .write_all(&[byte])
-                .expect("failed to write to stdout");
-            stdout.flush().expect("failed to flush stdout");
-        };
-
-        let mut machine = Machine::new(
-            args.step_limit.unwrap_or(usize::MAX),
-            args.cells as usize,
-            input,
-            output,
-        );
-        let result = machine.execute(&mut program).map(|_| ());
-
-        (result, machine.stats)
-    };
-
-    let runtime = execution_start.elapsed();
+    // FIXME: Utility function
     match result {
         Ok(()) => {
             println!(
@@ -580,7 +563,7 @@ fn run(args: Run, start_time: Instant) {
                   input calls  : {}, {:.02}%\n  \
                   output calls : {}, {:.02}%\
                 ",
-                runtime,
+                execution_duration,
                 stats.instructions,
                 stats.loads,
                 utils::percent_total(stats.instructions, stats.loads),
@@ -608,8 +591,8 @@ fn run(args: Run, start_time: Instant) {
                   input calls  : {}, {:.02}%\n  \
                   output calls : {}, {:.02}%\
                 ",
-                args.step_limit.unwrap_or(usize::MAX),
-                runtime,
+                step_limit,
+                execution_duration,
                 stats.instructions,
                 stats.loads,
                 utils::percent_total(stats.instructions, stats.loads),
@@ -624,6 +607,8 @@ fn run(args: Run, start_time: Instant) {
             );
         }
     }
+
+    Ok(())
 }
 
 // TODO: Turn validation into a pass

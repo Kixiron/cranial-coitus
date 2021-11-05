@@ -1,4 +1,7 @@
-use crate::graph::{Node, Rvsdg};
+use crate::{
+    graph::{Node, Rvsdg},
+    utils::PerfEvent,
+};
 use std::ops::Neg;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +70,8 @@ pub struct StatsChange {
 
 impl Rvsdg {
     pub fn stats(&self) -> Stats {
+        let _event = PerfEvent::new("collect-graph-stats");
+
         let mut stats = Stats::new();
         for node in self.transitive_nodes() {
             match node {

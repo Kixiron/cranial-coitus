@@ -1,38 +1,22 @@
+use std::fmt::{self, Display};
+
 use crate::{
     graph::{
-        Add, Bool, Eq, Gamma, InputParam, InputPort, Int, Load, NodeExt, OutputPort, Rvsdg, Store,
-        Theta,
+        Add, Bool, Eq, Gamma, Input, InputParam, InputPort, Int, Load, NodeExt, OutputPort, Rvsdg,
+        Store, Theta,
     },
     ir::Const,
     passes::Pass,
     utils::{AssertNone, HashMap},
 };
+use ranges::Ranges;
 
 /// Removes dead code from the graph
 pub struct Dataflow {
     changed: bool,
-    facts: HashMap<OutputPort, Facts>,
+    facts: HashMap<OutputPort, Domain>,
     constants: HashMap<OutputPort, Const>,
-    tape: Vec<(Option<Facts>, Option<Const>)>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Facts {
-    pub is_zero: Option<bool>,
-    pub parity: Option<Parity>,
-    pub sign: Option<Sign>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Parity {
-    Even,
-    Odd,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Sign {
-    Positive,
-    Negative,
+    tape: Vec<(Option<Domain>, Option<Const>)>,
 }
 
 impl Dataflow {
@@ -54,7 +38,7 @@ impl Dataflow {
     fn is_zero(&self, port: OutputPort) -> bool {
         self.facts
             .get(&port)
-            .and_then(|facts| facts.is_zero)
+            .map(|facts| facts.exactly_zero())
             .unwrap_or(false)
     }
 
@@ -63,7 +47,7 @@ impl Dataflow {
     fn source_is_zero(&self, graph: &Rvsdg, port: InputPort) -> bool {
         self.facts
             .get(&graph.input_source(port))
-            .and_then(|facts| facts.is_zero)
+            .map(|facts| facts.exactly_zero())
             .unwrap_or(false)
     }
 }
@@ -148,11 +132,8 @@ impl Pass for Dataflow {
             true_visitor
                 .facts
                 .entry(source)
-                .and_modify(|facts| facts.is_zero = Some(is_zero))
-                .or_insert_with(|| Facts {
-                    is_zero: Some(is_zero),
-                    ..Default::default()
-                });
+                .and_modify(|facts| *facts = Domain::exact_u8(0))
+                .or_insert_with(|| Domain::exact_u8(0));
         };
         let mut zero_fact_false_branch = |source, is_zero| {
             tracing::trace!(
@@ -165,11 +146,8 @@ impl Pass for Dataflow {
             false_visitor
                 .facts
                 .entry(source)
-                .and_modify(|facts| facts.is_zero = Some(is_zero))
-                .or_insert_with(|| Facts {
-                    is_zero: Some(is_zero),
-                    ..Default::default()
-                });
+                .and_modify(|facts| *facts = Domain::exact_u8(0))
+                .or_insert_with(|| Domain::exact_u8(0));
         };
 
         let condition = graph.input_source_node(gamma.condition());
@@ -301,11 +279,8 @@ impl Pass for Dataflow {
 
                         self.facts
                             .entry(output)
-                            .and_modify(|fact| fact.is_zero = Some(true))
-                            .or_insert_with(|| Facts {
-                                is_zero: Some(true),
-                                ..Default::default()
-                            });
+                            .and_modify(|facts| *facts = Domain::exact_u8(0))
+                            .or_insert_with(|| Domain::exact_u8(0));
                     }
 
                     // If the value was loaded from an address, propagate that info to stores
@@ -314,19 +289,12 @@ impl Pass for Dataflow {
                         .cast_node::<Load>(theta.body().port_parent(zeroed))
                     {
                         let load_ptr_src = theta.body().input_source(load.ptr());
-                        dbg!(load_ptr_src, load,);
 
                         if let Some(store) = theta
                             .body()
                             .input_source_node(theta.end_node().input_effect())
                             .as_store()
                         {
-                            dbg!(
-                                load_ptr_src,
-                                load,
-                                theta.body().input_source(store.ptr()),
-                                store
-                            );
                             if load_ptr_src == theta.body().input_source(store.ptr()) {
                                 tracing::trace!(
                                     theta = ?theta.node(),
@@ -347,63 +315,10 @@ impl Pass for Dataflow {
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
-        self.constants.insert(int.value(), value.into());
-
-        if value == 0 {
-            tracing::trace!("got zero value {:?}", int.value());
-
-            self.facts
-                .entry(int.value())
-                .and_modify(|facts| facts.is_zero = Some(true))
-                .or_insert_with(|| Facts {
-                    is_zero: Some(true),
-                    ..Default::default()
-                });
-        } else {
-            self.facts
-                .entry(int.value())
-                .and_modify(|facts| facts.is_zero = Some(false))
-                .or_insert_with(|| Facts {
-                    is_zero: Some(false),
-                    ..Default::default()
-                });
-        }
-
-        if value.is_positive() {
-            self.facts
-                .entry(int.value())
-                .and_modify(|facts| facts.sign = Some(Sign::Positive))
-                .or_insert_with(|| Facts {
-                    sign: Some(Sign::Positive),
-                    ..Default::default()
-                });
-        } else if value.is_negative() {
-            self.facts
-                .entry(int.value())
-                .and_modify(|facts| facts.sign = Some(Sign::Negative))
-                .or_insert_with(|| Facts {
-                    sign: Some(Sign::Negative),
-                    ..Default::default()
-                });
-        }
-
-        if value.rem_euclid(2) == 1 {
-            self.facts
-                .entry(int.value())
-                .and_modify(|facts| facts.parity = Some(Parity::Even))
-                .or_insert_with(|| Facts {
-                    parity: Some(Parity::Even),
-                    ..Default::default()
-                });
-        } else {
-            self.facts
-                .entry(int.value())
-                .and_modify(|facts| facts.parity = Some(Parity::Odd))
-                .or_insert_with(|| Facts {
-                    parity: Some(Parity::Odd),
-                    ..Default::default()
-                });
-        }
+        self.facts
+            .entry(int.value())
+            .and_modify(|facts| *facts = Domain::exact_i32(value))
+            .or_insert_with(|| Domain::exact_i32(value));
     }
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
@@ -418,6 +333,31 @@ impl Pass for Dataflow {
             graph.rewire_dependents(eq.value(), evaluated.value());
 
             self.changed();
+        } else if let Some((lhs, rhs)) = self
+            .facts
+            .get(&graph.input_source(eq.lhs()))
+            .zip(self.facts.get(&graph.input_source(eq.rhs())))
+        {
+            // If the domains of the two integers don't overlap, they can't possibly be equal
+            if lhs.is_disjoint(rhs) {
+                tracing::trace!(?eq, %lhs, %rhs, "replaced impossible comparison with false");
+
+                let evaluated = graph.bool(false);
+                graph.rewire_dependents(eq.value(), evaluated.value());
+
+                self.changed();
+            } else if lhs
+                .exact_value()
+                .and_then(|lhs| Some((lhs, rhs.exact_value()?)))
+                .map_or(false, |(lhs, rhs)| lhs == rhs)
+            {
+                tracing::trace!(?eq, %lhs, %rhs, "replaced always-true comparison with true");
+
+                let evaluated = graph.bool(true);
+                graph.rewire_dependents(eq.value(), evaluated.value());
+
+                self.changed();
+            }
         }
     }
 
@@ -457,20 +397,120 @@ impl Pass for Dataflow {
     }
 
     fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
+        // Use an unknown byte value as the baseline loaded value
+        let mut facts = Domain::unbounded_u8();
+
         if let Some(ptr) = self
             .constants
             .get(&graph.input_source(load.ptr()))
             .and_then(Const::convert_to_i32)
         {
             let ptr = ptr.rem_euclid(self.tape.len() as i32) as usize;
-            let (facts, consts) = self.tape[ptr].clone();
+            let (loaded_facts, consts) = self.tape[ptr].clone();
 
-            if let Some(facts) = facts {
-                self.facts.insert(load.value(), facts);
+            if let Some(loaded_facts) = loaded_facts {
+                facts = loaded_facts;
             }
             if let Some(consts) = consts {
                 self.constants.insert(load.value(), consts);
             }
         }
+
+        self.facts.insert(load.value(), facts);
+    }
+
+    fn visit_input(&mut self, _graph: &mut Rvsdg, input: Input) {
+        // Use an unknown byte value as the input value
+        self.facts.insert(input.value(), Domain::unbounded_u8());
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueSpace {
+    Int32,
+    Uint8,
+}
+
+#[derive(Debug, Clone)]
+pub struct Domain {
+    values: Ranges<i32>,
+    value_space: ValueSpace,
+}
+
+impl Domain {
+    pub fn unbounded_i32() -> Self {
+        Self {
+            values: Ranges::full(),
+            value_space: ValueSpace::Int32,
+        }
+    }
+
+    pub fn unbounded_u8() -> Self {
+        Self {
+            values: Ranges::from(u8::MIN as i32..=u8::MAX as i32),
+            value_space: ValueSpace::Uint8,
+        }
+    }
+
+    pub fn exact_i32(value: i32) -> Self {
+        Self {
+            values: Ranges::from(value..=value),
+            value_space: ValueSpace::Int32,
+        }
+    }
+
+    pub fn exact_u8(value: u8) -> Self {
+        Self {
+            values: Ranges::from(value as i32..=value as i32),
+            value_space: ValueSpace::Uint8,
+        }
+    }
+
+    pub fn join(&self, other: &Self) -> Self {
+        debug_assert_eq!(
+            self.value_space, other.value_space,
+            "FIXME: combine value spaces",
+        );
+
+        Self {
+            values: self.values.clone().intersect(other.values.clone()),
+            // FIXME: combine value spaces
+            value_space: self.value_space,
+        }
+    }
+
+    pub fn exactly_zero(&self) -> bool {
+        self.exact_value() == Some(0)
+    }
+
+    pub fn exact_value(&self) -> Option<i32> {
+        if self.values.len() == 1 {
+            let range = self.values.as_slice()[0];
+
+            if range.into_iter().count() == 1 {
+                range.into_iter().next()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.join(other).values.is_empty()
+    }
+
+    pub fn is_disjoint(&self, other: &Self) -> bool {
+        self.values
+            .clone()
+            .difference(other.values.clone())
+            .is_empty()
+    }
+}
+
+impl Display for Domain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.values, f)
     }
 }

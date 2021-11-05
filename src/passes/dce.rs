@@ -1,5 +1,3 @@
-use similar::algorithms::DiffHook;
-
 use crate::{
     graph::{Node, NodeExt, NodeId, Rvsdg},
     passes::Pass,

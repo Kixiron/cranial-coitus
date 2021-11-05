@@ -20,10 +20,6 @@ use crate::{
     interpreter::{Machine, StepLimitReached},
     ir::{IrBuilder, Pretty},
     parse::Token,
-    passes::{
-        AddSubLoop, AssociativeAdd, ConstFolding, Dataflow, Dce, ElimConstGamma, ExprDedup, Licm,
-        Mem2Reg, Pass, UnobservedStore, ZeroLoop,
-    },
     utils::{HashSet, PerfEvent},
 };
 use clap::Parser;
@@ -159,21 +155,7 @@ fn debug(args: Debug, start_time: Instant) {
     let mut evolution = BufWriter::new(File::create(dump_dir.join("evolution.diff")).unwrap());
     write!(&mut evolution, ">>>>> input\n{}", input_program).unwrap();
 
-    let mut passes: Vec<Box<dyn Pass>> = vec![
-        Box::new(Dce::new()),
-        Box::new(UnobservedStore::new()),
-        Box::new(ConstFolding::new()),
-        Box::new(AssociativeAdd::new()),
-        Box::new(ZeroLoop::new()),
-        Box::new(Mem2Reg::new(args.cells as usize)),
-        Box::new(AddSubLoop::new()),
-        Box::new(Dce::new()),
-        Box::new(Dataflow::new(args.cells as usize)),
-        Box::new(ElimConstGamma::new()),
-        Box::new(ConstFolding::new()),
-        Box::new(Licm::new()),
-        Box::new(ExprDedup::new()),
-    ];
+    let mut passes = passes::default_passes(args.cells as usize);
     let (mut pass_num, mut stack, mut visited, mut buffer, mut previous_graph) = (
         1,
         VecDeque::new(),
@@ -281,17 +263,19 @@ fn debug(args: Debug, start_time: Instant) {
 
     fs::write(dump_dir.join("output.cir"), output_program).unwrap();
 
-    let stats = {
+    let (stats, execution_duration) = {
         let mut input = vec![b'1', b'0'];
         let input = move || if input.is_empty() { 0 } else { input.remove(0) };
 
         let mut output_vec = Vec::new();
         let output = |byte| (&mut output_vec).push(byte);
 
+        let start_time = Instant::now();
         let (result, stats) = {
             let mut machine = Machine::new(step_limit, args.cells as usize, input, output);
             (machine.execute(&mut program).map(|_| ()), machine.stats)
         };
+        let execution_duration = start_time.elapsed();
 
         let output_str = String::from_utf8_lossy(&output_vec);
         match result {
@@ -315,7 +299,7 @@ fn debug(args: Debug, start_time: Instant) {
             }
         }
 
-        stats
+        (stats, execution_duration)
     };
 
     let output_stats = graph.stats();
@@ -346,6 +330,7 @@ fn debug(args: Debug, start_time: Instant) {
            stores       : {:>+6.02}%\n  \
            constants    : {:>+6.02}%\n  \
            io ops       : {:>+6.02}%\n\
+         Finished execution in {:#?}\n\
          Execution stats:\n  \
            instructions : {}\n  \
            loads        : {}, {:.02}%\n  \
@@ -378,6 +363,7 @@ fn debug(args: Debug, start_time: Instant) {
         difference.stores,
         difference.constants,
         difference.io_ops,
+        execution_duration,
         stats.instructions,
         stats.loads,
         utils::percent_total(stats.instructions, stats.loads),
@@ -435,21 +421,7 @@ fn run(args: Run, start_time: Instant) {
     let input_stats = graph.stats();
     validate(&graph);
 
-    let mut passes: Vec<Box<dyn Pass>> = vec![
-        Box::new(Dce::new()),
-        Box::new(UnobservedStore::new()),
-        Box::new(ConstFolding::new()),
-        Box::new(AssociativeAdd::new()),
-        Box::new(ZeroLoop::new()),
-        Box::new(Mem2Reg::new(args.cells as usize)),
-        Box::new(AddSubLoop::new()),
-        Box::new(Dce::new()),
-        Box::new(Dataflow::new(args.cells as usize)),
-        Box::new(ElimConstGamma::new()),
-        Box::new(ConstFolding::new()),
-        Box::new(Licm::new()),
-        Box::new(ExprDedup::new()),
-    ];
+    let mut passes = passes::default_passes(args.cells as usize);
     let (mut pass_num, mut stack, mut visited, mut buffer) = (
         1,
         VecDeque::new(),

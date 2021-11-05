@@ -173,8 +173,6 @@ impl<'a> Machine<'a> {
 
             let current_steps = self.steps;
             for inst in &mut theta.body {
-                theta.body_inst_count += 1;
-
                 // In the first loop iteration we want to execute every single assign instruction,
                 // including variant and invariant ones. The invariant ones will pull the invariant
                 // values into the loop and the variant ones will get the initial values of variant
@@ -195,6 +193,17 @@ impl<'a> Machine<'a> {
                 }
 
                 self.handle(inst)?;
+
+                let is_subgraph_param = matches!(
+                    inst,
+                    Instruction::Assign(Assign {
+                        tag: AssignTag::InputParam(_) | AssignTag::OutputParam,
+                        ..
+                    })
+                );
+                if !is_subgraph_param {
+                    theta.body_inst_count += 1;
+                }
             }
 
             // If the body doesn't change our step limit at all, we want to still take steps

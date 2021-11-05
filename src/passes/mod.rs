@@ -7,6 +7,7 @@ mod eliminate_const_gamma;
 mod expr_dedup;
 mod licm;
 mod mem2reg;
+mod shift;
 mod unobserved_store;
 mod zero_loop;
 
@@ -19,6 +20,7 @@ pub use eliminate_const_gamma::ElimConstGamma;
 pub use expr_dedup::ExprDedup;
 pub use licm::Licm;
 pub use mem2reg::Mem2Reg;
+pub use shift::ShiftCell;
 pub use unobserved_store::UnobservedStore;
 pub use zero_loop::ZeroLoop;
 
@@ -30,6 +32,25 @@ use crate::{
     utils::HashSet,
 };
 use std::collections::VecDeque;
+
+pub fn default_passes(cells: usize) -> Vec<Box<dyn Pass>> {
+    vec![
+        Box::new(Dce::new()),
+        Box::new(UnobservedStore::new()),
+        Box::new(ConstFolding::new()),
+        Box::new(AssociativeAdd::new()),
+        Box::new(ZeroLoop::new()),
+        Box::new(Mem2Reg::new(cells)),
+        Box::new(AddSubLoop::new()),
+        Box::new(ShiftCell::new()),
+        Box::new(Dce::new()),
+        Box::new(Dataflow::new(cells)),
+        Box::new(ElimConstGamma::new()),
+        Box::new(ConstFolding::new()),
+        Box::new(Licm::new()),
+        Box::new(ExprDedup::new()),
+    ]
+}
 
 // TODO:
 // - Addition https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.2B_y

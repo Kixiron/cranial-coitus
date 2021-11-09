@@ -27,7 +27,7 @@ use crate::{
 };
 use std::{
     cell::Cell,
-    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    collections::{btree_map::Entry, BTreeMap},
     fmt::{self, Debug, Display, Write},
     hash::Hash,
     rc::Rc,
@@ -233,41 +233,31 @@ impl Rvsdg {
             .map(|node_id| (node_id, self.get_node(node_id)))
     }
 
-    /// Collect all nodes from the current graph and all subgraphs
-    #[track_caller]
-    #[allow(dead_code)]
-    pub fn transitive_nodes(&self) -> Vec<&Node> {
-        let (mut buffer, mut visited) = (Vec::new(), BTreeSet::new());
-        self.transitive_nodes_into(&mut buffer, &mut visited);
-
-        buffer
+    /// Runs the provided closure for each node within the graph and all contained subgraphs
+    pub fn for_each_transitive_node<F>(&self, mut for_each: F)
+    where
+        F: FnMut(NodeId, &Node),
+    {
+        self.for_each_transitive_node_inner(&mut for_each);
     }
 
-    /// Collect all nodes from the current graph and all subgraphs into a buffer
-    #[track_caller]
-    pub fn transitive_nodes_into<'a>(
-        &'a self,
-        buffer: &mut Vec<&'a Node>,
-        visited: &mut BTreeSet<NodeId>,
-    ) {
-        buffer.reserve(self.nodes.len());
+    pub fn for_each_transitive_node_inner<F>(&self, for_each: &mut F)
+    where
+        F: FnMut(NodeId, &Node),
+    {
+        for (&node_id, node) in self.nodes.iter() {
+            for_each(node_id, node);
 
-        for node in self.nodes.values() {
-            // If this node hasn't been added already
-            if visited.insert(node.node_id()) {
-                // Add the current node to the buffer
-                buffer.push(node);
-
-                // Add the nodes from any subgraphs to the buffer
-                match node {
-                    Node::Gamma(gamma) => {
-                        gamma.true_branch().transitive_nodes_into(buffer, visited);
-                        gamma.false_branch().transitive_nodes_into(buffer, visited);
-                    }
-                    Node::Theta(theta) => theta.body().transitive_nodes_into(buffer, visited),
-
-                    _ => {}
+            match node {
+                Node::Gamma(gamma) => {
+                    gamma.true_branch().for_each_transitive_node_inner(for_each);
+                    gamma
+                        .false_branch()
+                        .for_each_transitive_node_inner(for_each);
                 }
+                Node::Theta(theta) => theta.body().for_each_transitive_node_inner(for_each),
+
+                _ => {}
             }
         }
     }

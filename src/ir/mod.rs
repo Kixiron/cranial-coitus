@@ -129,7 +129,33 @@ impl Pretty for Instruction {
         A: Clone,
     {
         match self {
-            Self::Call(call) => call.pretty(allocator, total_instructions),
+            Self::Call(call) => allocator.column(move |start_column| {
+                call.pretty(allocator, total_instructions)
+                    .append(allocator.column(move |column| {
+                        let mut comment = if let Some(prev_effect) = call.prev_effect {
+                            format!("// eff: {}, pred: {}", call.effect, prev_effect)
+                        } else {
+                            format!("// eff: {}, pred: ???", call.effect)
+                        };
+
+                        if call.invocations != 0 {
+                            write!(&mut comment, ", calls: {}", call.invocations).unwrap();
+
+                            if let Some(total_instructions) = total_instructions {
+                                let percentage =
+                                    percent_total(total_instructions, call.invocations);
+                                write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                            }
+                        }
+
+                        allocator
+                            .space()
+                            .append(allocator.text(comment))
+                            .indent(COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column))
+                            .into_doc()
+                    }))
+                    .into_doc()
+            }),
             Self::Assign(assign) => assign.pretty(allocator, total_instructions),
             Self::Theta(theta) => theta.pretty(allocator, total_instructions),
             Self::Gamma(gamma) => gamma.pretty(allocator, total_instructions),
@@ -472,46 +498,18 @@ impl Pretty for Call {
         D::Doc: Clone,
         A: Clone,
     {
-        allocator.column(move |start_column| {
-            allocator
-                .text("call")
-                .append(allocator.space())
-                .append(
-                    allocator.text(self.function.clone()).append(
-                        allocator
-                            .intersperse(
-                                self.args
-                                    .iter()
-                                    .map(|arg| arg.pretty(allocator, total_instructions)),
-                                allocator.text(","),
-                            )
-                            .parens(),
-                    ),
-                )
-                .append(allocator.space())
-                .append(allocator.column(move |column| {
-                    let mut comment = if let Some(prev_effect) = self.prev_effect {
-                        format!("// eff: {}, pred: {}", self.effect, prev_effect)
-                    } else {
-                        format!("// eff: {}, pred: ???", self.effect)
-                    };
-
-                    if self.invocations != 0 {
-                        write!(&mut comment, ", calls: {}", self.invocations).unwrap();
-
-                        if let Some(total_instructions) = total_instructions {
-                            let percentage = percent_total(total_instructions, self.invocations);
-                            write!(&mut comment, " ({:.02}%)", percentage).unwrap();
-                        }
-                    }
-
-                    allocator
-                        .text(comment)
-                        .indent(COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column))
-                        .into_doc()
-                }))
-                .into_doc()
-        })
+        allocator.text("call").append(allocator.space()).append(
+            allocator.text(self.function.clone()).append(
+                allocator
+                    .intersperse(
+                        self.args
+                            .iter()
+                            .map(|arg| arg.pretty(allocator, total_instructions)),
+                        allocator.text(","),
+                    )
+                    .parens(),
+            ),
+        )
     }
 }
 
@@ -583,7 +581,14 @@ impl Pretty for Assign {
                     AssignTag::InputParam(_) => allocator.text("in").append(allocator.space()),
                     AssignTag::OutputParam => allocator.text("out").append(allocator.space()),
                 })
-                .append(self.value.pretty(allocator, total_instructions))
+                .append(self.value.pretty(
+                    allocator,
+                    if self.value.is_call() {
+                        None
+                    } else {
+                        total_instructions
+                    },
+                ))
                 .append(if let Expr::Load(load) = &self.value {
                     allocator.column(move |column| {
                         let mut comment = if let Some(prev_effect) = load.prev_effect {
@@ -609,6 +614,30 @@ impl Pretty for Assign {
                             ))
                             .into_doc()
                     })
+                } else if let Expr::Call(call) = &self.value {
+                    allocator.column(move |column| {
+                        let mut comment = if let Some(prev_effect) = call.prev_effect {
+                            format!("// eff: {}, pred: {}", call.effect, prev_effect)
+                        } else {
+                            format!("// eff: {}, pred: ???", call.effect)
+                        };
+
+                        if call.invocations != 0 {
+                            write!(&mut comment, ", calls: {}", call.invocations).unwrap();
+
+                            if let Some(total_instructions) = total_instructions {
+                                let percentage =
+                                    percent_total(total_instructions, call.invocations);
+                                write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                            }
+                        }
+
+                        allocator
+                            .space()
+                            .append(allocator.text(comment))
+                            .indent(COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column))
+                            .into_doc()
+                    })
                 } else {
                     allocator.nil()
                 })
@@ -624,7 +653,7 @@ impl Pretty for Assign {
                             ),
 
                             Variance::None => {
-                                if self.invocations != 0 {
+                                if self.invocations != 0 && !self.value.is_call() {
                                     let mut comment =
                                         format!("// invocations: {}", self.invocations);
 
@@ -641,7 +670,10 @@ impl Pretty for Assign {
                             }
                         }
                         .indent(COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column))
-                    } else if self.tag == AssignTag::None && !self.value.is_load() {
+                    } else if self.tag == AssignTag::None
+                        && !self.value.is_load()
+                        && !self.value.is_call()
+                    {
                         if self.invocations != 0 {
                             let mut comment = format!("// invocations: {}", self.invocations);
 
@@ -697,6 +729,13 @@ impl Expr {
     /// [`Load`]: Expr::Load
     pub const fn is_load(&self) -> bool {
         matches!(self, Self::Load(..))
+    }
+
+    /// Returns `true` if the expr is [`Call`].
+    ///
+    /// [`Call`]: Expr::Call
+    pub const fn is_call(&self) -> bool {
+        matches!(self, Self::Call(..))
     }
 }
 

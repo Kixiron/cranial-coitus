@@ -73,34 +73,32 @@ impl Rvsdg {
         let _event = PerfEvent::new("collect-graph-stats");
 
         let mut stats = Stats::new();
-        for node in self.transitive_nodes() {
-            match node {
-                Node::Int(_, _) | Node::Bool(_, _) => stats.constants += 1,
-                Node::Add(_) | Node::Eq(_) | Node::Not(_) | Node::Neg(_) => stats.instructions += 1,
-                Node::Load(_) => {
-                    stats.instructions += 1;
-                    stats.loads += 1
-                }
-                Node::Store(_) => {
-                    stats.instructions += 1;
-                    stats.stores += 1
-                }
-                Node::Input(_) | Node::Output(_) => {
-                    stats.instructions += 1;
-                    stats.io_ops += 1;
-                }
-                Node::Theta(_) => {
-                    stats.instructions += 1;
-                    stats.loops += 1;
-                }
-                Node::Gamma(_) => {
-                    stats.instructions += 1;
-                    stats.branches += 1;
-                }
-
-                Node::Start(_) | Node::End(_) | Node::InputParam(_) | Node::OutputParam(_) => {}
+        self.for_each_transitive_node(|_node_id, node| match node {
+            Node::Int(_, _) | Node::Bool(_, _) => stats.constants += 1,
+            Node::Add(_) | Node::Eq(_) | Node::Not(_) | Node::Neg(_) => stats.instructions += 1,
+            Node::Load(_) => {
+                stats.instructions += 1;
+                stats.loads += 1
             }
-        }
+            Node::Store(_) => {
+                stats.instructions += 1;
+                stats.stores += 1
+            }
+            Node::Input(_) | Node::Output(_) => {
+                stats.instructions += 1;
+                stats.io_ops += 1;
+            }
+            Node::Theta(_) => {
+                stats.instructions += 1;
+                stats.loops += 1;
+            }
+            Node::Gamma(_) => {
+                stats.instructions += 1;
+                stats.branches += 1;
+            }
+
+            Node::Start(_) | Node::End(_) | Node::InputParam(_) | Node::OutputParam(_) => {}
+        });
 
         stats
     }

@@ -3,6 +3,7 @@ mod associative_add;
 mod const_folding;
 mod dataflow;
 mod dce;
+mod duplicate_cell;
 mod eliminate_const_gamma;
 mod expr_dedup;
 mod licm;
@@ -16,6 +17,7 @@ pub use associative_add::AssociativeAdd;
 pub use const_folding::ConstFolding;
 pub use dataflow::Dataflow;
 pub use dce::Dce;
+pub use duplicate_cell::DuplicateCell;
 pub use eliminate_const_gamma::ElimConstGamma;
 pub use expr_dedup::ExprDedup;
 pub use licm::Licm;
@@ -43,6 +45,7 @@ pub fn default_passes(cells: usize) -> Vec<Box<dyn Pass>> {
         Box::new(Mem2Reg::new(cells)),
         Box::new(AddSubLoop::new()),
         Box::new(ShiftCell::new()),
+        Box::new(DuplicateCell::new()),
         Box::new(Dce::new()),
         Box::new(Dataflow::new(cells)),
         Box::new(ElimConstGamma::new()),
@@ -108,6 +111,10 @@ pub trait Pass {
         self.visit_graph_inner(graph, &mut stack, &mut visited, &mut buffer)
     }
 
+    // TODO: We really want to be doing post-ordered construction of the work list,
+    //       going from the end nodes backwards to the start nodes. However, it's
+    //       difficult since graph manipulations would require us to constantly
+    //       rebuild the traversal tree to include the new nodes
     fn visit_graph_inner(
         &mut self,
         graph: &mut Rvsdg,
@@ -240,10 +247,12 @@ pub trait Pass {
     fn visit_end(&mut self, _graph: &mut Rvsdg, _end: End) {}
     fn visit_input(&mut self, _graph: &mut Rvsdg, _input: Input) {}
     fn visit_output(&mut self, _graph: &mut Rvsdg, _output: Output) {}
+    // TODO: Cow
     fn visit_theta(&mut self, _graph: &mut Rvsdg, _theta: Theta) {}
     fn visit_eq(&mut self, _graph: &mut Rvsdg, _eq: Eq) {}
     fn visit_not(&mut self, _graph: &mut Rvsdg, _not: Not) {}
     fn visit_neg(&mut self, _graph: &mut Rvsdg, _neg: Neg) {}
+    // TODO: Cow
     fn visit_gamma(&mut self, _graph: &mut Rvsdg, _gamma: Gamma) {}
     fn visit_input_param(&mut self, _graph: &mut Rvsdg, _input_param: InputParam) {}
     fn visit_output_param(&mut self, _graph: &mut Rvsdg, _output_param: OutputParam) {}

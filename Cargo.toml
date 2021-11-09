@@ -23,6 +23,7 @@ tracing = { version = "0.1.29", features = ["release_max_level_info"] }
 
 [profile.release]
 debug = 2
+lto = "thin"
 
     [profile.release.package."*"]
     debug = 2

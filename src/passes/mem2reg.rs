@@ -1,24 +1,19 @@
 use crate::{
     graph::{
-        Bool, EdgeKind, Gamma, InputParam, Int, Load, Node, NodeExt, NodeId, OutputPort, Rvsdg,
-        Store, Theta,
+        Bool, EdgeKind, Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg, Store,
+        Theta,
     },
     ir::Const,
     passes::Pass,
     utils::AssertNone,
 };
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    mem,
-};
+use std::collections::BTreeMap;
 
 /// Evaluates constant loads within the program
 pub struct Mem2Reg {
     values: BTreeMap<OutputPort, Place>,
     tape: Vec<Place>,
     changed: bool,
-    buffer: Vec<&'static Node>,
-    visited_buf: BTreeSet<NodeId>,
 }
 
 // TODO: Propagate port places into subgraphs by adding input ports
@@ -28,43 +23,19 @@ impl Mem2Reg {
             values: BTreeMap::new(),
             tape: vec![Place::Const(Const::Int(0)); tape_len],
             changed: false,
-            buffer: Vec::new(),
-            visited_buf: BTreeSet::new(),
         }
     }
 
     pub fn unknown(tape_len: usize) -> Self {
         Self {
             values: BTreeMap::new(),
-            tape: vec![Place::Const(Const::Int(0)); tape_len],
+            tape: vec![Place::Unknown; tape_len],
             changed: false,
-            buffer: Vec::new(),
-            visited_buf: BTreeSet::new(),
         }
     }
 
     fn changed(&mut self) {
         self.changed = true;
-    }
-
-    fn with_buffer<'a, F, R>(&mut self, with: F) -> R
-    where
-        F: FnOnce(&mut Vec<&'a Node>, &mut BTreeSet<NodeId>) -> R,
-    {
-        let (ptr, len, cap) = Vec::into_raw_parts(mem::take(&mut self.buffer));
-        // Safety: Different lifetimes are valid for transmute, see
-        // https://github.com/rust-lang/unsafe-code-guidelines/issues/282
-        let mut buffer: Vec<&'a Node> = unsafe { Vec::from_raw_parts(ptr.cast(), len, cap) };
-
-        let ret = with(&mut buffer, &mut self.visited_buf);
-        buffer.clear();
-        self.visited_buf.clear();
-
-        let (ptr, len, cap) = Vec::into_raw_parts(buffer);
-        // Safety: Different lifetimes are valid for transmute
-        self.buffer = unsafe { Vec::from_raw_parts(ptr.cast(), len, cap) };
-
-        ret
     }
 }
 
@@ -330,16 +301,15 @@ impl Pass for Mem2Reg {
         changed |= falsy_visitor.visit_graph(gamma.false_mut());
 
         // Figure out if there's any stores within either of the gamma branches
-        let (truthy_stores, falsy_stores) = self.with_buffer(|buffer, visited| {
-            gamma.true_branch().transitive_nodes_into(buffer, visited);
-            visited.clear();
-            let truthy_stores = buffer.drain(..).filter(|node| node.is_store()).count();
+        let mut truthy_stores = 0;
+        gamma
+            .true_branch()
+            .for_each_transitive_node(|_node_id, node| truthy_stores += node.is_store() as usize);
 
-            gamma.false_branch().transitive_nodes_into(buffer, visited);
-            let falsy_stores = buffer.drain(..).filter(|node| node.is_store()).count();
-
-            (truthy_stores, falsy_stores)
-        });
+        let mut falsy_stores = 0;
+        gamma
+            .false_branch()
+            .for_each_transitive_node(|_node_id, node| falsy_stores += node.is_store() as usize);
 
         // Invalidate the whole tape if any stores occur within it
         // FIXME: We pessimistically clear out the *entire* tape, but
@@ -369,10 +339,10 @@ impl Pass for Mem2Reg {
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
-        let body_stores = self.with_buffer(|buffer, visited| {
-            theta.body().transitive_nodes_into(buffer, visited);
-            buffer.drain(..).filter(|node| node.is_store()).count()
-        });
+        let mut body_stores = 0;
+        theta
+            .body()
+            .for_each_transitive_node(|_node_id, node| body_stores += node.is_store() as usize);
 
         // If no stores occur within the theta's body then we can
         // propagate the current state of the tape into it and if not,

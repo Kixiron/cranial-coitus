@@ -1,15 +1,15 @@
-use tinyvec::{tiny_vec, TinyVec};
-
 use crate::{
-    graph::{Gamma, InputParam, InputPort, Int, Node, NodeExt, OutputPort, Rvsdg, Theta},
+    graph::{Gamma, InputParam, InputPort, Int, Node, NodeExt, OutputPort, Rvsdg, Start, Theta},
     ir::Const,
     passes::Pass,
     utils::{AssertNone, HashMap},
 };
+use tinyvec::{tiny_vec, TinyVec};
 
 pub struct DuplicateCell {
     changed: bool,
     values: HashMap<OutputPort, Const>,
+    duplicates_removed: usize,
 }
 
 impl DuplicateCell {
@@ -17,11 +17,191 @@ impl DuplicateCell {
         Self {
             values: HashMap::with_hasher(Default::default()),
             changed: false,
+            duplicates_removed: 0,
         }
     }
 
     fn changed(&mut self) {
         self.changed = true;
+    }
+
+    fn visit_gamma_theta(
+        &mut self,
+        graph: &mut Rvsdg,
+        theta: &mut Theta,
+    ) -> (bool, Option<(DuplicateCandidate, Self)>) {
+        let mut changed = false;
+        let mut visitor = Self::new();
+
+        // For each input into the theta region, if the input value is a known constant
+        // then we should associate the input value with said constant
+        for (input, param) in theta.input_pairs() {
+            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
+                visitor
+                    .values
+                    .insert(param.output(), constant)
+                    .debug_unwrap_none();
+            }
+        }
+
+        changed |= visitor.visit_graph(theta.body_mut());
+
+        (
+            changed,
+            self.theta_is_candidate(&visitor.values, theta)
+                .map(|candidate| (candidate, visitor)),
+        )
+    }
+
+    fn inline_duplicate_gamma(
+        &mut self,
+        gamma: &Gamma,
+        theta: &Theta,
+        visitor: Self,
+        graph: &mut Rvsdg,
+        theta_graph: &Rvsdg,
+        duplicate_candidate: DuplicateCandidate,
+    ) -> bool {
+        let DuplicateCandidate { src_ptr, dest_ptrs } = duplicate_candidate;
+
+        tracing::debug!(
+            "found theta that composes to a duplicate loop copying from {:?} to {:?}",
+            src_ptr,
+            dest_ptrs,
+        );
+
+        // FIXME: ???
+        let mut get_gamma_input = |output| {
+            visitor
+                .values
+                .get(&output)
+                .and_then(Const::convert_to_i32)
+                .map(|int| graph.int(int).value())
+                .or_else(|| {
+                    theta
+                        .invariant_input_pairs()
+                        .find_map(|(port, input)| {
+                            if input.output() == output {
+                                Some(theta_graph.get_input(port).1)
+                            } else {
+                                None
+                            }
+                        })
+                        .and_then(|output| {
+                            self.values
+                                .get(&output)
+                                .and_then(Const::convert_to_i32)
+                                .map(|int| graph.int(int).value())
+                                .or_else(|| {
+                                    gamma.inputs().iter().zip(gamma.input_params()).find_map(
+                                        |(&port, &[_, input])| {
+                                            let input =
+                                                gamma.false_branch().to_node::<InputParam>(input);
+
+                                            if input.output() == output {
+                                                Some(graph.get_input(port).1)
+                                            } else {
+                                                None
+                                            }
+                                        },
+                                    )
+                                })
+                        })
+                })
+        };
+
+        let dest_ptr_inputs: Option<TinyVec<[_; 2]>> = dest_ptrs
+            .iter()
+            .fold(Some(TinyVec::new()), |ptrs, &ptr| {
+                ptrs.and_then(|mut ptrs| {
+                    ptrs.push(get_gamma_input(ptr)?);
+                    Some(ptrs)
+                })
+            })
+            .filter(|inputs| inputs.len() == dest_ptrs.len());
+
+        if let (Some(src_ptr), Some(dest_ptrs)) = (get_gamma_input(src_ptr), dest_ptr_inputs) {
+            let input_effect = graph.input_source(gamma.effect_in());
+
+            // Load the source value
+            let src_val = graph.load(src_ptr, input_effect);
+
+            // Store the source value into the destination cells
+            let mut last_effect = src_val.output_effect();
+
+            // ```
+            // d1_val = load d1_ptr
+            // d1_sum = add d1_val, src_val
+            // store d1_ptr, d1_sum
+            // ```
+            for dest_ptr in dest_ptrs {
+                let load = graph.load(dest_ptr, last_effect);
+                let sum = graph.add(load.output_value(), src_val.output_value());
+                let store = graph.store(dest_ptr, sum.value(), load.output_effect());
+
+                last_effect = store.effect();
+            }
+
+            // Unconditionally store 0 to the source cell
+            let zero = graph.int(0);
+            let zero_src_cell = graph.store(src_ptr, zero.value(), last_effect);
+
+            // Wire the final store into the gamma's output effect
+            graph.rewire_dependents(gamma.effect_out(), zero_src_cell.effect());
+
+            for (port, param) in theta.output_pairs() {
+                if let Some((input_node, ..)) = theta.body().try_input(param.input()) {
+                    match *input_node {
+                        Node::Int(_, value) => {
+                            let int = graph.int(value);
+                            graph.rewire_dependents(port, int.value());
+                        }
+
+                        Node::Bool(_, value) => {
+                            let bool = graph.bool(value);
+                            graph.rewire_dependents(port, bool.value());
+                        }
+
+                        Node::InputParam(param) => {
+                            let input_value = graph.input_source(
+                                theta
+                                    .input_pairs()
+                                    .find_map(|(port, input)| {
+                                        (input.node() == param.node()).then(|| port)
+                                    })
+                                    .unwrap(),
+                            );
+
+                            graph.rewire_dependents(port, input_value);
+                        }
+
+                        ref other => {
+                            tracing::error!("missed output value from theta {:?}", other);
+                        }
+                    }
+                } else {
+                    tracing::error!(
+                        "output value from theta had no inputs {:?}->{:?}",
+                        param,
+                        port,
+                    );
+                }
+            }
+
+            graph.remove_node(gamma.node());
+            self.changed();
+
+            true
+        } else {
+            tracing::trace!(
+                "failed to optimize duplicate loop copying from {:?} to {:?}, \
+                the pointers were not in the expected form yet",
+                src_ptr,
+                dest_ptrs,
+            );
+
+            false
+        }
     }
 
     /// ```
@@ -55,10 +235,13 @@ impl DuplicateCell {
     /// src_val := load src_ptr
     ///
     /// // Store the source value into the duplicate cells
-    /// // TODO: Technically this should add src_val to the values
-    /// //       of the respective cells
-    /// store d1_ptr, src_val
-    /// store d2_ptr, src_val
+    /// d1_val = load d1_ptr
+    /// d1_sum = add d1_val, src_val
+    /// store d1_ptr, d1_sum
+    ///
+    /// d2_val = load d2_ptr
+    /// d2_sum = add d2_val, src_val
+    /// store d2_ptr, d2_sum
     ///
     /// // Zero out the source cell
     /// store src_ptr, int 0
@@ -125,6 +308,10 @@ impl DuplicateCell {
             0,
         )?;
 
+        if src_ptr == d1_ptr || src_ptr == d2_ptr || d1_ptr == d2_ptr {
+            return None;
+        }
+
         // Yay, all of our validation is done and we've determined that this is
         // indeed a shift motif
         Some(DuplicateCandidate::new(src_ptr, tiny_vec![d1_ptr, d2_ptr]))
@@ -147,7 +334,7 @@ impl DuplicateCell {
 
         // Get the store
         // `store ptr, val_add`
-        let store = graph.get_output(load.effect())?.0.as_store()?;
+        let store = graph.get_output(load.output_effect())?.0.as_store()?;
 
         // Make sure the addresses are the same
         if graph.input_source(store.ptr()) != ptr {
@@ -165,7 +352,7 @@ impl DuplicateCell {
             values,
             val_add.lhs(),
             val_add.rhs(),
-            load.value(),
+            load.output_value(),
             add_value,
         )?;
 
@@ -184,11 +371,11 @@ impl DuplicateCell {
         let (lhs_operand, rhs_operand) = (graph.input_source(lhs), graph.input_source(rhs));
 
         if lhs_operand == operand {
-            if values.get(&rhs_operand)?.as_int()? != constant {
+            if values.get(&rhs_operand)?.convert_to_i32()? != constant {
                 return None;
             }
         } else if rhs_operand == operand {
-            if values.get(&lhs_operand)?.as_int()? != constant {
+            if values.get(&lhs_operand)?.convert_to_i32()? != constant {
                 return None;
             }
         } else {
@@ -213,6 +400,14 @@ impl Pass for DuplicateCell {
         self.changed = false;
     }
 
+    fn report(&self) {
+        tracing::info!(
+            "{} removed {} duplicate cell motifs",
+            self.pass_name(),
+            self.duplicates_removed,
+        );
+    }
+
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
         let replaced = self.values.insert(int.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
@@ -220,7 +415,7 @@ impl Pass for DuplicateCell {
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
-        let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -230,21 +425,91 @@ impl Pass for DuplicateCell {
 
             if let Some(constant) = self.values.get(&source).cloned() {
                 let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
-                truthy_visitor
+                true_visitor
                     .values
                     .insert(true_param.output(), constant.clone())
                     .debug_unwrap_none();
 
                 let false_param = gamma.false_branch().to_node::<InputParam>(false_param);
-                falsy_visitor
+                false_visitor
                     .values
                     .insert(false_param.output(), constant)
                     .debug_unwrap_none();
             }
         }
 
-        changed |= truthy_visitor.visit_graph(gamma.true_mut());
-        changed |= falsy_visitor.visit_graph(gamma.false_mut());
+        changed |= true_visitor.visit_graph(gamma.true_mut());
+        changed |= false_visitor.visit_graph(gamma.false_mut());
+
+        // Is `true` if the gamma's true branch is a passthrough
+        let true_is_empty = {
+            let start = gamma.true_branch().to_node::<Start>(gamma.starts()[0]);
+            let next_node = gamma
+                .true_branch()
+                .get_output(start.effect())
+                .unwrap()
+                .0
+                .node();
+
+            next_node == gamma.ends()[0]
+        };
+
+        if true_is_empty {
+            tracing::trace!(gamma = ?gamma.node(), "found gamma with empty true branch");
+            let start = gamma.false_branch().to_node::<Start>(gamma.starts()[1]);
+
+            // TODO: Make sure the next effect is the end node
+            // TODO: Make sure the gamma's condition is an `eq (load ptr), int 0`
+            if let Some(mut theta) = gamma
+                .false_branch()
+                .get_output(start.effect())
+                .unwrap()
+                .0
+                .as_theta()
+                .cloned()
+            {
+                tracing::trace!(
+                    gamma = ?gamma.node(),
+                    theta = ?theta.node(),
+                    "found gamma with empty true branch and a false branch containing a theta",
+                );
+
+                let (gamma_changed, duplicate) =
+                    false_visitor.visit_gamma_theta(gamma.false_mut(), &mut theta);
+
+                tracing::trace!(
+                    gamma = ?gamma.node(),
+                    theta = ?theta.node(),
+                    "gamma duplicate cell candidate: {:?}",
+                    duplicate.as_ref().map(|(candidate, _)| candidate),
+                );
+                if let Some((candidate, theta_body_visitor)) = duplicate {
+                    if self.inline_duplicate_gamma(
+                        &gamma,
+                        &theta,
+                        theta_body_visitor,
+                        graph,
+                        gamma.false_branch(),
+                        candidate,
+                    ) {
+                        tracing::trace!(
+                            gamma = ?gamma.node(),
+                            theta = ?theta.node(),
+                            "inlined duplicate cell candidate",
+                        );
+                        self.changed();
+
+                        self.duplicates_removed += 1;
+                        return;
+                    }
+                }
+
+                if gamma_changed {
+                    gamma.false_mut().replace_node(theta.node(), theta);
+                    changed = true;
+                }
+            }
+        }
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
@@ -268,113 +533,6 @@ impl Pass for DuplicateCell {
         }
 
         changed |= visitor.visit_graph(theta.body_mut());
-
-        if let Some(DuplicateCandidate { src_ptr, dest_ptrs }) =
-            self.theta_is_candidate(&visitor.values, &theta)
-        {
-            tracing::debug!(
-                "found theta that composes to a duplicate loop copying from {:?} to {:?}",
-                src_ptr,
-                dest_ptrs,
-            );
-
-            let mut get_theta_input = |output| {
-                visitor
-                    .values
-                    .get(&output)
-                    .and_then(Const::as_int)
-                    .map(|int| graph.int(int).value())
-                    .or_else(|| {
-                        theta.invariant_input_pairs().find_map(|(port, input)| {
-                            if input.output() == output {
-                                Some(graph.get_input(port).1)
-                            } else {
-                                None
-                            }
-                        })
-                    })
-            };
-
-            let dest_ptr_inputs: Option<TinyVec<[_; 2]>> =
-                dest_ptrs.iter().fold(Some(TinyVec::new()), |ptrs, &ptr| {
-                    ptrs.and_then(|mut ptrs| {
-                        ptrs.push(get_theta_input(ptr)?);
-                        Some(ptrs)
-                    })
-                });
-
-            if let (Some(src_ptr), Some(dest_ptrs)) = (get_theta_input(src_ptr), dest_ptr_inputs) {
-                let input_effect = graph.input_source(theta.input_effect().unwrap());
-
-                // Load the source value
-                let src_val = graph.load(src_ptr, input_effect);
-
-                // Store the source value into the destination cells
-                let mut last_effect = src_val.effect();
-                for dest_ptr in dest_ptrs {
-                    let store_src_to_dest = graph.store(dest_ptr, src_val.value(), last_effect);
-                    last_effect = store_src_to_dest.effect();
-                }
-
-                // Unconditionally store 0 to the destination cell
-                let zero = graph.int(0);
-                let zero_dest_cell = graph.store(src_ptr, zero.value(), last_effect);
-
-                // Wire the final store into the theta's output effect
-                graph.rewire_dependents(theta.output_effect().unwrap(), zero_dest_cell.effect());
-
-                for (port, param) in theta.output_pairs() {
-                    if let Some((input_node, ..)) = theta.body().try_input(param.input()) {
-                        match *input_node {
-                            Node::Int(_, value) => {
-                                let int = graph.int(value);
-                                graph.rewire_dependents(port, int.value());
-                            }
-
-                            Node::Bool(_, value) => {
-                                let bool = graph.bool(value);
-                                graph.rewire_dependents(port, bool.value());
-                            }
-
-                            Node::InputParam(param) => {
-                                let input_value = graph.input_source(
-                                    theta
-                                        .input_pairs()
-                                        .find_map(|(port, input)| {
-                                            (input.node() == param.node()).then(|| port)
-                                        })
-                                        .unwrap(),
-                                );
-
-                                graph.rewire_dependents(port, input_value);
-                            }
-
-                            ref other => {
-                                tracing::error!("missed output value from theta {:?}", other);
-                            }
-                        }
-                    } else {
-                        tracing::error!(
-                            "output value from theta had no inputs {:?}->{:?}",
-                            param,
-                            port,
-                        );
-                    }
-                }
-
-                graph.remove_node(theta.node());
-                self.changed();
-
-                return;
-            } else {
-                tracing::trace!(
-                    "failed to optimize duplicate loop copying from {:?} to {:?}, \
-                    the pointers were not in the expected form yet",
-                    src_ptr,
-                    dest_ptrs,
-                );
-            }
-        }
 
         if changed {
             graph.replace_node(theta.node(), theta);

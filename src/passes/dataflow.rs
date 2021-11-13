@@ -1,5 +1,3 @@
-use std::fmt::{self, Display};
-
 use crate::{
     graph::{
         Add, Bool, Eq, Gamma, Input, InputParam, InputPort, Int, Load, NodeExt, OutputPort, Rvsdg,
@@ -10,13 +8,14 @@ use crate::{
     utils::{AssertNone, HashMap},
 };
 use ranges::Ranges;
+use std::fmt::{self, Debug, Display};
 
 /// Removes dead code from the graph
 pub struct Dataflow {
     changed: bool,
     facts: HashMap<OutputPort, Domain>,
     constants: HashMap<OutputPort, Const>,
-    tape: Vec<(Option<Domain>, Option<Const>)>,
+    tape: Vec<(Domain, Option<Const>)>,
 }
 
 impl Dataflow {
@@ -25,7 +24,7 @@ impl Dataflow {
             changed: false,
             facts: HashMap::with_hasher(Default::default()),
             constants: HashMap::with_hasher(Default::default()),
-            tape: vec![(None, None); cells],
+            tape: vec![(Domain::exact_u8(0), Some(Const::U8(0))); cells],
         }
     }
 
@@ -71,6 +70,12 @@ impl Pass for Dataflow {
 
     fn reset(&mut self) {
         self.changed = false;
+        self.facts.clear();
+        self.constants.clear();
+
+        for cell in &mut self.tape {
+            *cell = (Domain::exact_u8(0), Some(0.into()));
+        }
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
@@ -129,11 +134,20 @@ impl Pass for Dataflow {
                 gamma.node(),
             );
 
-            true_visitor
-                .facts
-                .entry(source)
-                .and_modify(|facts| *facts = Domain::exact_u8(0))
-                .or_insert_with(|| Domain::exact_u8(0));
+            let entry = true_visitor.facts.entry(source);
+            if is_zero {
+                entry
+                    .and_modify(|facts| *facts = Domain::exact_u8(0))
+                    .or_insert_with(|| Domain::exact_u8(0));
+            } else {
+                entry
+                    .and_modify(|domain| domain.remove(0))
+                    .or_insert_with(|| {
+                        let mut domain = Domain::unbounded_u8();
+                        domain.remove(0);
+                        domain
+                    });
+            }
         };
         let mut zero_fact_false_branch = |source, is_zero| {
             tracing::trace!(
@@ -143,11 +157,20 @@ impl Pass for Dataflow {
                 gamma.node(),
             );
 
-            false_visitor
-                .facts
-                .entry(source)
-                .and_modify(|facts| *facts = Domain::exact_u8(0))
-                .or_insert_with(|| Domain::exact_u8(0));
+            let entry = false_visitor.facts.entry(source);
+            if is_zero {
+                entry
+                    .and_modify(|facts| *facts = Domain::exact_u8(0))
+                    .or_insert_with(|| Domain::exact_u8(0));
+            } else {
+                entry
+                    .and_modify(|domain| domain.remove(0))
+                    .or_insert_with(|| {
+                        let mut domain = Domain::unbounded_u8();
+                        domain.remove(0);
+                        domain
+                    });
+            }
         };
 
         let condition = graph.input_source_node(gamma.condition());
@@ -215,6 +238,28 @@ impl Pass for Dataflow {
         changed |= true_visitor.visit_graph(gamma.true_mut());
         changed |= false_visitor.visit_graph(gamma.false_mut());
 
+        // FIXME: Ensure that exactly one branch is empty
+        // FIXME: Ensure that executing the false branch with the true state is valid
+        if false
+        // true_visitor
+        //  .tape
+        //  .iter()
+        //  .map(|(domain, _)| domain)
+        //  .zip(false_visitor.tape.iter().map(|(domain, _)| domain))
+        //  .all(|(cell1, cell2)| cell1 == cell2)
+        {
+            tracing::trace!(gamma = ?gamma.node(), "inlining gamma false branch with a noop true branch");
+
+            // FIXME: Actually inline the body instead of sketchily setting the condition to true
+            let bool = graph.bool(false);
+            let condition = gamma.condition();
+
+            graph.remove_input_edges(condition);
+            graph.add_value_edge(bool.value(), condition);
+
+            changed = true;
+        }
+
         if changed {
             graph.replace_node(gamma.node(), gamma);
             self.changed();
@@ -279,7 +324,7 @@ impl Pass for Dataflow {
 
                         self.facts
                             .entry(output)
-                            .and_modify(|facts| *facts = Domain::exact_u8(0))
+                            .and_modify(|domain| *domain = Domain::exact_u8(0))
                             .or_insert_with(|| Domain::exact_u8(0));
                     }
 
@@ -388,10 +433,13 @@ impl Pass for Dataflow {
             let value_consts = self.constants.get(&value_src).cloned();
 
             let ptr = ptr.rem_euclid(self.tape.len() as i32) as usize;
-            self.tape[ptr] = (value_facts, value_consts);
+            self.tape[ptr] = (
+                value_facts.unwrap_or_else(Domain::unbounded_u8),
+                value_consts,
+            );
         } else {
             for cell in &mut self.tape {
-                *cell = (None, None);
+                *cell = (Domain::unbounded_u8(), None);
             }
         }
     }
@@ -407,76 +455,61 @@ impl Pass for Dataflow {
         {
             let ptr = ptr.rem_euclid(self.tape.len() as i32) as usize;
             let (loaded_facts, consts) = self.tape[ptr].clone();
+            facts = loaded_facts;
 
-            if let Some(loaded_facts) = loaded_facts {
-                facts = loaded_facts;
-            }
             if let Some(consts) = consts {
-                self.constants.insert(load.value(), consts);
+                self.constants.insert(load.output_value(), consts);
             }
         }
 
-        self.facts.insert(load.value(), facts);
+        self.facts.insert(load.output_value(), facts);
     }
 
     fn visit_input(&mut self, _graph: &mut Rvsdg, input: Input) {
         // Use an unknown byte value as the input value
-        self.facts.insert(input.value(), Domain::unbounded_u8());
+        self.facts
+            .insert(input.output_value(), Domain::unbounded_u8());
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValueSpace {
-    Int32,
-    Uint8,
-}
-
-#[derive(Debug, Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Domain {
     values: Ranges<i32>,
-    value_space: ValueSpace,
 }
 
 impl Domain {
     pub fn unbounded_i32() -> Self {
         Self {
             values: Ranges::full(),
-            value_space: ValueSpace::Int32,
         }
     }
 
     pub fn unbounded_u8() -> Self {
         Self {
             values: Ranges::from(u8::MIN as i32..=u8::MAX as i32),
-            value_space: ValueSpace::Uint8,
         }
     }
 
     pub fn exact_i32(value: i32) -> Self {
         Self {
             values: Ranges::from(value..=value),
-            value_space: ValueSpace::Int32,
         }
     }
 
     pub fn exact_u8(value: u8) -> Self {
         Self {
             values: Ranges::from(value as i32..=value as i32),
-            value_space: ValueSpace::Uint8,
         }
     }
 
     pub fn join(&self, other: &Self) -> Self {
-        debug_assert_eq!(
-            self.value_space, other.value_space,
-            "FIXME: combine value spaces",
-        );
-
         Self {
             values: self.values.clone().intersect(other.values.clone()),
-            // FIXME: combine value spaces
-            value_space: self.value_space,
         }
+    }
+
+    pub fn remove(&mut self, value: i32) {
+        self.values.remove(value);
     }
 
     pub fn exactly_zero(&self) -> bool {
@@ -506,6 +539,12 @@ impl Domain {
             .clone()
             .difference(other.values.clone())
             .is_empty()
+    }
+}
+
+impl Debug for Domain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.values, f)
     }
 }
 

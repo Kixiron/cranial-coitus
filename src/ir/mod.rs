@@ -705,6 +705,22 @@ pub enum AssignTag {
     OutputParam,
 }
 
+impl AssignTag {
+    /// Returns `true` if the assign tag is [`InputParam`].
+    ///
+    /// [`InputParam`]: AssignTag::InputParam
+    pub const fn is_input_param(&self) -> bool {
+        matches!(self, Self::InputParam(..))
+    }
+
+    /// Returns `true` if the assign tag is [`OutputParam`].
+    ///
+    /// [`OutputParam`]: AssignTag::OutputParam
+    pub const fn is_output_param(&self) -> bool {
+        matches!(self, Self::OutputParam)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Variance {
     Invariant,
@@ -1122,7 +1138,7 @@ impl From<Const> for Value {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Const {
     Int(i32),
-    Byte(u8),
+    U8(u8),
     Bool(bool),
 }
 
@@ -1134,7 +1150,7 @@ impl Const {
     pub fn convert_to_i32(&self) -> Option<i32> {
         match *self {
             Self::Int(int) => Some(int),
-            Self::Byte(byte) => Some(byte as i32),
+            Self::U8(byte) => Some(byte as i32),
             Self::Bool(bool) => Some(bool as i32),
         }
     }
@@ -1142,7 +1158,7 @@ impl Const {
     pub fn convert_to_u8(&self) -> Option<u8> {
         match *self {
             Self::Int(int) => Some(int.rem_euclid(u8::MAX as i32) as u8),
-            Self::Byte(byte) => Some(byte),
+            Self::U8(byte) => Some(byte),
             Self::Bool(bool) => Some(bool as u8),
         }
     }
@@ -1150,7 +1166,7 @@ impl Const {
     pub fn convert_to_u16(&self) -> Option<u16> {
         match *self {
             Self::Int(int) => Some(int.rem_euclid(u16::MAX as i32) as u16),
-            Self::Byte(byte) => Some(byte as u16),
+            Self::U8(byte) => Some(byte as u16),
             Self::Bool(bool) => Some(bool as u16),
         }
     }
@@ -1163,7 +1179,7 @@ impl Const {
         }
     }
 
-    pub fn as_int(&self) -> Option<i32> {
+    pub fn as_i32(&self) -> Option<i32> {
         if let Self::Int(int) = *self {
             Some(int)
         } else {
@@ -1178,7 +1194,7 @@ impl ops::Not for Const {
     fn not(self) -> Self::Output {
         match self {
             Self::Int(int) => Self::Int(!int),
-            Self::Byte(byte) => Self::Byte(!byte),
+            Self::U8(byte) => Self::U8(!byte),
             Self::Bool(bool) => Self::Bool(!bool),
         }
     }
@@ -1198,7 +1214,7 @@ impl ops::Neg for Const {
     fn neg(self) -> Self::Output {
         match self {
             Self::Int(int) => Self::Int(-int),
-            Self::Byte(byte) => Self::Int(-(byte as i32)),
+            Self::U8(byte) => Self::Int(-(byte as i32)),
             Self::Bool(_) => panic!("cannot negate bool"),
         }
     }
@@ -1218,9 +1234,9 @@ impl ops::Add for Const {
     fn add(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
             (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs + rhs),
-            (Self::Int(lhs), Self::Byte(rhs)) => Self::Int(lhs + rhs as i32),
-            (Self::Byte(lhs), Self::Int(rhs)) => Self::Int(lhs as i32 + rhs),
-            (Self::Byte(lhs), Self::Byte(rhs)) => Self::Byte(lhs.wrapping_add(rhs)),
+            (Self::Int(lhs), Self::U8(rhs)) => Self::Int(lhs + rhs as i32),
+            (Self::U8(lhs), Self::Int(rhs)) => Self::Int(lhs as i32 + rhs),
+            (Self::U8(lhs), Self::U8(rhs)) => Self::U8(lhs.wrapping_add(rhs)),
             (Self::Bool(_), _) | (_, Self::Bool(_)) => panic!("can't add booleans"),
         }
     }
@@ -1247,7 +1263,7 @@ impl Pretty for Const {
     {
         let text = match *self {
             Self::Int(int) => format!("int {}", int),
-            Self::Byte(byte) => format!("byte {}", byte),
+            Self::U8(byte) => format!("byte {}", byte),
             Self::Bool(boolean) => format!("bool {}", boolean),
         };
         allocator.text(text)
@@ -1257,6 +1273,12 @@ impl Pretty for Const {
 impl From<i32> for Const {
     fn from(int: i32) -> Self {
         Self::Int(int)
+    }
+}
+
+impl From<u8> for Const {
+    fn from(byte: u8) -> Self {
+        Self::U8(byte)
     }
 }
 
@@ -1270,7 +1292,7 @@ impl Display for Const {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::Int(int) => write!(f, "int {}", int),
-            Self::Byte(byte) => write!(f, "byte {}", byte),
+            Self::U8(byte) => write!(f, "byte {}", byte),
             Self::Bool(boolean) => write!(f, "bool {}", boolean),
         }
     }
@@ -1278,7 +1300,7 @@ impl Display for Const {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
-pub struct VarId(u32);
+pub struct VarId(pub u32);
 
 impl VarId {
     pub fn new(port: OutputPort) -> Self {

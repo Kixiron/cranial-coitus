@@ -277,37 +277,23 @@ impl Pass for ElimConstGamma {
                             theta.set_output_effect(inlined);
                         }
                     } else {
-                        for (input, kind) in node.inputs_mut() {
+                        node.update_inputs(|input, kind| {
                             let inlined = graph.input_port(node_id, kind);
+                            self.input_lookup
+                                .insert(input, vec![inlined])
+                                .debug_unwrap_none();
 
-                            let replaced = self.input_lookup.insert(*input, vec![inlined]);
-                            debug_assert!(
-                                replaced.is_none(),
-                                "replaced value {:?} for input port {:?} with {:?}",
-                                replaced,
-                                input,
-                                inlined,
-                            );
+                            Some(inlined)
+                        });
 
-                            *input = inlined;
-                        }
-
-                        for (output, kind) in node.outputs_mut() {
+                        node.update_outputs(|output, kind| {
                             let inlined = graph.output_port(node_id, kind);
+                            self.output_lookup
+                                .insert(output, inlined)
+                                .debug_unwrap_none();
 
-                            let replaced = self.output_lookup.insert(*output, inlined);
-                            debug_assert!(
-                                replaced.is_none() ,
-                                "replaced value {:?} for output port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
-                                replaced,
-                                output,
-                                inlined,
-                                self.input_lookup,
-                                self.output_lookup,
-                            );
-
-                            *output = inlined;
-                        }
+                            Some(inlined)
+                        });
                     }
 
                     graph.add_node(node_id, node);
@@ -555,37 +541,23 @@ impl Pass for ElimConstGamma {
                             theta.set_output_effect(inlined);
                         }
                     } else {
-                        for (input, kind) in node.inputs_mut() {
+                        node.update_inputs(|input, kind| {
                             let inlined = graph.input_port(node_id, kind);
+                            self.input_lookup
+                                .insert(input, vec![inlined])
+                                .debug_unwrap_none();
 
-                            let replaced = self.input_lookup.insert(*input, vec![inlined]);
-                            debug_assert!(
-                                replaced.is_none(),
-                                "replaced value {:?} for input port {:?} with {:?}",
-                                replaced,
-                                input,
-                                inlined,
-                            );
+                            Some(inlined)
+                        });
 
-                            *input = inlined;
-                        }
-
-                        for (output, kind) in node.outputs_mut() {
+                        node.update_outputs(|output, kind| {
                             let inlined = graph.output_port(node_id, kind);
+                            self.output_lookup
+                                .insert(output, inlined)
+                                .debug_unwrap_none();
 
-                            let replaced = self.output_lookup.insert(*output, inlined);
-                            debug_assert!(
-                                replaced.is_none() ,
-                                "replaced value {:?} for output port {:?} with {:?}\ninputs: {:?}\noutputs: {:?}",
-                                replaced,
-                                output,
-                                inlined,
-                                self.input_lookup,
-                                self.output_lookup,
-                            );
-
-                            *output = inlined;
-                        }
+                            Some(inlined)
+                        });
                     }
 
                     graph.add_node(node_id, node);

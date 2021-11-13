@@ -29,7 +29,7 @@ impl ConstFolding {
 
     fn operand(&self, graph: &Rvsdg, input: InputPort) -> (OutputPort, Option<i32>) {
         let source = graph.input_source(input);
-        let value = self.values.get(&source).and_then(Const::as_int);
+        let value = self.values.get(&source).and_then(Const::convert_to_i32);
 
         (source, value)
     }
@@ -69,7 +69,7 @@ impl Pass for ConstFolding {
 
             self.changed();
 
-            // If either side of the add is zero, we can remove the add entirely
+        // If either side of the add is zero, we can remove the add entirely
         } else if let [(_, Some(0)), (non_zero_value, None)]
         | [(non_zero_value, None), (_, Some(0))] = inputs
         {
@@ -156,7 +156,7 @@ impl Pass for ConstFolding {
             let inverted = match -value {
                 Const::Int(int) => graph.int(int).value(),
                 // FIXME: Do we need a byte node?
-                Const::Byte(byte) => graph.int(byte as i32).value(),
+                Const::U8(byte) => graph.int(byte as i32).value(),
                 Const::Bool(bool) => graph.bool(bool).value(),
             };
             self.values.remove(&neg.value());
@@ -267,8 +267,7 @@ impl Pass for ConstFolding {
             }
         }
 
-        visitor.visit_graph(theta.body_mut());
-        changed |= visitor.did_change();
+        changed |= visitor.visit_graph(theta.body_mut());
 
         if changed {
             graph.replace_node(theta.node(), theta);
@@ -283,6 +282,8 @@ impl Default for ConstFolding {
     }
 }
 
+// TODO: Make sure that constants are propagated into gammas and thetas
+//       as well as out of gammas
 test_opts! {
     constant_add,
     passes = [ConstFolding::new(), Dce::new()],
@@ -292,7 +293,7 @@ test_opts! {
         let rhs = graph.int(20);
         let sum = graph.add(lhs.value(), rhs.value());
 
-        graph.output(sum.value(), effect).effect()
+        graph.output(sum.value(), effect).output_effect()
     },
 }
 
@@ -305,7 +306,7 @@ test_opts! {
         let rhs = graph.int(-20);
         let sum = graph.add(lhs.value(), rhs.value());
 
-        graph.output(sum.value(), effect).effect()
+        graph.output(sum.value(), effect).output_effect()
     },
 }
 
@@ -324,6 +325,6 @@ test_opts! {
         let eq3 = graph.eq(f.value(), eq2.value());
         let not3 = graph.not(eq3.value());
 
-        graph.output(not3.value(), effect).effect()
+        graph.output(not3.value(), effect).output_effect()
     },
 }

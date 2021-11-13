@@ -92,7 +92,6 @@ impl Dce {
                                     );
 
                                     let index = idx - offset;
-                                    dbg!(index, idx, offset);
                                     gamma.inputs_mut().remove(index);
                                     gamma.input_params_mut().remove(index);
 

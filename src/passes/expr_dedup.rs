@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Bool, Gamma, InputParam, Int, NodeExt, OutputPort, Rvsdg, Theta},
+    graph::{Bool, Gamma, InputParam, Int, Load, NodeExt, OutputPort, Rvsdg, Theta},
     ir::Const,
     passes::Pass,
     utils::{AssertNone, HashMap},
@@ -10,6 +10,7 @@ pub struct ExprDedup {
     constants: HashMap<OutputPort, Const>,
     // union_find: UnionFind,
     changed: bool,
+    deduplicated_loads: usize,
 }
 
 impl ExprDedup {
@@ -18,6 +19,7 @@ impl ExprDedup {
             constants: HashMap::with_hasher(Default::default()),
             // union_find: UnionFind::new(),
             changed: false,
+            deduplicated_loads: 0,
         }
     }
 
@@ -25,16 +27,16 @@ impl ExprDedup {
         self.changed = true;
     }
 
-    // TODO: Finish implementing egraph deduplication
-    // fn add(&mut self, node: Node) -> Unioned {
-    //     todo!()
-    // }
+    // TODO: Finish union find deduplication
+    //  fn add(&mut self, node: Node) -> Unioned {
+    //      todo!()
+    //  }
     //
-    // fn lookup(&mut self, node: &mut Node) -> Option<Unioned> {
-    //     self.changed |= node.update_inputs(|input| {
+    //  fn lookup(&mut self, node: &mut Node) -> Option<Unioned> {
+    //      self.changed |= node.update_inputs(|input, _kind| {
     //
-    //     });
-    // }
+    //      });
+    //  }
 }
 
 // TODO: Use a union-find to deduplicate all expressions
@@ -51,6 +53,14 @@ impl Pass for ExprDedup {
     fn reset(&mut self) {
         self.constants.clear();
         self.changed = false;
+    }
+
+    fn report(&self) {
+        tracing::info!(
+            "{} removed {} duplicate loads",
+            self.pass_name(),
+            self.deduplicated_loads,
+        );
     }
 
     fn visit_bool(&mut self, graph: &mut Rvsdg, bool: Bool, value: bool) {
@@ -87,11 +97,41 @@ impl Pass for ExprDedup {
         }
     }
 
+    fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
+        let _: Option<()> = try {
+            let next_load = graph.get_output(load.output_effect())?.0.as_load()?;
+
+            let current_ptr = graph.input_source(load.ptr());
+            let next_ptr = graph.input_source(next_load.ptr());
+
+            // If we see a situation like
+            // ```
+            // x := load ptr
+            // y := load ptr
+            // ```
+            // we can remove the second load and replace it with the first
+            if current_ptr == next_ptr {
+                tracing::trace!(
+                    current_load = ?load,
+                    next_load = ?next_load,
+                    ptr = ?current_ptr,
+                    "deduplicated two loads of the same address",
+                );
+
+                graph.rewire_dependents(next_load.output_value(), load.output_value());
+                graph.remove_node(next_load.node());
+
+                self.deduplicated_loads += 1;
+                self.changed();
+            }
+        };
+    }
+
     fn visit_int(&mut self, graph: &mut Rvsdg, int: Int, value: i32) {
         if let Some((&const_id, _)) = self
             .constants
             .iter()
-            .find(|&(_, known)| known.as_int().map_or(false, |known| known == value))
+            .find(|&(_, known)| known.convert_to_i32().map_or(false, |known| known == value))
         {
             let existing_const = graph.get_node(graph.port_parent(const_id));
             let (const_id, const_value) = existing_const.as_int().map_or_else(
@@ -165,7 +205,7 @@ impl Pass for ExprDedup {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (input, param) in theta.input_pairs() {
+        for (input, param) in theta.invariant_input_pairs() {
             if let Some(constant) = self.constants.get(&graph.input_source(input)).cloned() {
                 visitor
                     .constants

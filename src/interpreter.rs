@@ -3,43 +3,55 @@ use crate::{
         Add, Assign, AssignTag, Block, Call, Const, Eq, Expr, Gamma, Instruction, Load, Neg, Not,
         Store, Theta, Value, VarId, Variance,
     },
-    utils::{AssertNone, HashMap},
+    utils::AssertNone,
+};
+use std::{
+    collections::BTreeMap,
+    ops::{Neg as _, Not as _},
 };
 
-type Result<T> = std::result::Result<T, StepLimitReached>;
+type Result<T> = std::result::Result<T, EvaluationError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StepLimitReached;
+pub enum EvaluationError {
+    StepLimitReached,
+    UnknownCellRead,
+}
 
-pub struct Machine<'a> {
-    tape: Vec<u8>,
-    values: HashMap<VarId, Const>,
-    input: Box<dyn FnMut() -> u8 + 'a>,
-    output: Box<dyn FnMut(u8) + 'a>,
+pub struct Machine<I, O> {
+    pub tape: Vec<Option<u8>>,
+    pub values: Vec<BTreeMap<VarId, Const>>,
+    pub values_idx: usize,
+    input: I,
+    output: O,
     step_limit: usize,
     steps: usize,
     // TODO: Track and display per-instruction stats
     pub stats: ExecutionStats,
 }
 
-impl<'a> Machine<'a> {
-    pub fn new<I, O>(step_limit: usize, length: usize, input: I, output: O) -> Self
-    where
-        I: FnMut() -> u8 + 'a,
-        O: FnMut(u8) + 'a,
-    {
+impl<I, O> Machine<I, O>
+where
+    I: FnMut() -> u8,
+    O: FnMut(u8),
+{
+    pub fn new(step_limit: usize, length: usize, input: I, output: O) -> Self {
+        let mut values = Vec::with_capacity(64);
+        values.push(BTreeMap::new());
+
         Self {
-            tape: vec![0; length],
-            values: HashMap::with_capacity_and_hasher(2048, Default::default()),
-            input: Box::new(input),
-            output: Box::new(output),
+            tape: vec![Some(0); length],
+            values,
+            values_idx: 0,
+            input,
+            output,
             step_limit,
             steps: 0,
             stats: ExecutionStats::new(),
         }
     }
 
-    pub fn execute(&mut self, block: &mut Block, should_profile: bool) -> Result<&[u8]> {
+    pub fn execute(&mut self, block: &mut Block, should_profile: bool) -> Result<&[Option<u8>]> {
         for inst in block.iter_mut() {
             self.handle(inst, should_profile)?;
         }
@@ -61,11 +73,11 @@ impl<'a> Machine<'a> {
         }
 
         match inst {
-            Instruction::Call(call) => self.call(call, should_profile).debug_unwrap_none(),
-            Instruction::Assign(assign) => self.assign(assign, should_profile),
+            Instruction::Call(call) => self.call(call, should_profile)?.debug_unwrap_none(),
+            Instruction::Assign(assign) => self.assign(assign, should_profile)?,
             Instruction::Theta(theta) => self.theta(theta, should_profile)?,
             Instruction::Gamma(gamma) => self.gamma(gamma, should_profile)?,
-            Instruction::Store(store) => self.store(store, should_profile),
+            Instruction::Store(store) => self.store(store, should_profile)?,
         }
 
         if self.steps >= self.step_limit {
@@ -90,7 +102,7 @@ impl<'a> Machine<'a> {
                 }
             }
 
-            Err(StepLimitReached)
+            Err(EvaluationError::StepLimitReached)
         } else {
             let is_var_assign = matches!(
                 inst,
@@ -109,21 +121,21 @@ impl<'a> Machine<'a> {
         }
     }
 
-    fn eval(&mut self, expr: &mut Expr, should_profile: bool) -> Const {
+    fn eval(&mut self, expr: &mut Expr, should_profile: bool) -> Result<Const> {
         match expr {
             Expr::Eq(eq) => self.eq(eq),
             Expr::Add(add) => self.add(add),
             Expr::Not(not) => self.not(not),
             Expr::Neg(neg) => self.neg(neg),
-            Expr::Value(value) => self.get_const(value).clone(),
+            Expr::Value(value) => self.get_const(value).cloned(),
             Expr::Load(load) => self.load(load),
-            Expr::Call(call) => self
-                .call(call, should_profile)
-                .expect("expected a call that produces output"),
+            Expr::Call(call) => Ok(self
+                .call(call, should_profile)?
+                .expect("expected a call that produces output")),
         }
     }
 
-    fn call(&mut self, call: &mut Call, should_profile: bool) -> Option<Const> {
+    fn call(&mut self, call: &mut Call, should_profile: bool) -> Result<Option<Const>> {
         if should_profile {
             call.invocations += 1;
         }
@@ -136,7 +148,7 @@ impl<'a> Machine<'a> {
                     panic!("expected zero args for input call")
                 }
 
-                Some(Const::Byte((self.input)()))
+                Ok(Some(Const::U8((self.input)())))
             }
 
             "output" => {
@@ -145,30 +157,62 @@ impl<'a> Machine<'a> {
                 let [value]: &[Value; 1] = (&*call.args)
                     .try_into()
                     .expect("expected one arg for output call");
-                let byte = self.get_byte(value);
+                let byte = self.get_byte(value)?;
 
                 (self.output)(byte);
 
-                None
+                Ok(None)
             }
 
             other => panic!("unrecognized function {:?}", other),
         }
     }
 
-    fn assign(&mut self, assign: &mut Assign, should_profile: bool) {
+    fn assign(&mut self, assign: &mut Assign, should_profile: bool) -> Result<()> {
         if should_profile {
             assign.invocations += 1;
         }
 
-        let value = self.eval(&mut assign.value, should_profile);
-        tracing::trace!("assigned {:?} to {}", value, assign.var);
+        if assign.tag.is_input_param() {
+            self.values_idx -= 1;
+        }
 
-        // Note: Double inserts are allowed here because of loops
-        self.values.insert(assign.var, value);
+        tracing::trace!(
+            ?assign,
+            values_idx = self.values_idx,
+            values = ?self.values[self.values_idx],
+            "getting assign value for input param",
+        );
+        let value = self.eval(&mut assign.value, should_profile)?;
+
+        if assign.tag.is_input_param() {
+            self.values_idx += 1;
+        }
+
+        self.values[self.values_idx]
+            .insert(assign.var, value.clone())
+            .debug_unwrap_none();
+
+        if assign.tag.is_output_param() {
+            self.values[self.values_idx - 1].insert(assign.var, value.clone());
+        }
+
+        tracing::trace!(
+            values_idx = self.values_idx,
+            values = ?self.values[self.values_idx],
+            ?assign,
+            "assigned {:?} to {}",
+            value,
+            assign.var,
+        );
+
+        Ok(())
     }
 
     fn theta(&mut self, theta: &mut Theta, should_profile: bool) -> Result<()> {
+        self.values.push(BTreeMap::new());
+        self.values_idx += 1;
+
         let mut iter = 0;
         loop {
             self.stats.loop_iterations += 1;
@@ -188,8 +232,7 @@ impl<'a> Machine<'a> {
                     && matches!(
                         inst,
                         Instruction::Assign(Assign {
-                            tag: AssignTag::InputParam(Variance::Variant { .. })
-                                | AssignTag::InputParam(Variance::Invariant),
+                            tag: AssignTag::InputParam(Variance::Variant { .. }),
                             ..
                         })
                     )
@@ -218,7 +261,7 @@ impl<'a> Machine<'a> {
             }
 
             let cond = theta.cond.as_ref().expect("expected a theta condition");
-            let should_break = !self.get_bool(cond);
+            let should_break = self.get_bool(cond)?.not();
             tracing::trace!(
                 "theta condition: {}, iteration: {}, value: {:?}",
                 should_break,
@@ -227,46 +270,48 @@ impl<'a> Machine<'a> {
             );
 
             if should_break {
-                for (&output, value) in &theta.outputs {
-                    self.values.insert(output, self.get_const(value).clone());
-                }
+                self.values.pop().debug_unwrap();
+                self.values_idx -= 1;
 
                 tracing::trace!(
+                    values_idx = self.values_idx,
                     values = ?theta
                         .outputs
                         .iter()
-                        .map(|(output, value)| (output, self.get_const(value)))
-                        .collect::<HashMap<_, _>>(),
+                        .map(|(output, _value)| (output, &self.values[self.values_idx][output]))
+                        .collect::<BTreeMap<_, _>>(),
                     "theta output values",
                 );
 
                 break;
-            }
+            } else {
+                let mut values_buffer = BTreeMap::new();
+                for (output, value) in &theta.outputs {
+                    let input_var = theta.output_feedback[output];
+                    let feedback_value = self.get_const(value)?.clone();
 
-            for (output, value) in &theta.outputs {
-                let input_var = theta.output_feedback[output];
-                let feedback_value = self.get_const(value).clone();
+                    tracing::trace!(
+                        values_idx = self.values_idx,
+                        "feeding back {:?} from {:?} to {:?}",
+                        feedback_value,
+                        output,
+                        input_var,
+                    );
 
-                let old_value = self.values.insert(input_var, feedback_value.clone());
+                    values_buffer
+                        .insert(input_var, feedback_value)
+                        .debug_unwrap_none();
+                }
+                self.values[self.values_idx] = values_buffer;
+
                 tracing::trace!(
-                    ?old_value,
-                    "feeding back {:?} from {:?} to {:?}",
-                    feedback_value,
-                    output,
-                    input_var,
+                    values_idx = self.values_idx,
+                    values = ?self.values[self.values_idx],
+                    "theta feedback values",
                 );
+
+                iter += 1;
             }
-
-            tracing::trace!(
-                values = ?theta
-                    .outputs
-                    .iter()
-                    .map(|(output, value)| (theta.output_feedback[output], (output, self.get_const(value))))
-                    .collect::<HashMap<_, _>>(),
-                "theta feedback values",
-            );
-
-            iter += 1;
         }
 
         Ok(())
@@ -275,7 +320,11 @@ impl<'a> Machine<'a> {
     fn gamma(&mut self, gamma: &mut Gamma, should_profile: bool) -> Result<()> {
         self.stats.branches += 1;
 
-        let cond = self.get_bool(&gamma.cond);
+        let cond = self.get_bool(&gamma.cond)?;
+
+        self.values.push(BTreeMap::new());
+        self.values_idx += 1;
+
         let branch = if cond {
             if should_profile {
                 gamma.true_branches += 1;
@@ -294,38 +343,45 @@ impl<'a> Machine<'a> {
             self.handle(inst, should_profile)?;
         }
 
+        self.values.pop().debug_unwrap();
+        self.values_idx -= 1;
+
         Ok(())
     }
 
-    fn store(&mut self, store: &mut Store, should_profile: bool) {
+    fn store(&mut self, store: &mut Store, should_profile: bool) -> Result<()> {
         self.stats.stores += 1;
         if should_profile {
             store.stores += 1;
         }
 
-        let ptr = self.get_ptr(&store.ptr);
-        let value = self.get_byte(&store.value);
+        let ptr = self.get_ptr(&store.ptr)?;
+        let value = self.get_byte(&store.value)?;
         tracing::trace!(
-            "stored {} to {} (previous value: {})",
+            "stored {} to {} (previous value: {:?})",
             ptr,
             value,
             self.tape[ptr],
         );
 
-        self.tape[ptr] = value;
+        self.tape[ptr] = Some(value);
+
+        Ok(())
     }
 
-    fn load(&mut self, load: &Load) -> Const {
+    fn load(&mut self, load: &Load) -> Result<Const> {
         self.stats.loads += 1;
 
-        let ptr = self.get_ptr(&load.ptr);
-        tracing::trace!("loaded {} from {}", self.tape[ptr], ptr);
+        let ptr = self.get_ptr(&load.ptr)?;
+        tracing::trace!("loaded {:?} from {}", self.tape[ptr], ptr);
 
-        Const::Byte(self.tape[ptr])
+        self.tape[ptr]
+            .ok_or(EvaluationError::UnknownCellRead)
+            .map(Const::U8)
     }
 
-    fn eq(&self, eq: &Eq) -> Const {
-        let (lhs, rhs) = (self.get_byte(&eq.lhs), self.get_byte(&eq.rhs));
+    fn eq(&self, eq: &Eq) -> Result<Const> {
+        let (lhs, rhs) = (self.get_byte(&eq.lhs)?, self.get_byte(&eq.rhs)?);
         tracing::trace!(
             lhs = ?self.get_const(&eq.lhs),
             rhs = ?self.get_const(&eq.rhs),
@@ -335,56 +391,59 @@ impl<'a> Machine<'a> {
             lhs == rhs,
         );
 
-        Const::Bool(lhs == rhs)
+        Ok(Const::Bool(lhs == rhs))
     }
 
-    fn add(&self, add: &Add) -> Const {
-        let (lhs, rhs) = (self.get_const(&add.lhs), self.get_const(&add.rhs));
-        lhs + rhs
+    fn add(&self, add: &Add) -> Result<Const> {
+        tracing::trace!(values = ?self.values[self.values_idx]);
+
+        let (lhs, rhs) = (self.get_const(&add.lhs)?, self.get_const(&add.rhs)?);
+        Ok(lhs + rhs)
     }
 
-    fn not(&self, not: &Not) -> Const {
-        !self.get_const(&not.value)
+    fn not(&self, not: &Not) -> Result<Const> {
+        Ok(self.get_const(&not.value)?.not())
     }
 
-    fn neg(&self, neg: &Neg) -> Const {
-        -self.get_const(&neg.value)
+    fn neg(&self, neg: &Neg) -> Result<Const> {
+        Ok(self.get_const(&neg.value)?.neg())
     }
 
-    fn get_const<'b>(&'a self, value: &'b Value) -> &'b Const
+    fn get_const<'a, 'b>(&'a self, value: &'b Value) -> Result<&'b Const>
     where
         'a: 'b,
     {
         match value {
-            Value::Var(var) => self
-                .values
+            Value::Var(var) => Ok(self.values[self.values_idx]
                 .get(var)
-                .unwrap_or_else(|| panic!("expected a value for the given variable {:?}", var)),
-            Value::Const(constant) => constant,
-            Value::Missing => panic!("expected a value, got missing"),
+                .unwrap_or_else(|| panic!("expected a value for the given variable {:?}", var))),
+            Value::Const(constant) => Ok(constant),
+            Value::Missing => Err(EvaluationError::UnknownCellRead),
         }
     }
 
-    fn get_byte(&self, value: &Value) -> u8 {
-        self.get_const(value)
+    fn get_byte(&self, value: &Value) -> Result<u8> {
+        Ok(self
+            .get_const(value)?
             .convert_to_u8()
-            .expect("expected a u8-convertible constant")
+            .expect("expected a u8-convertible constant"))
     }
 
-    fn get_ptr(&self, value: &Value) -> usize {
+    fn get_ptr(&self, value: &Value) -> Result<usize> {
         let ptr = self
-            .get_const(value)
+            .get_const(value)?
             .convert_to_i32()
             .expect("expected an i32-convertible constant") as usize;
 
         // We have to wrap the pointer into the tape's address space
-        ptr.rem_euclid(self.tape.len()) as usize
+        Ok(ptr.rem_euclid(self.tape.len()) as usize)
     }
 
-    fn get_bool(&self, value: &Value) -> bool {
-        self.get_const(value)
+    fn get_bool(&self, value: &Value) -> Result<bool> {
+        Ok(self
+            .get_const(value)?
             .as_bool()
-            .expect("expected a boolean constant")
+            .expect("expected a boolean constant"))
     }
 }
 

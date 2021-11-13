@@ -1,10 +1,12 @@
 use crate::{
+    args::Args,
     graph::Rvsdg,
-    interpreter::{ExecutionStats, Machine, StepLimitReached},
+    interpreter::{EvaluationError, ExecutionStats, Machine},
     ir::{Block, IrBuilder, Pretty},
     lower_tokens,
     parse::{self, Token},
-    utils::PerfEvent,
+    passes,
+    utils::{HashSet, PerfEvent},
 };
 use anyhow::{Context, Result};
 use std::{
@@ -12,11 +14,145 @@ use std::{
     fs,
     io::{self, Read, Write},
     path::Path,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
+#[tracing::instrument(skip(args))]
+pub fn debugger(args: &Args, file: &Path, start_time: Instant) -> Result<()> {
+    let cells = args.cells as usize;
+    let step_limit = args.step_limit.unwrap_or(usize::MAX);
+
+    let source = fs::read_to_string(file).expect("failed to read file");
+    let tokens = parse_source(file, &source);
+
+    let mut graph = build_graph(tokens);
+    run_opt_passes(
+        &mut graph,
+        cells,
+        args.iteration_limit.unwrap_or(usize::MAX),
+    );
+
+    let ir = IrBuilder::new(args.inline_constants)
+        .translate(&graph)
+        .pretty_print(None);
+
+    debugger_tui(cells, &ir)?;
+
+    Ok(())
+}
+
 #[tracing::instrument(skip_all)]
-pub fn build_graph(tokens: &[Token]) -> Rvsdg {
+pub fn run_opt_passes(graph: &mut Rvsdg, cells: usize, iteration_limit: usize) -> usize {
+    let mut passes = passes::default_passes(cells);
+    let (mut pass_num, mut stack, mut visited, mut buffer) = (
+        1,
+        VecDeque::new(),
+        HashSet::with_hasher(Default::default()),
+        Vec::new(),
+    );
+
+    loop {
+        let mut changed = false;
+
+        for (pass_idx, pass) in passes.iter_mut().enumerate() {
+            let span = tracing::info_span!("pass", pass = pass.pass_name());
+            span.in_scope(|| {
+                tracing::info!(
+                    "running {} (pass #{}.{})",
+                    pass.pass_name(),
+                    pass_num,
+                    pass_idx,
+                );
+
+                let event = PerfEvent::new(pass.pass_name());
+                changed |= pass.visit_graph_inner(graph, &mut stack, &mut visited, &mut buffer);
+                let elapsed = event.finish();
+
+                tracing::info!(
+                    "finished running {} in {:#?} (pass #{}.{}, {})",
+                    pass.pass_name(),
+                    elapsed,
+                    pass_num,
+                    pass_idx,
+                    if pass.did_change() {
+                        "changed"
+                    } else {
+                        "didn't change"
+                    },
+                );
+
+                pass.reset();
+                stack.clear();
+            });
+        }
+
+        pass_num += 1;
+        if !changed || pass_num >= iteration_limit {
+            break;
+        }
+    }
+
+    for pass in &passes {
+        pass.report();
+    }
+
+    pass_num
+}
+
+pub fn debugger_tui(cell_len: usize, program: &str) -> Result<()> {
+    use tui::{
+        backend::CrosstermBackend,
+        layout::{Alignment, Constraint, Direction, Layout},
+        text::Text,
+        widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
+        Terminal,
+    };
+
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend).context("failed to create terminal instance")?;
+    terminal.clear().context("failed to clear terminal")?;
+
+    terminal
+        .draw(|frame| {
+            let frame_size = frame.size();
+
+            let [tape_size, program_size]: [_; 2] = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
+                .split(frame_size)
+                .try_into()
+                .expect("layout split into three chunks");
+
+            let tape = Table::new(vec![Row::new(
+                (0..20).map(|_| Cell::from("0x00")).collect::<Vec<_>>(),
+            )])
+            .widths(&[Constraint::Percentage(100)])
+            .column_spacing(0);
+            frame.render_widget(tape, tape_size);
+
+            let program = Paragraph::new(Text::raw(program))
+                .alignment(Alignment::Left)
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .title_alignment(Alignment::Left)
+                        .borders(Borders::ALL),
+                );
+            frame.render_widget(program, program_size);
+        })
+        .context("failed to draw frame")?;
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn build_graph<T>(tokens: T) -> Rvsdg
+where
+    T: AsRef<[Token]>,
+{
+    let tokens = tokens.as_ref();
+
     tracing::info!(total_tokens = tokens.len(), "started building rvsdg");
     let event = PerfEvent::new("build-graph");
 
@@ -69,7 +205,12 @@ pub fn execute<I, O>(
     output: O,
     should_profile: bool,
     program: &mut Block,
-) -> (Result<(), StepLimitReached>, ExecutionStats, Duration)
+) -> (
+    Result<(), EvaluationError>,
+    Vec<u8>,
+    ExecutionStats,
+    Duration,
+)
 where
     I: FnMut() -> u8,
     O: FnMut(u8),
@@ -89,37 +230,44 @@ where
         elapsed,
     );
 
-    (result, machine.stats, elapsed)
+    let tape = machine
+        .tape
+        .iter()
+        .map(|value| value.unwrap_or(0))
+        .collect();
+
+    (result, tape, machine.stats, elapsed)
 }
 
 #[tracing::instrument(skip(graph))]
 pub fn sequentialize_graph(
+    args: &Args,
     graph: &Rvsdg,
     dump_dir: Option<&Path>,
     total_instructions: Option<usize>,
 ) -> Result<(Block, String)> {
     // Sequentialize the graph into serial instructions
     let program = {
-        tracing::info!("started sequentializing graph");
+        tracing::debug!("started sequentializing graph");
         let event = PerfEvent::new("sequentializing-graph");
 
-        let sequential_code = IrBuilder::new().translate(graph);
+        let sequential_code = IrBuilder::new(args.inline_constants).translate(graph);
 
         let elapsed = event.finish();
-        tracing::info!("finished sequentializing graph in {:#?}", elapsed);
+        tracing::debug!("finished sequentializing graph in {:#?}", elapsed);
 
         sequential_code
     };
 
     // Pretty print the IR
     let program_ir = {
-        tracing::info!("started pretty printing sequentialized graph");
+        tracing::debug!("started pretty printing sequentialized graph");
         let event = PerfEvent::new("pretty-printing-sequentialized-graph");
 
         let pretty_printed = program.pretty_print(total_instructions);
 
         let elapsed = event.finish();
-        tracing::info!(
+        tracing::debug!(
             "finished pretty printing sequentialized graph in {:#?}",
             elapsed,
         );

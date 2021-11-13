@@ -1,18 +1,69 @@
+use atty::Stream;
+use similar::{Algorithm, TextDiff};
+use std::{
+    collections::BTreeSet,
+    fmt::{self, Debug},
+    hash::{BuildHasherDefault, Hash},
+    time::{Duration, Instant},
+};
+use tracing_subscriber::{
+    fmt as tracing_fmt, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
+    EnvFilter,
+};
+use xxhash_rust::xxh3::Xxh3;
+
+#[cfg(test)]
 use crate::{
     graph::{OutputPort, Rvsdg},
     lower_tokens, parse,
 };
-use similar::{Algorithm, TextDiff};
-use std::{
-    collections::BTreeSet,
-    fmt::Debug,
-    hash::{BuildHasherDefault, Hash},
-    time::{Duration, Instant},
-};
-use xxhash_rust::xxh3::Xxh3;
 
 pub type HashSet<K> = std::collections::HashSet<K, BuildHasherDefault<Xxh3>>;
 pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<Xxh3>>;
+
+pub(crate) enum Element<T> {
+    Single(T),
+    Many(T, usize, usize),
+}
+
+impl<T> Debug for Element<T>
+where
+    T: Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Element::Single(elem) => Debug::fmt(elem, f),
+            Element::Many(elem, start, len) => {
+                write!(f, "{:?}... ({}..{})", elem, start, start + len)
+            }
+        }
+    }
+}
+
+pub(crate) fn debug_collapse<T>(elements: &[T]) -> Vec<Element<T>>
+where
+    T: Copy + PartialEq,
+{
+    let (mut idx, mut output) = (0, Vec::with_capacity(elements.len()));
+
+    while idx < elements.len() {
+        let similar = elements[idx..]
+            .iter()
+            .take_while(|&elem| elem == &elements[idx]);
+
+        let len = similar.count();
+
+        if len >= 5 {
+            output.push(Element::Many(elements[idx], idx, len));
+            idx += len;
+        } else {
+            output.push(Element::Single(elements[idx]));
+            idx += 1;
+        }
+    }
+
+    output
+}
 
 pub fn percent_total(total: usize, subset: usize) -> f64 {
     let diff = (subset as f64 * 100.0) / total as f64;
@@ -69,6 +120,7 @@ impl Drop for PerfEvent {
     }
 }
 
+#[cfg(test)]
 pub fn compile_brainfuck_into(
     source: &str,
     graph: &mut Rvsdg,
@@ -208,6 +260,41 @@ fn panic_none_with_message(value: &dyn Debug, message: &str) -> ! {
     )
 }
 
+pub(crate) fn set_logger() {
+    let fmt_layer = tracing_fmt::layer()
+        .with_target(false)
+        // .with_timer(time::uptime())
+        .without_time()
+        // Don't use ansi codes if we're not printing to a console
+        .with_ansi(atty::is(Stream::Stdout));
+
+    let filter_layer = EnvFilter::try_from_env("COITUS_LOG")
+        .or_else(|_| EnvFilter::try_new("info"))
+        .unwrap();
+
+    let registry = tracing_subscriber::registry().with(filter_layer);
+    let _ = if cfg!(test) {
+        // Use a logger that'll be captured by libtest if we're running
+        // under a test harness
+        registry.with(fmt_layer.with_test_writer()).try_init()
+    } else {
+        registry.with(fmt_layer).try_init()
+    };
+}
+
+#[macro_export]
+macro_rules! bvec {
+    () => { ::std::collections::Vec::new() };
+
+    ($elem:expr; $n:expr) => {{
+        ::std::vec![::std::boxed::Box::new($elem); $n]
+    }};
+
+    ($($x:expr),+ $(,)?) => {{
+        ::std::vec![$(::std::boxed::Box::new($x),)+]
+    }};
+}
+
 #[macro_export]
 macro_rules! vec_deque {
     () => { ::std::collections::VecDeque::new() };
@@ -246,7 +333,7 @@ macro_rules! test_opts {
         #[test]
         fn $name() {
             #[allow(unused_imports)]
-            use crate::{
+            use $crate::{
                 graph::{Rvsdg, OutputPort, ThetaData, GammaData},
                 interpreter::Machine,
                 ir::{IrBuilder, Pretty},
@@ -255,7 +342,7 @@ macro_rules! test_opts {
             };
             use std::collections::VecDeque;
 
-            crate::set_logger();
+            $crate::utils::set_logger();
 
             let tape_size: usize = $crate::test_opts!(@tape_size $($tape_size)?);
             let step_limit: usize = $crate::test_opts!(@step_limit $($step_limit)?);
@@ -281,7 +368,7 @@ macro_rules! test_opts {
                 };
                 let output_func = |byte| unoptimized_output.push(byte);
 
-                let mut unoptimized_graph_ir = IrBuilder::new().translate(&graph);
+                let mut unoptimized_graph_ir = IrBuilder::new(false).translate(&graph);
                 let unoptimized_text = unoptimized_graph_ir.pretty_print(None);
 
                 let mut machine = Machine::new(step_limit, tape_size, input_func, output_func);
@@ -342,7 +429,7 @@ macro_rules! test_opts {
                 };
                 let output_func = |byte| optimized_output.push(byte);
 
-                let mut optimized_graph_ir = IrBuilder::new().translate(&graph);
+                let mut optimized_graph_ir = IrBuilder::new(false).translate(&graph);
                 let optimized_text = optimized_graph_ir.pretty_print(None);
 
                 let mut machine = Machine::new(step_limit, tape_size, input_func, output_func);

@@ -1,14 +1,19 @@
-use crate::graph::{EdgeCount, EdgeDescriptor, EdgeKind, InputPort, NodeExt, NodeId, OutputPort};
+//! Nodes inherent to the structure of the graph
+
+use crate::graph::{
+    nodes::node_ext::{InputPortKinds, OutputPortKinds},
+    EdgeCount, EdgeDescriptor, EdgeKind, InputPort, NodeExt, NodeId, OutputPort,
+};
 use tinyvec::{tiny_vec, TinyVec};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Start {
     node: NodeId,
-    pub(super) effect: OutputPort,
+    effect: OutputPort,
 }
 
 impl Start {
-    pub(super) const fn new(node: NodeId, effect: OutputPort) -> Self {
+    pub(in crate::graph) const fn new(node: NodeId, effect: OutputPort) -> Self {
         Self { node, effect }
     }
 
@@ -34,6 +39,10 @@ impl NodeExt for Start {
         TinyVec::new()
     }
 
+    fn all_input_port_kinds(&self) -> InputPortKinds {
+        TinyVec::new()
+    }
+
     fn update_input(&mut self, from: InputPort, to: InputPort) {
         tracing::trace!(
             node = ?self.node,
@@ -49,16 +58,28 @@ impl NodeExt for Start {
     fn all_output_ports(&self) -> TinyVec<[OutputPort; 4]> {
         tiny_vec![self.effect]
     }
+
+    fn all_output_port_kinds(&self) -> OutputPortKinds {
+        tiny_vec! {
+            [_; 4] => (self.effect, EdgeKind::Effect),
+        }
+    }
+
+    fn update_output(&mut self, from: OutputPort, to: OutputPort) {
+        if self.effect == from {
+            self.effect = to;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct End {
     node: NodeId,
-    pub(super) input_effect: InputPort,
+    input_effect: InputPort,
 }
 
 impl End {
-    pub(super) const fn new(node: NodeId, input_effect: InputPort) -> Self {
+    pub(in crate::graph) const fn new(node: NodeId, input_effect: InputPort) -> Self {
         Self { node, input_effect }
     }
 
@@ -82,6 +103,12 @@ impl NodeExt for End {
 
     fn all_input_ports(&self) -> TinyVec<[InputPort; 4]> {
         tiny_vec![self.input_effect]
+    }
+
+    fn all_input_port_kinds(&self) -> InputPortKinds {
+        tiny_vec! {
+            [_; 4] => (self.input_effect, EdgeKind::Effect),
+        }
     }
 
     fn update_input(&mut self, from: InputPort, to: InputPort) {
@@ -109,17 +136,25 @@ impl NodeExt for End {
     fn all_output_ports(&self) -> TinyVec<[OutputPort; 4]> {
         TinyVec::new()
     }
+
+    fn all_output_port_kinds(&self) -> OutputPortKinds {
+        TinyVec::new()
+    }
+
+    fn update_output(&mut self, _from: OutputPort, _to: OutputPort) {
+        // TODO: Should this panic or warn?
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InputParam {
     node: NodeId,
-    pub(super) output: OutputPort,
-    pub(super) kind: EdgeKind,
+    output: OutputPort,
+    kind: EdgeKind,
 }
 
 impl InputParam {
-    pub(super) const fn new(node: NodeId, output: OutputPort, kind: EdgeKind) -> Self {
+    pub(in crate::graph) const fn new(node: NodeId, output: OutputPort, kind: EdgeKind) -> Self {
         Self { node, output, kind }
     }
 
@@ -145,6 +180,10 @@ impl NodeExt for InputParam {
         TinyVec::new()
     }
 
+    fn all_input_port_kinds(&self) -> InputPortKinds {
+        TinyVec::new()
+    }
+
     fn update_input(&mut self, from: InputPort, to: InputPort) {
         tracing::trace!(
             node = ?self.node,
@@ -155,25 +194,37 @@ impl NodeExt for InputParam {
 
     fn output_desc(&self) -> EdgeDescriptor {
         match self.kind {
-            EdgeKind::Effect => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
-            EdgeKind::Value => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
+            EdgeKind::Effect => EdgeDescriptor::from_effects(1),
+            EdgeKind::Value => EdgeDescriptor::from_values(1),
         }
     }
 
     fn all_output_ports(&self) -> TinyVec<[OutputPort; 4]> {
         tiny_vec![self.output]
     }
+
+    fn all_output_port_kinds(&self) -> OutputPortKinds {
+        tiny_vec! {
+            [_; 4] => (self.output, self.kind),
+        }
+    }
+
+    fn update_output(&mut self, from: OutputPort, to: OutputPort) {
+        if self.output == from {
+            self.output = to;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OutputParam {
     node: NodeId,
-    pub(super) input: InputPort,
-    pub(super) kind: EdgeKind,
+    input: InputPort,
+    kind: EdgeKind,
 }
 
 impl OutputParam {
-    pub(super) const fn new(node: NodeId, input: InputPort, kind: EdgeKind) -> Self {
+    pub(in crate::graph) const fn new(node: NodeId, input: InputPort, kind: EdgeKind) -> Self {
         Self { node, input, kind }
     }
 
@@ -193,13 +244,19 @@ impl NodeExt for OutputParam {
 
     fn input_desc(&self) -> EdgeDescriptor {
         match self.kind {
-            EdgeKind::Effect => EdgeDescriptor::new(EdgeCount::one(), EdgeCount::zero()),
-            EdgeKind::Value => EdgeDescriptor::new(EdgeCount::zero(), EdgeCount::one()),
+            EdgeKind::Effect => EdgeDescriptor::from_effects(1),
+            EdgeKind::Value => EdgeDescriptor::from_values(1),
         }
     }
 
     fn all_input_ports(&self) -> TinyVec<[InputPort; 4]> {
         tiny_vec![self.input]
+    }
+
+    fn all_input_port_kinds(&self) -> InputPortKinds {
+        tiny_vec! {
+            [_; 4] => (self.input, self.kind),
+        }
     }
 
     fn update_input(&mut self, from: InputPort, to: InputPort) {
@@ -226,5 +283,13 @@ impl NodeExt for OutputParam {
 
     fn all_output_ports(&self) -> TinyVec<[OutputPort; 4]> {
         TinyVec::new()
+    }
+
+    fn all_output_port_kinds(&self) -> OutputPortKinds {
+        TinyVec::new()
+    }
+
+    fn update_output(&mut self, _from: OutputPort, _to: OutputPort) {
+        // TODO: Should this panic or warn?
     }
 }

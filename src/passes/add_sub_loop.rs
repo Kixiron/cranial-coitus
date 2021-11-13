@@ -18,6 +18,8 @@ enum Candidate {
 pub struct AddSubLoop {
     changed: bool,
     values: BTreeMap<OutputPort, Const>,
+    add_loops_removed: usize,
+    sub_loops_removed: usize,
 }
 
 impl AddSubLoop {
@@ -25,6 +27,8 @@ impl AddSubLoop {
         Self {
             values: BTreeMap::new(),
             changed: false,
+            add_loops_removed: 0,
+            sub_loops_removed: 0,
         }
     }
 
@@ -123,7 +127,7 @@ impl AddSubLoop {
 
         // Stores the sum/diff to the lhs ptr
         // store _counter_ptr, _counter_lhs
-        let store_dec_counter = graph.cast_target::<Store>(load_counter.effect())?;
+        let store_dec_counter = graph.cast_target::<Store>(load_counter.output_effect())?;
 
         // If they store to different places this isn't a candidate
         if graph.input_source(store_dec_counter.ptr()) != counter_ptr {
@@ -141,8 +145,8 @@ impl AddSubLoop {
         let (add_lhs_neg_one, add_rhs_neg_one) = (is(add_lhs_src, -1), is(add_rhs_src, -1));
 
         // If the add isn't `add _loaded_lhs, -1` this isn't a candidate
-        if !((add_lhs_src == load_counter.value() && add_rhs_neg_one)
-            || (add_lhs_neg_one && add_rhs_src == load_counter.value()))
+        if !((add_lhs_src == load_counter.output_value() && add_rhs_neg_one)
+            || (add_lhs_neg_one && add_rhs_src == load_counter.output_value()))
         {
             return None;
         }
@@ -154,7 +158,7 @@ impl AddSubLoop {
 
         // Stores the decremented or incremented value to the rhs cell
         // store _acc_ptr, {_inc_acc, _dec_acc}
-        let store_inc_dec_acc = graph.cast_target::<Store>(load_acc.effect())?;
+        let store_inc_dec_acc = graph.cast_target::<Store>(load_acc.output_effect())?;
 
         // If the pointer isn't the rhs pointer, this isn't a candidate
         if graph.input_source(store_inc_dec_acc.ptr()) != acc_ptr {
@@ -177,14 +181,14 @@ impl AddSubLoop {
         let (add_lhs_neg_one, add_rhs_neg_one) = (is(add_lhs_src, -1), is(add_rhs_src, -1));
 
         // _inc_acc := add _acc_val, int 1
-        let candidate = if (add_lhs_src == load_acc.value() && add_rhs_one)
-            || (add_lhs_one && add_rhs_src == load_acc.value())
+        let candidate = if (add_lhs_src == load_acc.output_value() && add_rhs_one)
+            || (add_lhs_one && add_rhs_src == load_acc.output_value())
         {
             Candidate::Add
 
         // _inc_dec := add _acc_val, int -1
-        } else if (add_lhs_src == load_acc.value() && add_rhs_neg_one)
-            || (add_lhs_neg_one && add_rhs_src == load_acc.value())
+        } else if (add_lhs_src == load_acc.output_value() && add_rhs_neg_one)
+            || (add_lhs_neg_one && add_rhs_src == load_acc.output_value())
         {
             Candidate::Sub
 
@@ -234,6 +238,15 @@ impl Pass for AddSubLoop {
     fn reset(&mut self) {
         self.values.clear();
         self.changed = false;
+    }
+
+    fn report(&self) {
+        tracing::info!(
+            "{} removed {} addition loops and {} subtraction loops",
+            self.pass_name(),
+            self.add_loops_removed,
+            self.sub_loops_removed,
+        );
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
@@ -335,23 +348,31 @@ impl Pass for AddSubLoop {
 
             // Load the counter and accumulator values
             let counter_val = graph.load(counter_ptr, input_effect);
-            let acc_val = graph.load(acc_ptr, counter_val.effect());
+            let acc_val = graph.load(acc_ptr, counter_val.output_effect());
 
             let sum_diff = match candidate {
                 // Add the counter and accumulator values together
-                Candidate::Add => graph.add(counter_val.value(), acc_val.value()).value(),
+                Candidate::Add => {
+                    self.add_loops_removed += 1;
+                    graph
+                        .add(counter_val.output_value(), acc_val.output_value())
+                        .value()
+                }
 
                 // Negate the accumulator value and then add the negated
                 // accumulator and counter values together
                 Candidate::Sub => {
-                    let neg_acc = graph.neg(acc_val.value());
+                    self.sub_loops_removed += 1;
 
-                    graph.add(counter_val.value(), neg_acc.value()).value()
+                    let neg_acc = graph.neg(acc_val.output_value());
+                    graph
+                        .add(counter_val.output_value(), neg_acc.value())
+                        .value()
                 }
             };
 
             // Store the sum or difference to the accumulator cell
-            let store_sum_diff = graph.store(acc_ptr, sum_diff, acc_val.effect());
+            let store_sum_diff = graph.store(acc_ptr, sum_diff, acc_val.output_effect());
 
             // Unconditionally store 0 to the counter cell
             let zero = graph.int(0);
@@ -450,14 +471,14 @@ mod tests {
 
             // Get and store the y value
             let y_input = graph.input(effect);
-            effect = y_input.effect();
-            let store = graph.store(y_ptr, y_input.value(), effect);
+            effect = y_input.output_effect();
+            let store = graph.store(y_ptr, y_input.output_value(), effect);
             effect = store.effect();
 
             // Get and store the x value
             let x_input = graph.input(effect);
-            effect = x_input.effect();
-            let store = graph.store(x_ptr, x_input.value(), effect);
+            effect = x_input.output_effect();
+            let store = graph.store(x_ptr, x_input.output_value(), effect);
             effect = store.effect();
 
             // Compile the loop
@@ -465,15 +486,15 @@ mod tests {
 
             // Print the y value
             let y_value = graph.load(y_ptr, effect);
-            effect = y_value.effect();
-            let output = graph.output(y_value.value(), effect);
-            effect = output.effect();
+            effect = y_value.output_effect();
+            let output = graph.output(y_value.output_value(), effect);
+            effect = output.output_effect();
 
             // Print the x value
             let x_value = graph.load(x_ptr, effect);
-            effect = x_value.effect();
-            let output = graph.output(x_value.value(), effect);
-            effect = output.effect();
+            effect = x_value.output_effect();
+            let output = graph.output(x_value.output_value(), effect);
+            effect = output.output_effect();
 
             effect
         },

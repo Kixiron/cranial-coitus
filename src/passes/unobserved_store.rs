@@ -10,6 +10,7 @@ pub struct UnobservedStore {
     //       loop invariant cells would be required for anything better
     within_theta: bool,
     within_gamma: bool,
+    unobserved_stores_removed: usize,
 }
 
 impl UnobservedStore {
@@ -18,6 +19,7 @@ impl UnobservedStore {
             changed: false,
             within_theta: false,
             within_gamma: false,
+            unobserved_stores_removed: 0,
         }
     }
 
@@ -38,6 +40,15 @@ impl Pass for UnobservedStore {
     fn reset(&mut self) {
         self.changed = false;
         self.within_theta = false;
+        self.within_gamma = false;
+    }
+
+    fn report(&self) {
+        tracing::info!(
+            "{} removed {} unobservable stores",
+            self.pass_name(),
+            self.unobserved_stores_removed,
+        );
     }
 
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
@@ -91,6 +102,8 @@ impl Pass for UnobservedStore {
 
                 graph.splice_ports(store.effect_in(), store.effect());
                 graph.remove_node(store.node());
+                self.unobserved_stores_removed += 1;
+
                 self.changed();
             }
         }

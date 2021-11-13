@@ -8,6 +8,7 @@ use crate::{
 pub struct ShiftCell {
     changed: bool,
     values: HashMap<OutputPort, Const>,
+    shifts_removed: usize,
 }
 
 impl ShiftCell {
@@ -15,6 +16,7 @@ impl ShiftCell {
         Self {
             values: HashMap::with_hasher(Default::default()),
             changed: false,
+            shifts_removed: 0,
         }
     }
 
@@ -76,7 +78,7 @@ impl ShiftCell {
 
         // Get the first store, can either be `store src_ptr, src_dec` or
         // `store dest_ptr, dest_inc`
-        let store_one = graph.get_output(load_one.effect())?.0.as_store()?;
+        let store_one = graph.get_output(load_one.output_effect())?.0.as_store()?;
         let store_ptr_one = graph.input_source(store_one.ptr());
 
         // If the pointers aren't equal, bail
@@ -94,21 +96,21 @@ impl ShiftCell {
 
         // Get the offset being applied by figuring out which side is the loaded value
         let offset_one = values
-            .get(&if lhs_operand == load_one.value() {
+            .get(&if lhs_operand == load_one.output_value() {
                 rhs_operand
-            } else if rhs_operand == load_one.value() {
+            } else if rhs_operand == load_one.output_value() {
                 lhs_operand
             } else {
                 return None;
             })?
-            .as_int()?;
+            .as_i32()?;
 
         // Get the second load
         let load_two = graph.get_output(store_one.effect())?.0.as_load()?;
         let load_ptr_two = graph.input_source(load_two.ptr());
 
         // Get the second store
-        let store_two = graph.get_output(load_two.effect())?.0.as_store()?;
+        let store_two = graph.get_output(load_two.output_effect())?.0.as_store()?;
         let store_ptr_two = graph.input_source(store_two.ptr());
 
         // If the pointers aren't equal, bail
@@ -126,14 +128,14 @@ impl ShiftCell {
 
         // Get the offset being applied by figuring out which side is the loaded value
         let offset_two = values
-            .get(&if lhs_operand == load_two.value() {
+            .get(&if lhs_operand == load_two.output_value() {
                 rhs_operand
-            } else if rhs_operand == load_two.value() {
+            } else if rhs_operand == load_two.output_value() {
                 lhs_operand
             } else {
                 return None;
             })?
-            .as_int()?;
+            .as_i32()?;
 
         // Make sure that the second store is the last effect in the body
         let end = theta.end_node();
@@ -173,8 +175,8 @@ impl ShiftCell {
             graph.input_source(src_eq_zero.rhs()),
         );
         let (lhs_const, rhs_const) = (
-            values.get(&lhs_operand).and_then(Const::as_int),
-            values.get(&rhs_operand).and_then(Const::as_int),
+            values.get(&lhs_operand).and_then(Const::convert_to_i32),
+            values.get(&rhs_operand).and_then(Const::convert_to_i32),
         );
 
         // Make sure that one of the operands of the eq is `src_dec` and the other is a zero
@@ -202,6 +204,14 @@ impl Pass for ShiftCell {
     fn reset(&mut self) {
         self.values.clear();
         self.changed = false;
+    }
+
+    fn report(&self) {
+        tracing::info!(
+            "{} removed {} cell shift motifs",
+            self.pass_name(),
+            self.shifts_removed,
+        );
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
@@ -273,7 +283,7 @@ impl Pass for ShiftCell {
                 visitor
                     .values
                     .get(&output)
-                    .and_then(Const::as_int)
+                    .and_then(Const::convert_to_i32)
                     .map(|int| graph.int(int).value())
                     .or_else(|| {
                         theta.invariant_input_pairs().find_map(|(port, input)| {
@@ -295,7 +305,8 @@ impl Pass for ShiftCell {
                 let src_val = graph.load(src_ptr, input_effect);
 
                 // Store the source value into the destination cell
-                let store_src_to_dest = graph.store(dest_ptr, src_val.value(), src_val.effect());
+                let store_src_to_dest =
+                    graph.store(dest_ptr, src_val.output_value(), src_val.output_effect());
 
                 // Unconditionally store 0 to the destination cell
                 let zero = graph.int(0);
@@ -344,6 +355,7 @@ impl Pass for ShiftCell {
                 }
 
                 graph.remove_node(theta.node());
+                self.shifts_removed += 1;
                 self.changed();
 
                 return;

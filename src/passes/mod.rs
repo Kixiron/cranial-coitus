@@ -9,6 +9,7 @@ mod expr_dedup;
 mod licm;
 mod mem2reg;
 mod shift;
+mod symbolic_eval;
 mod unobserved_store;
 mod zero_loop;
 
@@ -23,35 +24,37 @@ pub use expr_dedup::ExprDedup;
 pub use licm::Licm;
 pub use mem2reg::Mem2Reg;
 pub use shift::ShiftCell;
+pub use symbolic_eval::SymbolicEval;
 pub use unobserved_store::UnobservedStore;
 pub use zero_loop::ZeroLoop;
 
 use crate::{
     graph::{
-        Add, Bool, End, Eq, Gamma, Input, InputParam, Int, Load, Neg, Node, NodeId, Not, Output,
-        OutputParam, Rvsdg, Start, Store, Theta,
+        Add, Bool, End, Eq, Gamma, Input, InputParam, Int, Load, Neg, Node, NodeExt, NodeId, Not,
+        Output, OutputParam, Rvsdg, Start, Store, Theta,
     },
     utils::HashSet,
 };
 use std::collections::VecDeque;
 
 pub fn default_passes(cells: usize) -> Vec<Box<dyn Pass>> {
-    vec![
-        Box::new(Dce::new()),
-        Box::new(UnobservedStore::new()),
-        Box::new(ConstFolding::new()),
-        Box::new(AssociativeAdd::new()),
-        Box::new(ZeroLoop::new()),
-        Box::new(Mem2Reg::new(cells)),
-        Box::new(AddSubLoop::new()),
-        Box::new(ShiftCell::new()),
-        Box::new(DuplicateCell::new()),
-        Box::new(Dce::new()),
-        Box::new(Dataflow::new(cells)),
-        Box::new(ElimConstGamma::new()),
-        Box::new(ConstFolding::new()),
-        Box::new(Licm::new()),
-        Box::new(ExprDedup::new()),
+    bvec![
+        UnobservedStore::new(),
+        ConstFolding::new(),
+        AssociativeAdd::new(),
+        ZeroLoop::new(),
+        Mem2Reg::new(cells),
+        AddSubLoop::new(),
+        ShiftCell::new(),
+        Dce::new(),
+        Dataflow::new(cells),
+        ElimConstGamma::new(),
+        ConstFolding::new(),
+        SymbolicEval::new(cells),
+        Licm::new(),
+        DuplicateCell::new(),
+        ExprDedup::new(),
+        Dce::new(),
     ]
 }
 
@@ -100,6 +103,8 @@ pub trait Pass {
     fn did_change(&self) -> bool;
 
     fn reset(&mut self);
+
+    fn report(&self) {}
 
     fn visit_graph(&mut self, graph: &mut Rvsdg) -> bool {
         let (mut stack, mut visited, mut buffer) = (
@@ -150,7 +155,7 @@ pub trait Pass {
             let mut missing_inputs = false;
             buffer.extend(graph.try_inputs(node_id).filter_map(|(_, input)| {
                 input.and_then(|(input, ..)| {
-                    let input_id = input.node_id();
+                    let input_id = input.node();
 
                     if !visited.contains(&input_id) {
                         missing_inputs = true;
@@ -174,10 +179,11 @@ pub trait Pass {
 
             // Visit the node
             self.visit(graph, node_id);
+            self.after_visit(graph, node_id);
 
             // Add the node to the list of nodes we've already visited
-            let existed = visited.insert(node_id);
-            debug_assert!(existed);
+            let didnt_exist = visited.insert(node_id);
+            debug_assert!(didnt_exist);
 
             // If the node was deleted within the call to `.visit()` then don't add its dependents
             if graph.contains_node(node_id) {
@@ -185,11 +191,11 @@ pub trait Pass {
                 buffer.extend(
                     graph
                         .get_node(node_id)
-                        .outputs()
+                        .all_output_ports()
                         .into_iter()
                         .flat_map(|output| graph.get_outputs(output))
                         .filter_map(|(output_node, ..)| {
-                            let output_id = output_node.node_id();
+                            let output_id = output_node.node();
 
                             // At first glance it may seem like `visited.contains(&output_id)` should always return
                             // true, it won't in the case of two identical edges to the same node
@@ -211,6 +217,8 @@ pub trait Pass {
     }
 
     fn post_visit_graph(&mut self, _graph: &mut Rvsdg, _visited: &HashSet<NodeId>) {}
+
+    fn after_visit(&mut self, _graph: &mut Rvsdg, _node_id: NodeId) {}
 
     fn visit(&mut self, graph: &mut Rvsdg, node_id: NodeId) {
         // FIXME: These clones are really not good
@@ -289,9 +297,9 @@ test_opts! {
 
             let add = graph.add(ptr, four);
             let load = graph.load(add.value(), effect);
-            effect = load.effect();
+            effect = load.output_effect();
 
-            let not_eq_zero = graph.neq(load.value(), zero);
+            let not_eq_zero = graph.neq(load.output_value(), zero);
 
             ThetaData::new([ptr], not_eq_zero.value(), effect)
         });
@@ -300,10 +308,10 @@ test_opts! {
 
         // Load the cell's value
         let load = graph.load(ptr, effect);
-        effect = load.effect();
+        effect = load.output_effect();
 
         // Output the value at the index (should be zero)
-        let output = graph.output(load.value(), effect);
-        output.effect()
+        let output = graph.output(load.output_value(), effect);
+        output.output_effect()
     },
 }

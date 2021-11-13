@@ -1,7 +1,10 @@
+//! The theta node
+
 use crate::{
     graph::{
-        EdgeCount, EdgeDescriptor, End, InputParam, InputPort, NodeExt, NodeId, OutputParam,
-        OutputPort, Rvsdg, Start, Subgraph,
+        nodes::node_ext::{InputPortKinds, InputPorts, OutputPortKinds, OutputPorts},
+        EdgeCount, EdgeDescriptor, EdgeKind, End, InputParam, InputPort, NodeExt, NodeId,
+        OutputParam, OutputPort, Rvsdg, Start, Subgraph,
     },
     utils::AssertNone,
 };
@@ -63,7 +66,7 @@ pub struct Theta {
 impl Theta {
     /// Create a new theta node
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(in crate::graph) fn new(
         node: NodeId,
         effects: Option<ThetaEffects>,
         invariant_inputs: BTreeMap<InputPort, NodeId>,
@@ -153,6 +156,12 @@ impl Theta {
         self.effects.map(|effects| effects.output)
     }
 
+    /// Get a mutable reference to the output effect's port from
+    /// the theta node if it's available
+    pub fn output_effect_mut(&mut self) -> Option<&mut OutputPort> {
+        self.effects.as_mut().map(|effects| &mut effects.output)
+    }
+
     pub fn effects(&self) -> Option<(InputPort, OutputPort)> {
         self.effects.map(|effects| (effects.input, effects.output))
     }
@@ -220,10 +229,7 @@ impl Theta {
         self.output_feedback.remove(&output).debug_unwrap();
         self.outputs.remove(&output).debug_unwrap();
     }
-}
 
-/// Input/Output port related functions
-impl Theta {
     /// Returns the number of all inputs (variant and invariant) to the theta node,
     /// *not including effect inputs*
     pub fn inputs_len(&self) -> usize {
@@ -454,13 +460,25 @@ impl NodeExt for Theta {
         )
     }
 
-    fn all_input_ports(&self) -> TinyVec<[InputPort; 4]> {
+    fn all_input_ports(&self) -> InputPorts {
         let mut inputs =
             TinyVec::with_capacity(self.inputs_len() + self.input_effect().is_some() as usize);
 
         inputs.extend(self.input_ports());
         if let Some(input_effect) = self.input_effect() {
             inputs.push(input_effect);
+        }
+
+        inputs
+    }
+
+    fn all_input_port_kinds(&self) -> InputPortKinds {
+        let mut inputs =
+            TinyVec::with_capacity(self.inputs_len() + self.input_effect().is_some() as usize);
+
+        inputs.extend(self.input_ports().map(|input| (input, EdgeKind::Value)));
+        if let Some(input_effect) = self.input_effect() {
+            inputs.push((input_effect, EdgeKind::Effect));
         }
 
         inputs
@@ -554,7 +572,7 @@ impl NodeExt for Theta {
         )
     }
 
-    fn all_output_ports(&self) -> TinyVec<[OutputPort; 4]> {
+    fn all_output_ports(&self) -> OutputPorts {
         let mut outputs =
             TinyVec::with_capacity(self.outputs_len() + self.output_effect().is_some() as usize);
 
@@ -565,28 +583,97 @@ impl NodeExt for Theta {
 
         outputs
     }
+
+    fn all_output_port_kinds(&self) -> OutputPortKinds {
+        let mut outputs =
+            TinyVec::with_capacity(self.outputs_len() + self.output_effect().is_some() as usize);
+
+        outputs.extend(self.output_ports().map(|output| (output, EdgeKind::Value)));
+        if let Some(output_effect) = self.output_effect() {
+            outputs.push((output_effect, EdgeKind::Effect));
+        }
+
+        outputs
+    }
+
+    fn update_output(&mut self, from: OutputPort, to: OutputPort) {
+        let parent_node = self.node;
+
+        // Try to replace the output effect
+        if let Some(output_effect) = self
+            .output_effect_mut()
+            .filter(|&&mut effect| effect == from)
+        {
+            tracing::trace!(
+                node = ?parent_node,
+                "replaced output effect {:?} of Theta with {:?}",
+                from, to,
+            );
+
+            *output_effect = to;
+
+        // Try to replace the output ports
+        } else if let Some((output, node_id)) = {
+            let mut output_node = None;
+            self.outputs.retain(|&output, &mut node| {
+                if output == from {
+                    debug_assert!(output_node.is_none());
+                    output_node = Some((output, node));
+
+                    false
+                } else {
+                    true
+                }
+            });
+
+            output_node
+        } {
+            tracing::trace!(
+                node = ?parent_node,
+                "replaced variant output {:?} of Theta with {:?}",
+                from, to,
+            );
+
+            self.outputs.insert(to, node_id).debug_unwrap_none();
+
+            let input = self.output_feedback.remove(&output).unwrap();
+            self.output_feedback.insert(to, input).debug_unwrap_none();
+
+        // Otherwise the theta doesn't have this output port
+        } else {
+            tracing::trace!(
+                node = ?parent_node,
+                "tried to replace output effect {:?} of Theta with {:?} but Theta doesn't have that port",
+                from, to,
+            );
+        }
+    }
 }
 
 /// The effects of a theta node
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ThetaEffects {
+pub(in crate::graph) struct ThetaEffects {
     /// The input effect's port on the theta node
     input: InputPort,
     /// The output effect's port on the theta node
-    pub(super) output: OutputPort,
+    output: OutputPort,
 }
 
 impl ThetaEffects {
-    pub(super) const fn new(input: InputPort, output: OutputPort) -> Self {
+    pub const fn new(input: InputPort, output: OutputPort) -> Self {
         Self { input, output }
+    }
+
+    pub const fn output(&self) -> OutputPort {
+        self.output
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThetaData {
-    pub(super) outputs: Box<[OutputPort]>,
-    pub(super) condition: OutputPort,
-    pub(super) effect: OutputPort,
+    pub(in crate::graph) outputs: Box<[OutputPort]>,
+    pub(in crate::graph) condition: OutputPort,
+    pub(in crate::graph) effect: OutputPort,
 }
 
 impl ThetaData {
@@ -609,7 +696,7 @@ pub struct ThetaStub {
 }
 
 impl ThetaStub {
-    pub(super) const fn new(
+    pub(in crate::graph) const fn new(
         output_effect: Option<OutputPort>,
         outputs: TinyVec<[OutputPort; 5]>,
     ) -> Self {

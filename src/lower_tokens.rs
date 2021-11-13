@@ -23,10 +23,10 @@ pub fn lower_tokens(
             Token::Inc => {
                 // Load the pointed-to cell's current value
                 let load = graph.load(ptr, effect);
-                effect = load.effect();
+                effect = load.output_effect();
 
                 // Increment the loaded cell's value
-                let inc = graph.add(load.value(), one).value();
+                let inc = graph.add(load.output_value(), one).value();
 
                 // Store the incremented value into the pointed-to cell
                 let store = graph.store(ptr, inc, effect);
@@ -35,10 +35,10 @@ pub fn lower_tokens(
             Token::Dec => {
                 // Load the pointed-to cell's current value
                 let load = graph.load(ptr, effect);
-                effect = load.effect();
+                effect = load.output_effect();
 
                 // Decrement the loaded cell's value
-                let dec = graph.add(load.value(), neg_one).value();
+                let dec = graph.add(load.output_value(), neg_one).value();
 
                 // Store the decremented value into the pointed-to cell
                 let store = graph.store(ptr, dec, effect);
@@ -48,29 +48,29 @@ pub fn lower_tokens(
             Token::Output => {
                 // Load the pointed-to cell's current value
                 let load = graph.load(ptr, effect);
-                effect = load.effect();
+                effect = load.output_effect();
 
                 // Output the value of the loaded cell
-                let output = graph.output(load.value(), effect);
-                effect = output.effect();
+                let output = graph.output(load.output_value(), effect);
+                effect = output.output_effect();
             }
             Token::Input => {
                 // Get user input
                 let input = graph.input(effect);
-                effect = input.effect();
+                effect = input.output_effect();
 
                 // Store the input's result to the currently pointed-to cell
-                let store = graph.store(ptr, input.value(), effect);
+                let store = graph.store(ptr, input.output_value(), effect);
                 effect = store.effect();
             }
 
             Token::Loop(body) => {
                 // Load the current cell's value
                 let load = graph.load(ptr, effect);
-                effect = load.effect();
+                effect = load.output_effect();
 
                 // Compare the cell's value to zero
-                let cmp = graph.eq(load.value(), zero);
+                let cmp = graph.eq(load.output_value(), zero);
 
                 // Create a gamma node to decide whether or not to drop into the loop
                 // Brainfuck loops are equivalent to this general structure:
@@ -109,9 +109,9 @@ pub fn lower_tokens(
 
                                 let zero = graph.int(0);
                                 let load = graph.load(ptr, effect);
-                                let condition = graph.neq(load.value(), zero.value());
+                                let condition = graph.neq(load.output_value(), zero.value());
 
-                                ThetaData::new([ptr], condition.value(), load.effect())
+                                ThetaData::new([ptr], condition.value(), load.output_effect())
                             },
                         );
 

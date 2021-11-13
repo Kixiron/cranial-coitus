@@ -6,14 +6,14 @@ pub struct UnionFind {
 }
 
 impl UnionFind {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             parents: Vec::new(),
         }
     }
 
     pub fn make_set(&mut self) -> Unioned {
-        // Safety: `id` is in-bounds of `parents`
+        // Safety: `id` is in-bounds of `parents` and `children`
         let id = unsafe { Unioned::new(self.parents.len()) };
         self.parents.push(id);
 
@@ -37,7 +37,9 @@ impl UnionFind {
         debug_assert!(query.index < self.parents.len());
 
         // Safety: `index` is in-bounds of `parents`
-        unsafe { *self.parents.get_unchecked_mut(query.index) = new_parent };
+        unsafe {
+            *self.parents.get_unchecked_mut(query.index) = new_parent;
+        }
     }
 
     pub fn find(&mut self, mut current: Unioned) -> Unioned {
@@ -87,5 +89,49 @@ impl Unioned {
     /// and must only be used with the `UnionFind` that created it
     pub const unsafe fn new(index: usize) -> Self {
         Self { index }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UnionFind;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn union_find() {
+        let mut union = UnionFind::new();
+
+        let mut values = BTreeMap::new();
+        for (id, value) in [1, 1, 30, 50, 1, 245, 1, 1, 30].into_iter().enumerate() {
+            values.insert(id, value);
+        }
+        println!("{:#?}", values);
+
+        let mut value_ids = Vec::new();
+        for (&id, &value) in &values {
+            let union_id = union.make_set();
+            value_ids.push((id, value, union_id));
+
+            if let Some(existing_id) = value_ids
+                .iter()
+                .find_map(|&(_, val, id)| (val == value).then(|| id))
+            {
+                union.union(union_id, existing_id);
+            }
+        }
+
+        let mut values = BTreeMap::new();
+        for &(_, value, union_id) in &value_ids {
+            let root_id = union.find(union_id);
+
+            let id = value_ids
+                .iter()
+                .find(|&&(.., union_id)| root_id == union_id)
+                .unwrap()
+                .0;
+            values.insert(id, value);
+        }
+
+        println!("{:#?}", values);
     }
 }

@@ -14,6 +14,11 @@ pub struct Mem2Reg {
     values: BTreeMap<OutputPort, Place>,
     tape: Vec<Place>,
     changed: bool,
+    constant_loads_elided: usize,
+    loads_elided: usize,
+    constant_stores_elided: usize,
+    identical_stores_removed: usize,
+    dependent_loads_removed: usize,
 }
 
 // TODO: Propagate port places into subgraphs by adding input ports
@@ -23,6 +28,11 @@ impl Mem2Reg {
             values: BTreeMap::new(),
             tape: vec![Place::Const(Const::Int(0)); tape_len],
             changed: false,
+            constant_loads_elided: 0,
+            loads_elided: 0,
+            constant_stores_elided: 0,
+            identical_stores_removed: 0,
+            dependent_loads_removed: 0,
         }
     }
 
@@ -31,6 +41,11 @@ impl Mem2Reg {
             values: BTreeMap::new(),
             tape: vec![Place::Unknown; tape_len],
             changed: false,
+            constant_loads_elided: 0,
+            loads_elided: 0,
+            constant_stores_elided: 0,
+            identical_stores_removed: 0,
+            dependent_loads_removed: 0,
         }
     }
 
@@ -48,6 +63,18 @@ impl Pass for Mem2Reg {
 
     fn did_change(&self) -> bool {
         self.changed
+    }
+
+    fn report(&self) {
+        tracing::info!(
+            "{} removed {} constant loads, {} elided loads, {} constant stores, {} identical stores and {} dependent loads",
+            self.pass_name(),
+            self.constant_loads_elided,
+            self.loads_elided,
+            self.constant_stores_elided,
+            self.identical_stores_removed,
+            self.dependent_loads_removed,
+        );
     }
 
     fn reset(&mut self) {
@@ -82,12 +109,13 @@ impl Pass for Mem2Reg {
                     let int = graph.int(value);
                     self.values.insert(int.value(), value.into());
 
-                    graph.splice_ports(load.effect_in(), load.effect());
-                    graph.rewire_dependents(load.value(), int.value());
+                    graph.splice_ports(load.input_effect(), load.output_effect());
+                    graph.rewire_dependents(load.output_value(), int.value());
                     graph.remove_node(load.node());
 
                     self.changed();
                     done = true;
+                    self.constant_loads_elided += 1;
                 }
             }
 
@@ -100,11 +128,12 @@ impl Pass for Mem2Reg {
                         load,
                     );
 
-                    graph.splice_ports(load.effect_in(), load.effect());
-                    graph.rewire_dependents(load.value(), output_port);
+                    graph.splice_ports(load.input_effect(), load.output_effect());
+                    graph.rewire_dependents(load.output_value(), output_port);
                     graph.remove_node(load.node());
 
                     self.changed();
+                    self.loads_elided += 1;
                 }
             }
         }
@@ -145,6 +174,7 @@ impl Pass for Mem2Reg {
                     graph.add_value_edge(int.value(), store.value());
 
                     self.changed();
+                    self.constant_stores_elided += 1;
                 }
             }
 
@@ -156,6 +186,7 @@ impl Pass for Mem2Reg {
                     graph.remove_node(store.node());
 
                     self.changed();
+                    self.identical_stores_removed += 1;
                 }
 
                 _ => {
@@ -212,20 +243,19 @@ impl Pass for Mem2Reg {
                 // store _0, _1
                 // _3 = add _1, int 10
                 // ```
-                if graph.get_input(load.ptr()).0.node_id()
-                    == graph.get_input(store.ptr()).0.node_id()
-                {
+                if graph.get_input(load.ptr()).0.node() == graph.get_input(store.ptr()).0.node() {
                     tracing::debug!(
                         "replaced dependent load with value {:?} (store: {:?})",
                         load,
                         store,
                     );
 
-                    graph.splice_ports(load.effect_in(), load.effect());
-                    graph.rewire_dependents(load.value(), graph.input_source(store.value()));
+                    graph.splice_ports(load.input_effect(), load.output_effect());
+                    graph.rewire_dependents(load.output_value(), graph.input_source(store.value()));
                     graph.remove_node(load.node());
 
                     self.changed();
+                    self.dependent_loads_removed += 1;
                 }
             }
         }
@@ -261,7 +291,7 @@ impl Pass for Mem2Reg {
 
         // Both branches of the gamma node get the previous context, the changes they
         // create within it just are trickier to propagate
-        let (mut truthy_visitor, mut falsy_visitor) = (
+        let (mut true_visitor, mut false_visitor) = (
             Self {
                 tape: tape.clone(),
                 ..Self::unknown(self.tape.len())
@@ -274,31 +304,30 @@ impl Pass for Mem2Reg {
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &[truthy_param, falsy_param]) in
-            gamma.inputs().iter().zip(gamma.input_params())
-        {
-            if let Some(constant) = self
-                .values
-                .get(&graph.input_source(input))
-                .filter(|place| place.is_const())
-                .cloned()
-            {
-                let param = gamma.true_branch().to_node::<InputParam>(truthy_param);
-                truthy_visitor
+        let inputs: Vec<_> = gamma
+            .inputs()
+            .iter()
+            .zip(gamma.input_params())
+            .map(|(&input, &params)| (input, params))
+            .collect();
+        for (input, [true_param, false_param]) in inputs {
+            if let Some(place) = self.values.get(&graph.input_source(input)).cloned() {
+                let param = gamma.true_branch().to_node::<InputParam>(true_param);
+                true_visitor
                     .values
-                    .insert(param.output(), constant.clone())
+                    .insert(param.output(), place.clone())
                     .debug_unwrap_none();
 
-                let param = gamma.false_branch().to_node::<InputParam>(falsy_param);
-                falsy_visitor
+                let param = gamma.false_branch().to_node::<InputParam>(false_param);
+                false_visitor
                     .values
-                    .insert(param.output(), constant)
+                    .insert(param.output(), place)
                     .debug_unwrap_none();
             }
         }
 
-        changed |= truthy_visitor.visit_graph(gamma.true_mut());
-        changed |= falsy_visitor.visit_graph(gamma.false_mut());
+        changed |= true_visitor.visit_graph(gamma.true_mut());
+        changed |= false_visitor.visit_graph(gamma.false_mut());
 
         // Figure out if there's any stores within either of the gamma branches
         let mut truthy_stores = 0;
@@ -379,12 +408,10 @@ impl Pass for Mem2Reg {
                 .filter(|place| place.is_const())
                 .cloned()
             {
-                if !constant.is_port() {
-                    visitor
-                        .values
-                        .insert(param.output(), constant)
-                        .debug_unwrap_none();
-                }
+                visitor
+                    .values
+                    .insert(param.output(), constant)
+                    .debug_unwrap_none();
             }
         }
 
@@ -425,7 +452,7 @@ enum Place {
 impl Place {
     pub fn convert_to_i32(&self) -> Option<i32> {
         if let Self::Const(constant) = self {
-            constant.as_int()
+            constant.as_i32()
         } else {
             None
         }
@@ -436,13 +463,6 @@ impl Place {
     /// [`Const`]: Place::Const
     pub const fn is_const(&self) -> bool {
         matches!(self, Self::Const(..))
-    }
-
-    /// Returns `true` if the place is [`Port`].
-    ///
-    /// [`Port`]: Place::Port
-    pub const fn is_port(&self) -> bool {
-        matches!(self, Self::Port(..))
     }
 }
 

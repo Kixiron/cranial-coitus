@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 pub struct ZeroLoop {
     changed: bool,
     values: BTreeMap<OutputPort, Const>,
+    zero_gammas_removed: usize,
+    zero_loops_removed: usize,
 }
 
 impl ZeroLoop {
@@ -19,6 +21,8 @@ impl ZeroLoop {
         Self {
             changed: false,
             values: BTreeMap::new(),
+            zero_gammas_removed: 0,
+            zero_loops_removed: 0,
         }
     }
 
@@ -90,12 +94,12 @@ impl ZeroLoop {
         };
 
         // Get the add node
-        let add = graph.get_output(load.value())?.0.as_add()?;
+        let add = graph.get_output(load.output_value())?.0.as_add()?;
 
         let [lhs, rhs] = [graph.get_input(add.lhs()), graph.get_input(add.rhs())];
 
         // Make sure that one of the add's operands is the loaded cell and the other is 1 or -1
-        if lhs.1 == load.value() {
+        if lhs.1 == load.output_value() {
             let value = body_values.get(&rhs.1)?.convert_to_i32()?;
 
             // Any odd integer will eventually converge to zero
@@ -106,7 +110,7 @@ impl ZeroLoop {
                 //       loop and we can remove it entirely for nothing, not even a store
                 return None;
             }
-        } else if rhs.1 == load.value() {
+        } else if rhs.1 == load.output_value() {
             let value = body_values.get(&lhs.1)?.convert_to_i32()?;
 
             // Any odd integer will eventually converge to zero
@@ -121,7 +125,7 @@ impl ZeroLoop {
             return None;
         }
 
-        let store = graph.get_output(load.effect())?.0.as_store()?;
+        let store = graph.get_output(load.output_effect())?.0.as_store()?;
         if graph.get_input(store.value()).1 != add.value() {
             return None;
         }
@@ -152,7 +156,7 @@ impl ZeroLoop {
         let not = graph.get_output(eq.value())?.0.as_not()?;
 
         // Make sure the `(value + 1) != 0` expression is the theta's condition
-        if graph.get_output(not.value())?.0.node_id() != theta.condition().node() {
+        if graph.get_output(not.value())?.0.node() != theta.condition().node() {
             return None;
         }
 
@@ -377,6 +381,15 @@ impl Pass for ZeroLoop {
         self.changed = false;
     }
 
+    fn report(&self) {
+        tracing::info!(
+            "{} removed {} zero loops and {} zero gammas",
+            self.pass_name(),
+            self.zero_loops_removed,
+            self.zero_gammas_removed,
+        );
+    }
+
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
         let replaced = self.values.insert(bool.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(Const::Bool(value)));
@@ -441,6 +454,7 @@ impl Pass for ZeroLoop {
             }
 
             graph.remove_node(gamma.node());
+            self.zero_gammas_removed += 1;
             self.changed();
         } else if changed {
             graph.replace_node(gamma.node(), gamma);
@@ -508,6 +522,7 @@ impl Pass for ZeroLoop {
             }
 
             graph.remove_node(theta.node());
+            self.zero_loops_removed += 1;
             self.changed();
         } else if changed {
             graph.replace_node(theta.node(), theta);

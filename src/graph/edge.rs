@@ -59,6 +59,14 @@ impl EdgeDescriptor {
     pub const fn zero() -> Self {
         Self::new(EdgeCount::zero(), EdgeCount::zero())
     }
+
+    pub const fn from_values(values: usize) -> Self {
+        Self::new(EdgeCount::zero(), EdgeCount::exact(values))
+    }
+
+    pub const fn from_effects(effects: usize) -> Self {
+        Self::new(EdgeCount::exact(effects), EdgeCount::zero())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

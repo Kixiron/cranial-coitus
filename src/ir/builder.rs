@@ -15,20 +15,22 @@ use std::{
 #[derive(Debug)]
 pub struct IrBuilder {
     instructions: Vec<Instruction>,
-    values: BTreeMap<OutputPort, Value>,
+    pub values: BTreeMap<OutputPort, Value>,
     evaluated: BTreeSet<NodeId>,
     evaluation_stack: Vec<NodeId>,
     top_level: bool,
+    inline_constants: bool,
 }
 
 impl IrBuilder {
-    pub fn new() -> Self {
+    pub fn new(inline_constants: bool) -> Self {
         Self {
             instructions: Vec::new(),
             values: BTreeMap::new(),
             evaluated: BTreeSet::new(),
             evaluation_stack: Vec::new(),
             top_level: true,
+            inline_constants,
         }
     }
 
@@ -75,22 +77,22 @@ impl IrBuilder {
     }
 
     pub fn push(&mut self, graph: &Rvsdg, node: &Node) {
-        if self.evaluated.contains(&node.node_id()) {
+        if self.evaluated.contains(&node.node()) {
             return;
         }
 
         let mut inputs: Vec<_> = graph
-            .try_inputs(node.node_id())
+            .try_inputs(node.node())
             .flat_map(|(input, data)| data.map(|(node, output, kind)| (input, node, output, kind)))
             .collect();
-        inputs.sort_unstable_by_key(|(_, input, _, _)| input.node_id());
+        inputs.sort_unstable_by_key(|(_, input, _, _)| input.node());
 
         let mut input_values = BTreeMap::new();
         for &(input, input_node, output, _) in &inputs {
-            if !self.evaluated.contains(&input_node.node_id()) {
-                self.evaluation_stack.push(input_node.node_id());
+            if !self.evaluated.contains(&input_node.node()) {
+                self.evaluation_stack.push(input_node.node());
                 self.evaluation_stack
-                    .extend(inputs.iter().map(|(_, node, ..)| node.node_id()));
+                    .extend(inputs.iter().map(|(_, node, ..)| node.node()));
 
                 return;
             }
@@ -113,20 +115,24 @@ impl IrBuilder {
                 let var = VarId::new(int.value());
                 self.inst(crate::ir::Assign::new(var, Const::Int(value)));
 
-                self.values
-                    // .insert(int.value(), Const::Int(value).into())
-                    .insert(int.value(), var.into())
-                    .debug_unwrap_none();
+                let value = if self.inline_constants {
+                    Const::Int(value).into()
+                } else {
+                    var.into()
+                };
+                self.values.insert(int.value(), value).debug_unwrap_none();
             }
 
             &Node::Bool(bool, value) => {
                 let var = VarId::new(bool.value());
                 self.inst(Assign::new(var, Const::Bool(value)));
 
-                self.values
-                    // .insert(bool.value(), Const::Bool(value).into())
-                    .insert(bool.value(), var.into())
-                    .debug_unwrap_none();
+                let value = if self.inline_constants {
+                    Const::Bool(value).into()
+                } else {
+                    var.into()
+                };
+                self.values.insert(bool.value(), value).debug_unwrap_none();
             }
 
             Node::Add(add) => {
@@ -194,8 +200,8 @@ impl IrBuilder {
             }
 
             Node::Load(load) => {
-                let value = VarId::new(load.value());
-                let effect = EffectId::new(load.effect());
+                let value = VarId::new(load.output_value());
+                let effect = EffectId::new(load.output_effect());
 
                 let ptr = input_values
                     .get(&load.ptr())
@@ -207,13 +213,13 @@ impl IrBuilder {
                         ptr,
                         effect,
                         graph
-                            .try_input(load.effect_in())
+                            .try_input(load.input_effect())
                             .map(|(_, output, _)| EffectId::new(output)),
                     ),
                 ));
 
                 self.values
-                    .insert(load.value(), value.into())
+                    .insert(load.output_value(), value.into())
                     .debug_unwrap_none();
             }
 
@@ -239,8 +245,8 @@ impl IrBuilder {
             }
 
             Node::Input(input) => {
-                let value = VarId::new(input.value());
-                let effect = EffectId::new(input.effect());
+                let value = VarId::new(input.output_value());
+                let effect = EffectId::new(input.output_effect());
 
                 let call = Call::new(
                     input.node(),
@@ -248,19 +254,19 @@ impl IrBuilder {
                     Vec::new(),
                     effect,
                     graph
-                        .try_input(input.effect_in())
+                        .try_input(input.input_effect())
                         .map(|(_, output, _)| EffectId::new(output)),
                 );
 
                 self.inst(Assign::new(value, call));
 
                 self.values
-                    .insert(input.value(), value.into())
+                    .insert(input.output_value(), value.into())
                     .debug_unwrap_none();
             }
 
             Node::Output(output) => {
-                let effect = EffectId::new(output.effect());
+                let effect = EffectId::new(output.output_effect());
 
                 let value = input_values
                     .get(&output.value())
@@ -273,7 +279,7 @@ impl IrBuilder {
                     vec![value],
                     effect,
                     graph
-                        .try_input(output.effect_in())
+                        .try_input(output.input_effect())
                         .map(|(_, output, _)| EffectId::new(output)),
                 );
 
@@ -287,6 +293,7 @@ impl IrBuilder {
                     evaluated: BTreeSet::new(),
                     evaluation_stack: Vec::new(),
                     top_level: false,
+                    inline_constants: self.inline_constants,
                 };
                 let (mut body, mut inputs, mut input_vars) = (
                     Block::with_capacity(theta.inputs_len() + theta.outputs_len()),
@@ -427,6 +434,7 @@ impl IrBuilder {
                     evaluated: BTreeSet::new(),
                     evaluation_stack: Vec::new(),
                     top_level: false,
+                    inline_constants: self.inline_constants,
                 };
 
                 let mut truthy = Block::new();
@@ -490,6 +498,7 @@ impl IrBuilder {
                     evaluated: BTreeSet::new(),
                     evaluation_stack: Vec::new(),
                     top_level: false,
+                    inline_constants: self.inline_constants,
                 };
 
                 let mut falsy = Block::new();
@@ -573,13 +582,13 @@ impl IrBuilder {
             Node::InputParam(_) | Node::OutputParam(_) | Node::Start(_) | Node::End(_) => {}
         };
 
-        self.evaluated.insert(node.node_id());
+        self.evaluated.insert(node.node());
 
         let mut outputs: Vec<_> = node
-            .outputs()
+            .all_output_ports()
             .into_iter()
             .flat_map(|output| graph.get_outputs(output))
-            .map(|(node, ..)| node.node_id())
+            .map(|(node, ..)| node.node())
             .collect();
         outputs.sort_unstable();
         self.evaluation_stack.extend(outputs);

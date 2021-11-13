@@ -19,7 +19,7 @@ pub trait Port: Debug + Clone + Copy + PartialEq + Eq + Hash {
 pub struct PortId(u32);
 
 impl PortId {
-    pub(super) const fn new(id: u32) -> Self {
+    pub const fn new(id: u32) -> Self {
         Self(id)
     }
 
@@ -83,7 +83,7 @@ impl Display for InputPort {
 pub struct OutputPort(PortId);
 
 impl OutputPort {
-    pub(super) const fn new(id: PortId) -> Self {
+    pub const fn new(id: PortId) -> Self {
         Self(id)
     }
 }

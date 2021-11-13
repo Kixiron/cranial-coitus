@@ -152,18 +152,20 @@ impl NodeExt for Gamma {
     }
 
     fn input_desc(&self) -> EdgeDescriptor {
-        EdgeDescriptor::new(EdgeCount::one(), EdgeCount::unlimited())
+        EdgeDescriptor::new(EdgeCount::one(), EdgeCount::new(Some(2), None))
     }
 
     fn all_input_ports(&self) -> TinyVec<[InputPort; 4]> {
-        let mut inputs = TinyVec::with_capacity(self.inputs.len() + 1);
+        let mut inputs = TinyVec::with_capacity(self.inputs.len() + 2);
+        inputs.push(self.condition);
         inputs.extend(self.inputs.iter().copied());
         inputs.push(self.effect_in);
         inputs
     }
 
     fn all_input_port_kinds(&self) -> InputPortKinds {
-        let mut inputs = TinyVec::with_capacity(self.inputs.len() + 1);
+        let mut inputs = TinyVec::with_capacity(self.inputs.len() + 2);
+        inputs.push((self.condition, EdgeKind::Value));
         inputs.extend(
             self.inputs
                 .iter()
@@ -175,6 +177,10 @@ impl NodeExt for Gamma {
     }
 
     fn update_input(&mut self, from: InputPort, to: InputPort) {
+        if self.condition == from {
+            self.condition = to;
+        }
+
         for input in &mut self.inputs {
             if *input == from {
                 *input = to;
@@ -210,9 +216,9 @@ impl NodeExt for Gamma {
     }
 
     fn update_output(&mut self, from: OutputPort, to: OutputPort) {
-        for input in &mut self.outputs {
-            if *input == from {
-                *input = to;
+        for output in &mut self.outputs {
+            if *output == from {
+                *output = to;
             }
         }
 

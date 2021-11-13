@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Gamma, InputParam, Int, Node, NodeExt, OutputPort, Rvsdg, Theta},
+    graph::{Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg, Store, Theta},
     ir::Const,
     passes::Pass,
     utils::{AssertNone, HashMap},
@@ -73,12 +73,12 @@ impl ShiftCell {
         // Get the first load, can either be `src_val := load src_ptr` or
         // `dest_val := load dest_ptr` depending on the configuration
         // of the shift loop
-        let load_one = graph.get_output(start.effect())?.0.as_load()?;
+        let load_one = graph.cast_output_dest::<Load>(start.effect())?;
         let load_ptr_one = graph.input_source(load_one.ptr());
 
         // Get the first store, can either be `store src_ptr, src_dec` or
         // `store dest_ptr, dest_inc`
-        let store_one = graph.get_output(load_one.output_effect())?.0.as_store()?;
+        let store_one = graph.cast_output_dest::<Store>(load_one.output_effect())?;
         let store_ptr_one = graph.input_source(store_one.ptr());
 
         // If the pointers aren't equal, bail
@@ -106,11 +106,11 @@ impl ShiftCell {
             .as_i32()?;
 
         // Get the second load
-        let load_two = graph.get_output(store_one.effect())?.0.as_load()?;
+        let load_two = graph.cast_output_dest::<Load>(store_one.effect())?;
         let load_ptr_two = graph.input_source(load_two.ptr());
 
         // Get the second store
-        let store_two = graph.get_output(load_two.output_effect())?.0.as_store()?;
+        let store_two = graph.cast_output_dest::<Store>(load_two.output_effect())?;
         let store_ptr_two = graph.input_source(store_two.ptr());
 
         // If the pointers aren't equal, bail

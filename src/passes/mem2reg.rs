@@ -243,7 +243,7 @@ impl Pass for Mem2Reg {
                 // store _0, _1
                 // _3 = add _1, int 10
                 // ```
-                if graph.get_input(load.ptr()).0.node() == graph.get_input(store.ptr()).0.node() {
+                if graph.input_source_id(load.ptr()) == graph.input_source_id(store.ptr()) {
                     tracing::debug!(
                         "replaced dependent load with value {:?} (store: {:?})",
                         load,

@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Bool, EdgeKind, End, Gamma, InputParam, InputPort, Int, Node, NodeExt, OutputPort, Rvsdg,
-        Start, Theta,
+        Add, Bool, EdgeKind, End, Gamma, InputParam, InputPort, Int, Load, Node, NodeExt, Not,
+        OutputPort, Rvsdg, Start, Store, Theta,
     },
     ir::Const,
     passes::Pass,
@@ -73,7 +73,7 @@ impl ZeroLoop {
         let start = theta.start_node();
 
         // The node after the effect must be a load
-        let load = graph.get_output(start.effect())?.0.as_load()?;
+        let load = graph.cast_output_dest::<Load>(start.effect())?;
 
         let (target_node, source, _) = graph.get_input(load.ptr());
 
@@ -94,7 +94,7 @@ impl ZeroLoop {
         };
 
         // Get the add node
-        let add = graph.get_output(load.output_value())?.0.as_add()?;
+        let add = graph.cast_output_dest::<Add>(load.output_value())?;
 
         let [lhs, rhs] = [graph.get_input(add.lhs()), graph.get_input(add.rhs())];
 
@@ -125,7 +125,7 @@ impl ZeroLoop {
             return None;
         }
 
-        let store = graph.get_output(load.output_effect())?.0.as_store()?;
+        let store = graph.cast_output_dest::<Store>(load.output_effect())?;
         if graph.get_input(store.value()).1 != add.value() {
             return None;
         }
@@ -153,14 +153,14 @@ impl ZeroLoop {
             return None;
         }
 
-        let not = graph.get_output(eq.value())?.0.as_not()?;
+        let not = graph.cast_output_dest::<Not>(eq.value())?;
 
         // Make sure the `(value + 1) != 0` expression is the theta's condition
-        if graph.get_output(not.value())?.0.node() != theta.condition().node() {
+        if graph.output_dest_id(not.value())? != theta.condition().node() {
             return None;
         }
 
-        let _end = graph.get_output(store.effect())?.0.as_end()?;
+        let _end = graph.cast_output_dest::<End>(store.effect())?;
 
         Some(target_ptr)
     }
@@ -342,9 +342,7 @@ impl ZeroLoop {
         // store _ptr, int 0
         let store = gamma
             .false_branch()
-            .get_output(start.effect())?
-            .0
-            .as_store()?;
+            .cast_output_dest::<Store>(start.effect())?;
 
         // If the stored value isn't zero this isn't a candidate
         if false_values
@@ -358,9 +356,7 @@ impl ZeroLoop {
         // Store should be the only/last thing in the branch
         let _end = gamma
             .false_branch()
-            .get_output(store.effect())?
-            .0
-            .as_end()?;
+            .cast_output_dest::<End>(store.effect())?;
 
         tracing::debug!("gamma store motif 2 matched");
         Some(target_ptr)

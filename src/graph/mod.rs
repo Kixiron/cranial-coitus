@@ -450,11 +450,19 @@ impl Rvsdg {
         }
     }
 
+    #[inline]
     #[track_caller]
     pub fn input_source_node(&self, input: InputPort) -> &Node {
         self.get_input(input).0
     }
 
+    #[inline]
+    #[track_caller]
+    pub fn input_source_id(&self, input: InputPort) -> NodeId {
+        self.input_source_node(input).node()
+    }
+
+    #[inline]
     #[track_caller]
     pub fn try_input(&self, input: InputPort) -> Option<(&Node, OutputPort, EdgeKind)> {
         let (parent_node, _, source_port, edge_kind) = self.inputs_inner(input).next()?;
@@ -527,8 +535,32 @@ impl Rvsdg {
             .and_then(|(node, _, _)| node.try_into().ok())
     }
 
+    #[inline]
+    #[track_caller]
     pub fn get_output(&self, output: OutputPort) -> Option<(&Node, InputPort, EdgeKind)> {
         self.get_outputs(output).next()
+    }
+
+    #[inline]
+    #[track_caller]
+    pub fn output_dest_node(&self, output: OutputPort) -> Option<&Node> {
+        self.get_output(output).map(|(node, ..)| node)
+    }
+
+    #[inline]
+    #[track_caller]
+    pub fn output_dest_id(&self, output: OutputPort) -> Option<NodeId> {
+        self.output_dest_node(output).map(NodeExt::node)
+    }
+
+    #[inline]
+    #[track_caller]
+    pub fn cast_output_dest<T>(&self, output: OutputPort) -> Option<T>
+    where
+        for<'a> &'a Node: TryInto<T>,
+    {
+        self.output_dest_node(output)
+            .and_then(|node| node.try_into().ok())
     }
 
     pub fn get_outputs(

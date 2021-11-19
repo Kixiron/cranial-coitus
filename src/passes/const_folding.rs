@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Add, Bool, EdgeKind, Eq, Gamma, InputParam, InputPort, Int, Neg, NodeExt, Not, OutputPort,
-        Rvsdg, Theta,
+        Add, Bool, EdgeKind, Eq, Gamma, InputParam, InputPort, Int, Mul, Neg, NodeExt, Not,
+        OutputPort, Rvsdg, Theta,
     },
     ir::Const,
     passes::Pass,
@@ -50,37 +50,160 @@ impl Pass for ConstFolding {
         self.changed = false;
     }
 
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+        let replaced = self.values.insert(int.value(), value.into());
+        debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
+    }
+
+    fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
+        let replaced = self.values.insert(bool.value(), value.into());
+        debug_assert!(replaced.is_none() || replaced == Some(Const::Bool(value)));
+    }
+
     fn visit_add(&mut self, graph: &mut Rvsdg, add: Add) {
-        let inputs @ [(_, lhs), (_, rhs)] = [
+        let inputs = [
             self.operand(graph, add.lhs()),
             self.operand(graph, add.rhs()),
         ];
 
-        // If both sides of the add are known, we can evaluate it
-        if let (Some(lhs), Some(rhs)) = (lhs, rhs) {
-            let sum = lhs + rhs;
-            tracing::debug!(lhs, rhs, "evaluated add {:?} to {}", add, sum);
+        match inputs {
+            // If both sides of the add are known, we can evaluate it directly
+            // `10 + 10 => 20`
+            [(_, Some(lhs)), (_, Some(rhs))] => {
+                let sum = lhs + rhs;
+                tracing::debug!(lhs, rhs, "evaluated add {:?} to {}", add, sum);
 
-            let int = graph.int(sum);
-            self.values.insert(int.value(), sum.into());
-            self.values.remove(&add.value());
+                let int = graph.int(sum);
+                graph.rewire_dependents(add.value(), int.value());
+                self.changed();
 
-            graph.rewire_dependents(add.value(), int.value());
+                // Add the derived values to the known constants
+                self.values.insert(int.value(), sum.into());
+                self.values.insert(add.value(), sum.into());
+            }
 
-            self.changed();
+            // If either side of the add is zero, we can simplify it to the non-zero value
+            // `x + 0 => x`, `0 + x => x`
+            [(_, Some(0)), (value, None)] | [(value, None), (_, Some(0))] => {
+                tracing::debug!(
+                    "removing an addition by zero {:?} into a direct value of {:?}",
+                    add,
+                    value,
+                );
 
-        // If either side of the add is zero, we can remove the add entirely
-        } else if let [(_, Some(0)), (non_zero_value, None)]
-        | [(non_zero_value, None), (_, Some(0))] = inputs
-        {
-            tracing::debug!(
-                "removing an addition by zero {:?} into a direct value of {:?}",
-                add,
-                non_zero_value,
-            );
+                graph.rewire_dependents(add.value(), value);
+                self.changed();
 
-            graph.rewire_dependents(add.value(), non_zero_value);
+                // Add the derived value for the add node to the known constants
+                if let Some(value) = self.values.get(&value).cloned() {
+                    self.values.insert(add.value(), value);
+                }
+            }
 
+            // If one side of the add is the negative of the other, the add simplifies into a zero
+            // `x + -x => 0`, `-x + x => 0`
+            [(lhs, _), (rhs, _)] | [(rhs, _), (lhs, _)]
+                if graph
+                    .cast_output_dest::<Neg>(rhs)
+                    .map_or(false, |neg| graph.input_source(neg.input()) == lhs) =>
+            {
+                tracing::debug!(
+                    ?add,
+                    "removing an addition by negated value into a direct value of 0",
+                );
+
+                let zero = graph.int(0);
+                graph.rewire_dependents(add.value(), zero.value());
+                self.changed();
+
+                // Add the derived values to the known constants
+                self.values.insert(zero.value(), 0.into());
+                self.values.insert(add.value(), 0.into());
+            }
+
+            _ => {}
+        }
+    }
+
+    fn visit_mul(&mut self, graph: &mut Rvsdg, mul: Mul) {
+        let inputs = [
+            self.operand(graph, mul.lhs()),
+            self.operand(graph, mul.rhs()),
+        ];
+
+        match inputs {
+            // If both sides of the multiply are known, we can evaluate it directly
+            // `10 * 10 => 100`
+            [(_, Some(lhs)), (_, Some(rhs))] => {
+                let product = lhs * rhs;
+                tracing::debug!(lhs, rhs, "evaluated multiply {:?} to {}", mul, product);
+
+                let int = graph.int(product);
+                graph.rewire_dependents(mul.value(), int.value());
+                self.changed();
+
+                // Add the derived values to the known constants
+                self.values.insert(int.value(), product.into());
+                self.values.insert(mul.value(), product.into());
+            }
+
+            // If either side of the multiply is zero, we can remove the multiply entirely for zero
+            // `x * 0 => 0`, `0 * x => 0`
+            [(zero, Some(0)), _] | [_, (zero, Some(0))] => {
+                tracing::debug!(
+                    zero_port = ?zero,
+                    "removing an multiply by zero {:?} into a direct value of 0",
+                    mul,
+                );
+
+                graph.rewire_dependents(mul.value(), zero);
+                self.changed();
+
+                // Add the derived value to the known constants
+                self.values.insert(mul.value(), 0.into());
+            }
+
+            // If either side of the multiply is one, we can remove the multiply entirely for the non-one value
+            // `x * 1 => x`, `1 * x => x`
+            [(_, Some(1)), (value, None)] | [(value, None), (_, Some(1))] => {
+                tracing::debug!(
+                    "removing an multiply by one {:?} into a direct value of {:?}",
+                    mul,
+                    value,
+                );
+
+                graph.rewire_dependents(mul.value(), value);
+                self.changed();
+
+                // Add the derived value for the mul node to the known constants
+                if let Some(value) = self.values.get(&value).cloned() {
+                    self.values.insert(mul.value(), value);
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
+        let mut changed = false;
+        let mut visitor = Self::new();
+
+        // For each input into the theta region, if the input value is a known constant
+        // then we should associate the input value with said constant
+        // Note: We only propagate **invariant** inputs into the loop, propagating
+        //       variant inputs requires dataflow information
+        for (input, param) in theta.invariant_input_pairs() {
+            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
+                let replaced = visitor.values.insert(param.output(), constant);
+                debug_assert!(replaced.is_none());
+            }
+        }
+
+        changed |= visitor.visit_graph(theta.body_mut());
+
+        if changed {
+            graph.replace_node(theta.node(), theta);
             self.changed();
         }
     }
@@ -167,16 +290,6 @@ impl Pass for ConstFolding {
         }
     }
 
-    fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
-        let replaced = self.values.insert(bool.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Bool(value)));
-    }
-
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
-        let replaced = self.values.insert(int.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
-    }
-
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
         let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
@@ -251,29 +364,6 @@ impl Pass for ConstFolding {
             self.changed();
         }
     }
-
-    fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
-        let mut changed = false;
-        let mut visitor = Self::new();
-
-        // For each input into the theta region, if the input value is a known constant
-        // then we should associate the input value with said constant
-        // Note: We only propagate **invariant** inputs into the loop, propagating
-        //       variant inputs requires dataflow information
-        for (input, param) in theta.invariant_input_pairs() {
-            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
-                let replaced = visitor.values.insert(param.output(), constant);
-                debug_assert!(replaced.is_none());
-            }
-        }
-
-        changed |= visitor.visit_graph(theta.body_mut());
-
-        if changed {
-            graph.replace_node(theta.node(), theta);
-            self.changed();
-        }
-    }
 }
 
 impl Default for ConstFolding {
@@ -292,6 +382,19 @@ test_opts! {
         let lhs = graph.int(10);
         let rhs = graph.int(20);
         let sum = graph.add(lhs.value(), rhs.value());
+
+        graph.output(sum.value(), effect).output_effect()
+    },
+}
+
+test_opts! {
+    constant_mul,
+    passes = [ConstFolding::new(), Dce::new()],
+    output = [100],
+    |graph, effect| {
+        let lhs = graph.int(10);
+        let rhs = graph.int(10);
+        let sum = graph.mul(lhs.value(), rhs.value());
 
         graph.output(sum.value(), effect).output_effect()
     },

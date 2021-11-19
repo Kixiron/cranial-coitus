@@ -1,5 +1,8 @@
 use crate::graph::{
-    nodes::node_ext::{InputPortKinds, InputPorts, OutputPortKinds},
+    nodes::{
+        node_ext::{InputPortKinds, InputPorts, OutputPortKinds},
+        ops::Mul,
+    },
     Add, Bool, EdgeDescriptor, End, Eq, Gamma, Input, InputParam, InputPort, Int, Load, Neg,
     NodeExt, NodeId, Not, Output, OutputParam, OutputPort, Start, Store, Theta,
 };
@@ -11,6 +14,7 @@ pub enum Node {
     Int(Int, i32),
     Bool(Bool, bool),
     Add(Add),
+    Mul(Mul),
     Load(Load),
     Store(Store),
     Start(Start),
@@ -32,6 +36,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.node(),
             Self::Bool(bool, _) => bool.node(),
             Self::Add(add) => add.node(),
+            Self::Mul(mul) => mul.node(),
             Self::Load(load) => load.node(),
             Self::Store(store) => store.node(),
             Self::Start(start) => start.node(),
@@ -53,6 +58,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.input_desc(),
             Self::Bool(bool, _) => bool.input_desc(),
             Self::Add(add) => add.input_desc(),
+            Self::Mul(mul) => mul.input_desc(),
             Self::Load(load) => load.input_desc(),
             Self::Store(store) => store.input_desc(),
             Self::Start(start) => start.input_desc(),
@@ -74,6 +80,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.all_input_ports(),
             Self::Bool(bool, _) => bool.all_input_ports(),
             Self::Add(add) => add.all_input_ports(),
+            Self::Mul(mul) => mul.all_input_ports(),
             Self::Load(load) => load.all_input_ports(),
             Self::Store(store) => store.all_input_ports(),
             Self::Start(start) => start.all_input_ports(),
@@ -95,6 +102,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.all_input_port_kinds(),
             Self::Bool(bool, _) => bool.all_input_port_kinds(),
             Self::Add(add) => add.all_input_port_kinds(),
+            Self::Mul(mul) => mul.all_input_port_kinds(),
             Self::Load(load) => load.all_input_port_kinds(),
             Self::Store(store) => store.all_input_port_kinds(),
             Self::Start(start) => start.all_input_port_kinds(),
@@ -116,6 +124,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.update_input(from, to),
             Self::Bool(bool, _) => bool.update_input(from, to),
             Self::Add(add) => add.update_input(from, to),
+            Self::Mul(mul) => mul.update_input(from, to),
             Self::Load(load) => load.update_input(from, to),
             Self::Store(store) => store.update_input(from, to),
             Self::Start(start) => start.update_input(from, to),
@@ -137,6 +146,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.output_desc(),
             Self::Bool(bool, _) => bool.output_desc(),
             Self::Add(add) => add.output_desc(),
+            Self::Mul(mul) => mul.output_desc(),
             Self::Load(load) => load.output_desc(),
             Self::Store(store) => store.output_desc(),
             Self::Start(start) => start.output_desc(),
@@ -158,6 +168,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.all_output_ports(),
             Self::Bool(bool, _) => bool.all_output_ports(),
             Self::Add(add) => add.all_output_ports(),
+            Self::Mul(mul) => mul.all_output_ports(),
             Self::Load(load) => load.all_output_ports(),
             Self::Store(store) => store.all_output_ports(),
             Self::Start(start) => start.all_output_ports(),
@@ -179,6 +190,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.all_output_port_kinds(),
             Self::Bool(bool, _) => bool.all_output_port_kinds(),
             Self::Add(add) => add.all_output_port_kinds(),
+            Self::Mul(mul) => mul.all_output_port_kinds(),
             Self::Load(load) => load.all_output_port_kinds(),
             Self::Store(store) => store.all_output_port_kinds(),
             Self::Start(start) => start.all_output_port_kinds(),
@@ -200,6 +212,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.update_output(from, to),
             Self::Bool(bool, _) => bool.update_output(from, to),
             Self::Add(add) => add.update_output(from, to),
+            Self::Mul(mul) => mul.update_output(from, to),
             Self::Load(load) => load.update_output(from, to),
             Self::Store(store) => store.update_output(from, to),
             Self::Start(start) => start.update_output(from, to),
@@ -367,6 +380,18 @@ macro_rules! node_variants {
                 }
             }
 
+            impl<'a> TryInto<&'a $type> for &'a Node {
+                type Error = Self;
+
+                fn try_into(self) -> Result<&'a $type, Self::Error> {
+                    if let node_variants!(@variant node, $type, $($name)?) = self {
+                        Ok(node)
+                    } else {
+                        Err(self)
+                    }
+                }
+            }
+
             impl Node {
                 paste! {
                     pub const fn [<is_ $type:snake>](&self) -> bool {
@@ -426,6 +451,7 @@ macro_rules! node_variants {
 
 node_variants! {
     Add,
+    Mul,
     Load,
     Store,
     Start,

@@ -1,5 +1,5 @@
 mod add_sub_loop;
-mod associative_add;
+mod associative_ops;
 mod const_folding;
 mod dataflow;
 mod dce;
@@ -9,12 +9,13 @@ mod expr_dedup;
 mod licm;
 mod mem2reg;
 mod shift;
+mod square_cell;
 mod symbolic_eval;
 mod unobserved_store;
 mod zero_loop;
 
 pub use add_sub_loop::AddSubLoop;
-pub use associative_add::AssociativeAdd;
+pub use associative_ops::AssociativeOps;
 pub use const_folding::ConstFolding;
 pub use dataflow::Dataflow;
 pub use dce::Dce;
@@ -24,14 +25,15 @@ pub use expr_dedup::ExprDedup;
 pub use licm::Licm;
 pub use mem2reg::Mem2Reg;
 pub use shift::ShiftCell;
+pub use square_cell::SquareCell;
 pub use symbolic_eval::SymbolicEval;
 pub use unobserved_store::UnobservedStore;
 pub use zero_loop::ZeroLoop;
 
 use crate::{
     graph::{
-        Add, Bool, End, Eq, Gamma, Input, InputParam, Int, Load, Neg, Node, NodeExt, NodeId, Not,
-        Output, OutputParam, Rvsdg, Start, Store, Theta,
+        Add, Bool, End, Eq, Gamma, Input, InputParam, Int, Load, Mul, Neg, Node, NodeExt, NodeId,
+        Not, Output, OutputParam, Rvsdg, Start, Store, Theta,
     },
     utils::HashSet,
 };
@@ -41,7 +43,7 @@ pub fn default_passes(cells: usize) -> Vec<Box<dyn Pass>> {
     bvec![
         UnobservedStore::new(),
         ConstFolding::new(),
-        AssociativeAdd::new(),
+        AssociativeOps::new(),
         ZeroLoop::new(),
         Mem2Reg::new(cells),
         AddSubLoop::new(),
@@ -227,6 +229,7 @@ pub trait Pass {
                 Node::Int(int, value) => self.visit_int(graph, int, value),
                 Node::Bool(bool, value) => self.visit_bool(graph, bool, value),
                 Node::Add(add) => self.visit_add(graph, add),
+                Node::Mul(mul) => self.visit_mul(graph, mul),
                 Node::Load(load) => self.visit_load(graph, load),
                 Node::Store(store) => self.visit_store(graph, store),
                 Node::Start(start) => self.visit_start(graph, start),
@@ -249,6 +252,7 @@ pub trait Pass {
     fn visit_int(&mut self, _graph: &mut Rvsdg, _int: Int, _value: i32) {}
     fn visit_bool(&mut self, _graph: &mut Rvsdg, _bool: Bool, _value: bool) {}
     fn visit_add(&mut self, _graph: &mut Rvsdg, _add: Add) {}
+    fn visit_mul(&mut self, _graph: &mut Rvsdg, _mul: Mul) {}
     fn visit_load(&mut self, _graph: &mut Rvsdg, _load: Load) {}
     fn visit_store(&mut self, _graph: &mut Rvsdg, _store: Store) {}
     fn visit_start(&mut self, _graph: &mut Rvsdg, _start: Start) {}

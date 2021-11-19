@@ -732,6 +732,7 @@ pub enum Variance {
 pub enum Expr {
     Eq(Eq),
     Add(Add),
+    Mul(Mul),
     Not(Not),
     Neg(Neg),
     Load(Load),
@@ -769,6 +770,7 @@ impl Pretty for Expr {
         match self {
             Self::Eq(eq) => eq.pretty(allocator, total_instructions),
             Self::Add(add) => add.pretty(allocator, total_instructions),
+            Self::Mul(mul) => mul.pretty(allocator, total_instructions),
             Self::Not(not) => not.pretty(allocator, total_instructions),
             Self::Neg(neg) => neg.pretty(allocator, total_instructions),
             Self::Load(load) => load.pretty(allocator, total_instructions),
@@ -811,6 +813,12 @@ impl From<Eq> for Expr {
 impl From<Add> for Expr {
     fn from(add: Add) -> Self {
         Self::Add(add)
+    }
+}
+
+impl From<Mul> for Expr {
+    fn from(mul: Mul) -> Self {
+        Self::Mul(mul)
     }
 }
 
@@ -864,6 +872,46 @@ impl Pretty for Add {
     {
         allocator
             .text("add")
+            .append(allocator.space())
+            .append(self.lhs.pretty(allocator, total_instructions))
+            .append(allocator.text(","))
+            .append(allocator.space())
+            .append(self.rhs.pretty(allocator, total_instructions))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Mul {
+    pub lhs: Value,
+    pub rhs: Value,
+}
+
+impl Mul {
+    pub fn new<L, R>(lhs: L, rhs: R) -> Self
+    where
+        L: Into<Value>,
+        R: Into<Value>,
+    {
+        Self {
+            lhs: lhs.into(),
+            rhs: rhs.into(),
+        }
+    }
+}
+
+impl Pretty for Mul {
+    fn pretty<'a, D, A>(
+        &'a self,
+        allocator: &'a D,
+        total_instructions: Option<usize>,
+    ) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+    {
+        allocator
+            .text("mul")
             .append(allocator.space())
             .append(self.lhs.pretty(allocator, total_instructions))
             .append(allocator.text(","))
@@ -1247,6 +1295,28 @@ impl ops::Add for &Const {
 
     fn add(self, rhs: Self) -> Self::Output {
         self.clone() + rhs.clone()
+    }
+}
+
+impl ops::Mul for Const {
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs * rhs),
+            (Self::Int(lhs), Self::U8(rhs)) => Self::Int(lhs * rhs as i32),
+            (Self::U8(lhs), Self::Int(rhs)) => Self::Int(lhs as i32 * rhs),
+            (Self::U8(lhs), Self::U8(rhs)) => Self::U8(lhs.wrapping_mul(rhs)),
+            (Self::Bool(_), _) | (_, Self::Bool(_)) => panic!("can't multiply booleans"),
+        }
+    }
+}
+
+impl ops::Mul for &Const {
+    type Output = Const;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        self.clone() * rhs.clone()
     }
 }
 

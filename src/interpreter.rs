@@ -1,7 +1,7 @@
 use crate::{
     ir::{
-        Add, Assign, AssignTag, Block, Call, Const, Eq, Expr, Gamma, Instruction, Load, Neg, Not,
-        Store, Theta, Value, VarId, Variance,
+        Add, Assign, AssignTag, Block, Call, Const, Eq, Expr, Gamma, Instruction, Load, Mul, Neg,
+        Not, Store, Theta, Value, VarId, Variance,
     },
     utils::AssertNone,
 };
@@ -125,6 +125,7 @@ where
         match expr {
             Expr::Eq(eq) => self.eq(eq),
             Expr::Add(add) => self.add(add),
+            Expr::Mul(mul) => self.mul(mul),
             Expr::Not(not) => self.not(not),
             Expr::Neg(neg) => self.neg(neg),
             Expr::Value(value) => self.get_const(value).cloned(),
@@ -395,10 +396,13 @@ where
     }
 
     fn add(&self, add: &Add) -> Result<Const> {
-        tracing::trace!(values = ?self.values[self.values_idx]);
-
         let (lhs, rhs) = (self.get_const(&add.lhs)?, self.get_const(&add.rhs)?);
         Ok(lhs + rhs)
+    }
+
+    fn mul(&self, mul: &Mul) -> Result<Const> {
+        let (lhs, rhs) = (self.get_const(&mul.lhs)?, self.get_const(&mul.rhs)?);
+        Ok(lhs * rhs)
     }
 
     fn not(&self, not: &Not) -> Result<Const> {

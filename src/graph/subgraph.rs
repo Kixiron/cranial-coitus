@@ -15,12 +15,12 @@ impl Subgraph {
 
     /// Get the [`Start`] of the subgraph
     pub fn start_node(&self) -> Start {
-        self.graph.to_node(self.start)
+        *self.graph.to_node(self.start)
     }
 
     /// Get the [`End`] of the subgraph
     pub fn end_node(&self) -> End {
-        self.graph.to_node(self.end)
+        *self.graph.to_node(self.end)
     }
 }
 

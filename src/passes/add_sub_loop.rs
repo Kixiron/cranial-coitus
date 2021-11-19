@@ -256,7 +256,7 @@ impl Pass for AddSubLoop {
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
-        let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -266,21 +266,21 @@ impl Pass for AddSubLoop {
 
             if let Some(constant) = self.values.get(&source).cloned() {
                 let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
-                truthy_visitor
+                true_visitor
                     .values
                     .insert(true_param.output(), constant.clone())
                     .debug_unwrap_none();
 
                 let false_param = gamma.false_branch().to_node::<InputParam>(false_param);
-                falsy_visitor
+                false_visitor
                     .values
                     .insert(false_param.output(), constant)
                     .debug_unwrap_none();
             }
         }
 
-        changed |= truthy_visitor.visit_graph(gamma.true_mut());
-        changed |= falsy_visitor.visit_graph(gamma.false_mut());
+        changed |= true_visitor.visit_graph(gamma.true_mut());
+        changed |= false_visitor.visit_graph(gamma.false_mut());
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
@@ -438,7 +438,7 @@ impl Default for AddSubLoop {
 #[cfg(test)]
 mod tests {
     use crate::passes::{
-        AddSubLoop, AssociativeAdd, ConstFolding, ElimConstGamma, ExprDedup, Mem2Reg,
+        AddSubLoop, AssociativeOps, ConstFolding, ElimConstGamma, ExprDedup, Mem2Reg,
         UnobservedStore, ZeroLoop,
     };
 
@@ -453,7 +453,7 @@ mod tests {
             Dce::new(),
             UnobservedStore::new(),
             ConstFolding::new(),
-            AssociativeAdd::new(),
+            AssociativeOps::new(),
             ZeroLoop::new(),
             Mem2Reg::new(TAPE_LEN),
             AddSubLoop::new(),

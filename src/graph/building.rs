@@ -1,8 +1,9 @@
 use crate::{
     graph::{
         nodes::{GammaStub, ThetaEffects, ThetaStub},
-        Add, Bool, EdgeKind, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Neg, Node,
-        Not, Output, OutputParam, OutputPort, Rvsdg, Start, Store, Subgraph, Theta, ThetaData,
+        Add, Bool, EdgeKind, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul, Neg,
+        Node, Not, Output, OutputParam, OutputPort, Rvsdg, Start, Store, Subgraph, Theta,
+        ThetaData,
     },
     utils::AssertNone,
 };
@@ -89,6 +90,29 @@ impl Rvsdg {
             .debug_unwrap_none();
 
         add
+    }
+
+    #[track_caller]
+    pub fn mul(&mut self, lhs: OutputPort, rhs: OutputPort) -> Mul {
+        self.assert_value_port(lhs);
+        self.assert_value_port(rhs);
+
+        let mul_id = self.next_node();
+
+        let lhs_port = self.input_port(mul_id, EdgeKind::Value);
+        self.add_value_edge(lhs, lhs_port);
+
+        let rhs_port = self.input_port(mul_id, EdgeKind::Value);
+        self.add_value_edge(rhs, rhs_port);
+
+        let output = self.output_port(mul_id, EdgeKind::Value);
+
+        let mul = Mul::new(mul_id, lhs_port, rhs_port, output);
+        self.nodes
+            .insert(mul_id, Node::Mul(mul))
+            .debug_unwrap_none();
+
+        mul
     }
 
     #[track_caller]

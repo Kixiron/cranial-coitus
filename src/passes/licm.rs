@@ -274,8 +274,8 @@ impl Pass for Licm {
 
         for (output, [true_out, false_out]) in outputs {
             let (true_out, false_out) = (
-                gamma.true_branch().to_node::<OutputParam>(true_out),
-                gamma.false_branch().to_node::<OutputParam>(false_out),
+                *gamma.true_branch().to_node::<OutputParam>(true_out),
+                *gamma.false_branch().to_node::<OutputParam>(false_out),
             );
 
             let (true_in, false_in) = (

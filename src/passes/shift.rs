@@ -1,10 +1,11 @@
 use crate::{
-    graph::{Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg, Store, Theta},
+    graph::{Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg, Start, Store, Theta},
     ir::Const,
     passes::Pass,
     utils::{AssertNone, HashMap},
 };
 
+#[derive(Debug)]
 pub struct ShiftCell {
     changed: bool,
     values: HashMap<OutputPort, Const>,
@@ -22,6 +23,164 @@ impl ShiftCell {
 
     fn changed(&mut self) {
         self.changed = true;
+    }
+
+    fn visit_gamma_theta(
+        &mut self,
+        graph: &mut Rvsdg,
+        theta: &mut Theta,
+    ) -> (bool, Option<(ShiftCandidate, Self)>) {
+        let mut changed = false;
+        let mut visitor = Self::new();
+
+        // For each input into the theta region, if the input value is a known constant
+        // then we should associate the input value with said constant
+        for (input, param) in theta.input_pairs() {
+            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
+                visitor
+                    .values
+                    .insert(param.output(), constant)
+                    .debug_unwrap_none();
+            }
+        }
+
+        changed |= visitor.visit_graph(theta.body_mut());
+
+        let candidate = self
+            .theta_is_candidate(&visitor.values, theta)
+            .map(|candidate| (candidate, visitor));
+
+        (changed, candidate)
+    }
+
+    fn inline_shift_gamma(
+        &mut self,
+        gamma: &Gamma,
+        theta: &Theta,
+        visitor: Self,
+        graph: &mut Rvsdg,
+        theta_graph: &Rvsdg,
+        shift_candidate: ShiftCandidate,
+    ) -> bool {
+        let ShiftCandidate { src_ptr, dest_ptr } = shift_candidate;
+
+        tracing::debug!(
+            "found theta that composes to a shift loop copying from {:?} to {:?}",
+            src_ptr,
+            dest_ptr,
+        );
+
+        let mut get_gamma_input = |output| {
+            visitor
+                .values
+                .get(&output)
+                .and_then(Const::convert_to_i32)
+                .map(|int| graph.int(int).value())
+                .or_else(|| {
+                    theta
+                        .invariant_input_pairs()
+                        .find_map(|(port, input)| {
+                            if input.output() == output {
+                                Some(theta_graph.get_input(port).1)
+                            } else {
+                                None
+                            }
+                        })
+                        .and_then(|output| {
+                            self.values
+                                .get(&output)
+                                .and_then(Const::convert_to_i32)
+                                .map(|int| graph.int(int).value())
+                                .or_else(|| {
+                                    gamma.inputs().iter().zip(gamma.input_params()).find_map(
+                                        |(&port, &[_, input])| {
+                                            let input =
+                                                gamma.false_branch().to_node::<InputParam>(input);
+
+                                            if input.output() == output {
+                                                Some(graph.get_input(port).1)
+                                            } else {
+                                                None
+                                            }
+                                        },
+                                    )
+                                })
+                        })
+                })
+        };
+
+        if let (Some(src_ptr), Some(dest_ptr)) =
+            (get_gamma_input(src_ptr), get_gamma_input(dest_ptr))
+        {
+            let input_effect = graph.input_source(gamma.effect_in());
+
+            // Load the source value
+            let src_val = graph.load(src_ptr, input_effect);
+
+            // Store the source value into the destination cell
+            let store_src_to_dest =
+                graph.store(dest_ptr, src_val.output_value(), src_val.output_effect());
+
+            // Unconditionally store 0 to the destination cell
+            let zero = graph.int(0);
+            let zero_dest_cell = graph.store(src_ptr, zero.value(), store_src_to_dest.effect());
+
+            // Wire the final store into the gamma's output effect
+            graph.rewire_dependents(gamma.effect_out(), zero_dest_cell.effect());
+
+            for (port, param) in theta.output_pairs() {
+                if let Some((input_node, ..)) = theta.body().try_input(param.input()) {
+                    match *input_node {
+                        Node::Int(_, value) => {
+                            let int = graph.int(value);
+                            graph.rewire_dependents(port, int.value());
+                        }
+
+                        Node::Bool(_, value) => {
+                            let bool = graph.bool(value);
+                            graph.rewire_dependents(port, bool.value());
+                        }
+
+                        Node::InputParam(param) => {
+                            let input_value = graph.input_source(
+                                theta
+                                    .input_pairs()
+                                    .find_map(|(port, input)| {
+                                        (input.node() == param.node()).then(|| port)
+                                    })
+                                    .unwrap(),
+                            );
+
+                            graph.rewire_dependents(port, input_value);
+                        }
+
+                        ref other => {
+                            tracing::error!("missed output value from theta {:?}", other);
+                        }
+                    }
+                } else {
+                    tracing::error!(
+                        "output value from theta had no inputs {:?}->{:?}",
+                        param,
+                        port,
+                    );
+                }
+            }
+
+            graph.remove_node(gamma.node());
+            self.changed();
+
+            true
+        } else {
+            tracing::trace!(
+                "failed to optimize shift loop copying from {:?} to {:?}, \
+                the pointers were not in the expected form yet",
+                src_ptr,
+                dest_ptr,
+            );
+
+            false
+        }
     }
 
     /// The shift cell motif looks like this and is generated by the
@@ -221,7 +380,7 @@ impl Pass for ShiftCell {
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
-        let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -231,21 +390,82 @@ impl Pass for ShiftCell {
 
             if let Some(constant) = self.values.get(&source).cloned() {
                 let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
-                truthy_visitor
+                true_visitor
                     .values
                     .insert(true_param.output(), constant.clone())
                     .debug_unwrap_none();
 
                 let false_param = gamma.false_branch().to_node::<InputParam>(false_param);
-                falsy_visitor
+                false_visitor
                     .values
                     .insert(false_param.output(), constant)
                     .debug_unwrap_none();
             }
         }
 
-        changed |= truthy_visitor.visit_graph(gamma.true_mut());
-        changed |= falsy_visitor.visit_graph(gamma.false_mut());
+        changed |= true_visitor.visit_graph(gamma.true_mut());
+        changed |= false_visitor.visit_graph(gamma.false_mut());
+
+        // Is `true` if the gamma's true branch is a passthrough
+        let true_is_empty = {
+            let start = gamma.true_branch().to_node::<Start>(gamma.starts()[0]);
+            let next_node = gamma
+                .true_branch()
+                .get_output(start.effect())
+                .unwrap()
+                .0
+                .node();
+
+            next_node == gamma.ends()[0]
+        };
+
+        if true_is_empty {
+            tracing::trace!(gamma = ?gamma.node(), "found gamma with empty true branch");
+            let start = gamma.false_branch().to_node::<Start>(gamma.starts()[1]);
+
+            // TODO: Make sure the next effect is the end node
+            // TODO: Make sure the gamma's condition is correct
+            if let Some(mut theta) = gamma
+                .false_branch()
+                .get_output(start.effect())
+                .unwrap()
+                .0
+                .as_theta()
+                .cloned()
+            {
+                tracing::trace!(
+                    gamma = ?gamma.node(),
+                    theta = ?theta.node(),
+                    "found gamma with empty true branch and a false branch containing a theta",
+                );
+
+                let (gamma_changed, candidate) =
+                    dbg!(false_visitor.visit_gamma_theta(gamma.false_mut(), &mut theta));
+                changed |= gamma_changed;
+
+                if let Some((candidate, theta_body_visitor)) = candidate {
+                    if self.inline_shift_gamma(
+                        &gamma,
+                        &theta,
+                        theta_body_visitor,
+                        graph,
+                        gamma.false_branch(),
+                        candidate,
+                    ) {
+                        tracing::trace!(
+                            gamma = ?gamma.node(),
+                            theta = ?theta.node(),
+                            "inlined shift cell candidate",
+                        );
+
+                        self.shifts_removed += 1;
+                        self.changed();
+
+                        return;
+                    }
+                }
+            }
+        }
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
@@ -269,105 +489,6 @@ impl Pass for ShiftCell {
         }
 
         changed |= visitor.visit_graph(theta.body_mut());
-
-        if let Some(ShiftCandidate { src_ptr, dest_ptr }) =
-            self.theta_is_candidate(&visitor.values, &theta)
-        {
-            tracing::debug!(
-                "found theta that composes to a shift loop copying from {:?} to {:?}",
-                src_ptr,
-                dest_ptr,
-            );
-
-            let mut get_theta_input = |output| {
-                visitor
-                    .values
-                    .get(&output)
-                    .and_then(Const::convert_to_i32)
-                    .map(|int| graph.int(int).value())
-                    .or_else(|| {
-                        theta.invariant_input_pairs().find_map(|(port, input)| {
-                            if input.output() == output {
-                                Some(graph.get_input(port).1)
-                            } else {
-                                None
-                            }
-                        })
-                    })
-            };
-
-            if let (Some(src_ptr), Some(dest_ptr)) =
-                (get_theta_input(src_ptr), get_theta_input(dest_ptr))
-            {
-                let input_effect = graph.input_source(theta.input_effect().unwrap());
-
-                // Load the source value
-                let src_val = graph.load(src_ptr, input_effect);
-
-                // Store the source value into the destination cell
-                let store_src_to_dest =
-                    graph.store(dest_ptr, src_val.output_value(), src_val.output_effect());
-
-                // Unconditionally store 0 to the destination cell
-                let zero = graph.int(0);
-                let zero_dest_cell = graph.store(src_ptr, zero.value(), store_src_to_dest.effect());
-
-                // Wire the final store into the theta's output effect
-                graph.rewire_dependents(theta.output_effect().unwrap(), zero_dest_cell.effect());
-
-                for (port, param) in theta.output_pairs() {
-                    if let Some((input_node, ..)) = theta.body().try_input(param.input()) {
-                        match *input_node {
-                            Node::Int(_, value) => {
-                                let int = graph.int(value);
-                                graph.rewire_dependents(port, int.value());
-                            }
-
-                            Node::Bool(_, value) => {
-                                let bool = graph.bool(value);
-                                graph.rewire_dependents(port, bool.value());
-                            }
-
-                            Node::InputParam(param) => {
-                                let input_value = graph.input_source(
-                                    theta
-                                        .input_pairs()
-                                        .find_map(|(port, input)| {
-                                            (input.node() == param.node()).then(|| port)
-                                        })
-                                        .unwrap(),
-                                );
-
-                                graph.rewire_dependents(port, input_value);
-                            }
-
-                            ref other => {
-                                tracing::error!("missed output value from theta {:?}", other);
-                            }
-                        }
-                    } else {
-                        tracing::error!(
-                            "output value from theta had no inputs {:?}->{:?}",
-                            param,
-                            port,
-                        );
-                    }
-                }
-
-                graph.remove_node(theta.node());
-                self.shifts_removed += 1;
-                self.changed();
-
-                return;
-            } else {
-                tracing::trace!(
-                    "failed to optimize shift loop copying from {:?} to {:?}, \
-                    the pointers were not in the expected form yet",
-                    src_ptr,
-                    dest_ptr,
-                );
-            }
-        }
 
         if changed {
             graph.replace_node(theta.node(), theta);

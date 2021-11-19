@@ -8,8 +8,8 @@ mod subgraph;
 
 pub use edge::{EdgeCount, EdgeDescriptor, EdgeKind};
 pub use nodes::{
-    Add, Bool, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Neg, Node, NodeExt, NodeId,
-    Not, Output, OutputParam, Start, Store, Theta, ThetaData,
+    Add, Bool, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul, Neg, Node, NodeExt,
+    NodeId, Not, Output, OutputParam, Start, Store, Theta, ThetaData,
 };
 pub use ports::{InputPort, OutputPort, Port, PortData, PortId, PortKind};
 pub use subgraph::Subgraph;
@@ -496,9 +496,9 @@ impl Rvsdg {
     }
 
     #[track_caller]
-    pub fn to_node<T>(&self, node: NodeId) -> T
+    pub fn to_node<T>(&self, node: NodeId) -> &T
     where
-        for<'a> &'a Node: TryInto<T>,
+        for<'a> &'a Node: TryInto<&'a T>,
     {
         if let Some(node) = self.cast_node::<T>(node) {
             node
@@ -512,24 +512,24 @@ impl Rvsdg {
         }
     }
 
-    pub fn cast_node<T>(&self, node: NodeId) -> Option<T>
+    pub fn cast_node<T>(&self, node: NodeId) -> Option<&T>
     where
-        for<'a> &'a Node: TryInto<T>,
+        for<'a> &'a Node: TryInto<&'a T>,
     {
         self.try_node(node).and_then(|node| node.try_into().ok())
     }
 
-    pub fn cast_source<T>(&self, target: InputPort) -> Option<T>
+    pub fn cast_source<T>(&self, target: InputPort) -> Option<&T>
     where
-        for<'a> &'a Node: TryInto<T>,
+        for<'a> &'a Node: TryInto<&'a T>,
     {
         self.try_input(target)
             .and_then(|(node, _, _)| node.try_into().ok())
     }
 
-    pub fn cast_target<T>(&self, source: OutputPort) -> Option<T>
+    pub fn cast_target<T>(&self, source: OutputPort) -> Option<&T>
     where
-        for<'a> &'a Node: TryInto<T>,
+        for<'a> &'a Node: TryInto<&'a T>,
     {
         self.get_output(source)
             .and_then(|(node, _, _)| node.try_into().ok())
@@ -555,9 +555,9 @@ impl Rvsdg {
 
     #[inline]
     #[track_caller]
-    pub fn cast_output_dest<T>(&self, output: OutputPort) -> Option<T>
+    pub fn cast_output_dest<T>(&self, output: OutputPort) -> Option<&T>
     where
-        for<'a> &'a Node: TryInto<T>,
+        for<'a> &'a Node: TryInto<&'a T>,
     {
         self.output_dest_node(output)
             .and_then(|node| node.try_into().ok())

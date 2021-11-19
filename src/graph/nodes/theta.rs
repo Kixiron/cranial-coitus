@@ -112,7 +112,7 @@ impl Theta {
 
     /// Get the [`OutputParam`] of the theta's condition from within its body
     pub fn condition(&self) -> OutputParam {
-        self.subgraph.to_node(self.condition)
+        *self.subgraph.to_node(self.condition)
     }
 
     /// Get the [`Start`] of the theta's body
@@ -284,7 +284,7 @@ impl Theta {
     pub fn invariant_input_pairs(&self) -> impl Iterator<Item = (InputPort, InputParam)> + '_ {
         self.invariant_inputs
             .iter()
-            .map(|(&port, &param)| (port, self.subgraph.to_node(param)))
+            .map(|(&port, &param)| (port, *self.subgraph.to_node(param)))
     }
 
     /// Returns the node ids of each invariant input and the input port that feeds into them
@@ -299,6 +299,7 @@ impl Theta {
         self.invariant_inputs
             .iter()
             .map(|(_, &param)| self.subgraph.to_node(param))
+            .copied()
     }
 
     /// Returns the node ids of invariant inputs to the theta node
@@ -324,7 +325,7 @@ impl Theta {
     pub fn variant_input_pairs(&self) -> impl Iterator<Item = (InputPort, InputParam)> + '_ {
         self.variant_inputs
             .iter()
-            .map(|(&port, &param)| (port, self.subgraph.to_node(param)))
+            .map(|(&port, &param)| (port, *self.subgraph.to_node(param)))
     }
 
     /// Returns the node ids of each variant input and the input port that feeds into them
@@ -339,6 +340,7 @@ impl Theta {
         self.variant_inputs
             .iter()
             .map(|(_, &param)| self.subgraph.to_node(param))
+            .copied()
     }
 
     /// Returns the node ids of variant inputs to the theta node
@@ -380,7 +382,7 @@ impl Theta {
     pub fn output_pairs(&self) -> impl Iterator<Item = (OutputPort, OutputParam)> + '_ {
         self.outputs
             .iter()
-            .map(|(&port, &param)| (port, self.subgraph.to_node(param)))
+            .map(|(&port, &param)| (port, *self.subgraph.to_node(param)))
     }
 
     /// Returns the node ids of each output param and the output port that feeds into them
@@ -409,6 +411,7 @@ impl Theta {
         self.outputs
             .iter()
             .map(|(_, &param)| self.subgraph.to_node(param))
+            .copied()
     }
 
     /// Returns the node ids of outputs from the theta node, *not including effect outputs*
@@ -421,7 +424,10 @@ impl Theta {
     pub fn variant_inputs_loopback(&self) -> impl Iterator<Item = (InputParam, OutputParam)> + '_ {
         self.output_feedback.iter().map(|(output, input)| {
             let (input, output) = (self.variant_inputs[input], self.outputs[output]);
-            (self.subgraph.to_node(input), self.subgraph.to_node(output))
+            (
+                *self.subgraph.to_node(input),
+                *self.subgraph.to_node(output),
+            )
         })
     }
 }
@@ -433,6 +439,7 @@ impl Theta {
         self.outputs
             .get(&port)
             .map(|&node| self.subgraph.to_node(node))
+            .copied()
     }
 
     /// Returns `true` if the theta's condition is always `false`

@@ -89,12 +89,10 @@ impl Pass for UnobservedStore {
             });
 
             let consumer_is_end = consumer.is_end() && !self.within_theta && !self.within_gamma;
-            let consumer_is_infinite = consumer.as_theta().map_or(false, Theta::is_infinite);
 
-            if consumer_is_end || stores_to_identical_cell || consumer_is_infinite {
+            if consumer_is_end || stores_to_identical_cell {
                 tracing::debug!(
                     consumer_is_end,
-                    consumer_is_infinite,
                     stores_to_identical_cell,
                     "removing unobserved store {:?}",
                     store,

@@ -242,7 +242,7 @@ impl IrBuilder {
             }
 
             Node::Store(store) => {
-                let effect = EffectId::new(store.effect());
+                let effect = EffectId::new(store.output_effect());
 
                 let ptr = input_values
                     .get(&store.ptr())

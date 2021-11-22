@@ -145,7 +145,7 @@ impl Store {
         self.input_effect
     }
 
-    pub const fn effect(&self) -> OutputPort {
+    pub const fn output_effect(&self) -> OutputPort {
         self.output_effect
     }
 }

@@ -35,7 +35,7 @@ impl ShiftCell {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (input, param) in theta.input_pairs() {
+        for (input, param) in theta.invariant_input_pairs() {
             if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
                 visitor
                     .values
@@ -123,10 +123,11 @@ impl ShiftCell {
 
             // Unconditionally store 0 to the destination cell
             let zero = graph.int(0);
-            let zero_dest_cell = graph.store(src_ptr, zero.value(), store_src_to_dest.effect());
+            let zero_dest_cell =
+                graph.store(src_ptr, zero.value(), store_src_to_dest.output_effect());
 
             // Wire the final store into the gamma's output effect
-            graph.rewire_dependents(gamma.effect_out(), zero_dest_cell.effect());
+            graph.rewire_dependents(gamma.effect_out(), zero_dest_cell.output_effect());
 
             for (port, param) in theta.output_pairs() {
                 if let Some((input_node, ..)) = theta.body().try_input(param.input()) {
@@ -265,7 +266,7 @@ impl ShiftCell {
             .as_i32()?;
 
         // Get the second load
-        let load_two = graph.cast_output_dest::<Load>(store_one.effect())?;
+        let load_two = graph.cast_output_dest::<Load>(store_one.output_effect())?;
         let load_ptr_two = graph.input_source(load_two.ptr());
 
         // Get the second store
@@ -298,7 +299,7 @@ impl ShiftCell {
 
         // Make sure that the second store is the last effect in the body
         let end = theta.end_node();
-        let store_two_effect_target = graph.get_output(store_two.effect())?.1;
+        let store_two_effect_target = graph.get_output(store_two.output_effect())?.1;
         if store_two_effect_target != end.input_effect() {
             return None;
         }
@@ -440,7 +441,7 @@ impl Pass for ShiftCell {
                 );
 
                 let (gamma_changed, candidate) =
-                    dbg!(false_visitor.visit_gamma_theta(gamma.false_mut(), &mut theta));
+                    false_visitor.visit_gamma_theta(gamma.false_mut(), &mut theta);
                 changed |= gamma_changed;
 
                 if let Some((candidate, theta_body_visitor)) = candidate {
@@ -479,7 +480,7 @@ impl Pass for ShiftCell {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (input, param) in theta.input_pairs() {
+        for (input, param) in theta.invariant_input_pairs() {
             if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
                 visitor
                     .values

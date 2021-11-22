@@ -182,7 +182,7 @@ impl Pass for Mem2Reg {
                 (Some(old), Some(new)) if old == new => {
                     tracing::debug!("removing identical store {:?}", store);
 
-                    graph.splice_ports(store.effect_in(), store.effect());
+                    graph.splice_ports(store.effect_in(), store.output_effect());
                     graph.remove_node(store.node());
 
                     self.changed();
@@ -205,7 +205,7 @@ impl Pass for Mem2Reg {
             }
         }
 
-        let effect_output = graph.get_output(store.effect());
+        let effect_output = graph.get_output(store.output_effect());
         if let Some((node, _, kind)) = effect_output {
             debug_assert_eq!(kind, EdgeKind::Effect);
 

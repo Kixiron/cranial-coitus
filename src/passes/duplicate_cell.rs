@@ -35,7 +35,7 @@ impl DuplicateCell {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (input, param) in theta.input_pairs() {
+        for (input, param) in theta.invariant_input_pairs() {
             if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
                 visitor
                     .values
@@ -139,7 +139,7 @@ impl DuplicateCell {
                 let sum = graph.add(load.output_value(), src_val.output_value());
                 let store = graph.store(dest_ptr, sum.value(), load.output_effect());
 
-                last_effect = store.effect();
+                last_effect = store.output_effect();
             }
 
             // Unconditionally store 0 to the source cell
@@ -147,7 +147,7 @@ impl DuplicateCell {
             let zero_src_cell = graph.store(src_ptr, zero.value(), last_effect);
 
             // Wire the final store into the gamma's output effect
-            graph.rewire_dependents(gamma.effect_out(), zero_src_cell.effect());
+            graph.rewire_dependents(gamma.effect_out(), zero_src_cell.output_effect());
 
             for (port, param) in theta.output_pairs() {
                 if let Some((input_node, ..)) = theta.body().try_input(param.input()) {
@@ -356,7 +356,7 @@ impl DuplicateCell {
             add_value,
         )?;
 
-        Some((ptr, val_add.value(), store.effect()))
+        Some((ptr, val_add.value(), store.output_effect()))
     }
 
     fn compare_operands(
@@ -523,7 +523,7 @@ impl Pass for DuplicateCell {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (input, param) in theta.input_pairs() {
+        for (input, param) in theta.invariant_input_pairs() {
             if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
                 visitor
                     .values

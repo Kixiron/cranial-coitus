@@ -1,12 +1,13 @@
 use crate::{
     graph::{
-        End, Gamma, InputParam, Int, Load, Node, NodeExt, NodeId, OutputPort, Rvsdg, Start, Store,
-        Theta,
+        Add, End, Eq, Gamma, InputParam, InputPort, Int, Load, NodeExt, NodeId, Not, OutputPort,
+        Rvsdg, Start, Store, Theta,
     },
     ir::Const,
     passes::Pass,
-    utils::{AssertNone, HashMap},
+    utils::AssertNone,
 };
+use std::collections::BTreeMap;
 
 /// Turn the multiplication of a cell by itself (x²) into a multiplication instruction
 ///
@@ -101,14 +102,14 @@ use crate::{
 #[derive(Debug)]
 pub struct SquareCell {
     changed: bool,
-    values: HashMap<OutputPort, Const>,
+    values: BTreeMap<OutputPort, Const>,
     squares_removed: usize,
 }
 
 impl SquareCell {
     pub fn new() -> Self {
         Self {
-            values: HashMap::with_hasher(Default::default()),
+            values: BTreeMap::new(),
             changed: false,
             squares_removed: 0,
         }
@@ -196,9 +197,292 @@ impl SquareCell {
     /// } while { temp1_not_zero }
     /// ```
     ///
-    fn outmost_theta_is_candidate(&self, theta: &Theta) -> Option<OutmostCandidate> {
-        todo!()
+    fn outmost_theta_is_candidate(
+        &self,
+        values: &BTreeMap<OutputPort, Const>,
+        theta: &Theta,
+    ) -> Option<OutmostTheta> {
+        let graph = theta.body();
+
+        let start = theta.start_node();
+
+        // `temp0_val := load temp0_ptr`
+        let temp0_load = graph.cast_output_dest::<Load>(start.effect())?;
+        let temp0_ptr = graph.input_source(temp0_load.ptr());
+
+        // `store temp0_ptr, temp0_minus_one`
+        let temp0_store = graph.cast_output_dest::<Store>(temp0_load.output_effect())?;
+        if graph.input_source(temp0_store.ptr()) != temp0_ptr {
+            return None;
+        }
+
+        // `temp0_minus_one := add temp0_val, int -1`
+        let temp0_minus_one = graph.cast_input_source::<Add>(temp0_store.value())?;
+        if !ports_match(
+            graph,
+            values,
+            (temp0_minus_one.lhs(), temp0_minus_one.rhs()),
+            temp0_load.output_value(),
+            -1,
+        ) {
+            return None;
+        }
+
+        // `if temp0_eq_zero { ... } else { ... }`
+        let inner_gamma = graph.cast_output_dest::<Gamma>(temp0_store.output_effect())?;
+
+        // `temp0_eq_zero := eq temp0_minus_one, int 0`
+        let temp0_eq_zero = graph.cast_input_source::<Eq>(inner_gamma.condition())?;
+        if !ports_match(
+            graph,
+            values,
+            (temp0_eq_zero.lhs(), temp0_eq_zero.rhs()),
+            temp0_minus_one.value(),
+            0,
+        ) {
+            return None;
+        }
+
+        // `src_val := load src_ptr`
+        let src_load = graph.cast_output_dest::<Load>(inner_gamma.effect_out())?;
+        let src_ptr = graph.input_source(src_load.ptr());
+
+        if src_ptr == temp0_ptr {
+            return None;
+        }
+
+        // `store src_ptr, src_plus_one`
+        let src_store = graph.cast_output_dest::<Store>(src_load.output_effect())?;
+        if graph.input_source(src_store.ptr()) != src_ptr {
+            return None;
+        }
+
+        // `src_plus_one := add src_val, int 1`
+        let src_plus_one = graph.cast_input_source::<Add>(src_store.value())?;
+        if !ports_match(
+            graph,
+            values,
+            (src_plus_one.lhs(), src_plus_one.rhs()),
+            src_load.output_value(),
+            1,
+        ) {
+            return None;
+        }
+
+        // `temp1_val := load temp1_ptr`
+        let temp1_load = graph.cast_output_dest::<Load>(src_store.output_effect())?;
+        let temp1_ptr = graph.input_source(temp1_load.ptr());
+
+        if temp1_ptr == src_ptr || temp1_ptr == temp0_ptr {
+            return None;
+        }
+
+        // `store temp0_ptr, temp1_val`
+        let temp0_store_with_temp1_val =
+            graph.cast_output_dest::<Store>(temp1_load.output_effect())?;
+        if graph.input_source(temp0_store_with_temp1_val.ptr()) != temp0_ptr
+            || graph.input_source(temp0_store_with_temp1_val.value()) != temp1_load.output_value()
+        {
+            return None;
+        }
+
+        // `store temp1_ptr, int 0`
+        let zero_temp1 =
+            graph.cast_output_dest::<Store>(temp0_store_with_temp1_val.output_effect())?;
+        if graph.input_source(zero_temp1.ptr()) != temp1_ptr
+            || values
+                .get(&graph.input_source(zero_temp1.value()))
+                .and_then(Const::convert_to_i32)
+                != Some(0)
+        {
+            return None;
+        }
+
+        // `temp1_not_zero := not temp1_eq_zero`
+        let temp1_not_zero = graph.cast_input_source::<Not>(theta.condition().input())?;
+
+        // `temp1_eq_zero := eq temp1_val, int 0`
+        let temp1_eq_zero = graph.cast_input_source::<Eq>(temp1_not_zero.input())?;
+        if !ports_match(
+            graph,
+            values,
+            (temp1_eq_zero.lhs(), temp0_eq_zero.rhs()),
+            temp1_load.output_value(),
+            0,
+        ) {
+            return None;
+        }
+
+        let candidate = OutmostTheta::new(inner_gamma.node(), src_ptr, temp0_ptr, temp1_ptr);
+        Some(candidate)
     }
+
+    /// ```
+    /// if temp0_eq_zero {
+    ///     // If temp0 is zero, pass
+    /// } else {
+    ///     // Otherwise, perform the inner loop
+    ///     do { ... } while { ... }
+    /// }
+    /// ```
+    fn inner_gamma_is_candidate(&self, gamma: &Gamma) -> Option<InnerGamma> {
+        // Make sure the true branch is empty
+        {
+            let graph = gamma.true_branch();
+            debug_assert_eq!(graph.start_nodes().len(), 1);
+            debug_assert_eq!(graph.end_nodes().len(), 1);
+
+            let start = graph.to_node::<Start>(graph.start_nodes()[0]);
+
+            if gamma.true_branch().output_dest_id(start.effect())? != graph.end_nodes()[0] {
+                return None;
+            }
+        }
+
+        let graph = gamma.false_branch();
+        debug_assert_eq!(graph.start_nodes().len(), 1);
+        debug_assert_eq!(graph.end_nodes().len(), 1);
+
+        let start = graph.to_node::<Start>(graph.start_nodes()[0]);
+
+        // `do { ... } while { ... }`
+        let theta = graph.cast_output_dest::<Theta>(start.effect())?;
+        if graph.output_dest_id(theta.output_effect()?)? != graph.end_nodes()[0] {
+            return None;
+        }
+
+        Some(InnerGamma::new(theta.node()))
+    }
+
+    /// ```
+    /// // Add 1 to temp1
+    /// temp1_val := load temp1_ptr
+    /// temp1_plus_one := add temp1_val, int 1
+    /// store temp1_ptr, temp1_plus_one
+    ///
+    /// // Add 2 (??) to src
+    /// src_val := load src_ptr
+    /// // TODO: Will this always be two?
+    /// src_plus_two := add src_val, int 2
+    /// store src_ptr, src_plus_two
+    ///
+    /// // Subtract 1 from temp0
+    /// temp0_val := load temp0_ptr
+    /// temp0_minus_one := add temp0_val, int -1
+    /// store temp0_ptr, temp0_minus_one
+    ///
+    /// // Keep looping while temp0 is non-zero
+    /// temp0_eq_zero := eq temp0_minus_one, int 0
+    /// temp0_not_zero := not temp0_eq_zero
+    /// ```
+    fn inner_theta_is_candidate(
+        &self,
+        theta: &Theta,
+        values: &BTreeMap<OutputPort, Const>,
+    ) -> Option<()> {
+        let graph = theta.body();
+        let start = theta.start_node();
+
+        // `temp1_val := load temp1_ptr`
+        let temp1_load = graph.cast_output_dest::<Load>(start.effect())?;
+        let temp1_ptr = graph.input_source(temp1_load.ptr());
+
+        // `store temp1_ptr, temp1_plus_one`
+        let temp1_store = graph.cast_output_dest::<Store>(temp1_load.output_effect())?;
+        if graph.input_source(temp1_store.ptr()) != temp1_ptr {
+            return None;
+        }
+
+        // `temp1_plus_one := add temp1_val, int 1`
+        let temp1_plus_one = graph.cast_input_source::<Add>(temp1_store.value())?;
+        if !ports_match(
+            graph,
+            values,
+            (temp1_plus_one.lhs(), temp1_plus_one.rhs()),
+            temp1_load.output_value(),
+            1,
+        ) {
+            return None;
+        }
+
+        // `src_val := load src_ptr`
+        let src_load = graph.cast_output_dest::<Load>(temp1_store.output_effect())?;
+        let src_ptr = graph.input_source(src_load.ptr());
+
+        // `store src_ptr, src_plus_two`
+        let src_store = graph.cast_output_dest::<Store>(src_load.output_effect())?;
+        if graph.input_source(src_store.ptr()) != src_ptr {
+            return None;
+        }
+
+        // `src_plus_two := add src_val, int 2`
+        let src_plus_two = graph.cast_input_source::<Add>(src_store.value())?;
+        if !ports_match(
+            graph,
+            values,
+            (src_plus_two.lhs(), src_plus_two.rhs()),
+            src_load.output_value(),
+            2,
+        ) {
+            return None;
+        }
+
+        // `temp0_val := load temp0_ptr`
+        let temp0_load = graph.cast_output_dest::<Load>(src_store.output_effect())?;
+        let temp0_ptr = graph.input_source(temp0_load.ptr());
+
+        // `store temp0_ptr, temp0_minus_one`
+        let temp0_store = graph.cast_output_dest::<Store>(temp0_load.output_effect())?;
+        if graph.input_source(temp0_store.ptr()) != temp0_ptr {
+            return None;
+        }
+
+        // `temp0_minus_one := add temp0_val, int -1`
+        let temp0_minus_one = graph.cast_input_source::<Add>(temp0_store.value())?;
+        if !ports_match(
+            graph,
+            values,
+            (temp0_minus_one.lhs(), temp0_minus_one.rhs()),
+            temp0_load.output_value(),
+            -1,
+        ) {
+            return None;
+        }
+
+        // `temp0_not_zero := not temp0_eq_zero`
+        let temp0_not_zero = graph.cast_input_source::<Not>(theta.condition().input())?;
+
+        // `temp0_eq_zero := eq temp0_minus_one, int 0`
+        let temp0_eq_zero = graph.cast_input_source::<Eq>(temp0_not_zero.input())?;
+        if !ports_match(
+            graph,
+            values,
+            (temp0_eq_zero.lhs(), temp0_eq_zero.rhs()),
+            temp0_minus_one.value(),
+            0,
+        ) {
+            return None;
+        }
+
+        Some(())
+    }
+}
+
+fn ports_match(
+    graph: &Rvsdg,
+    values: &BTreeMap<OutputPort, Const>,
+    (lhs, rhs): (InputPort, InputPort),
+    value: OutputPort,
+    literal: i32,
+) -> bool {
+    let (lhs_src, rhs_src) = (graph.input_source(lhs), graph.input_source(rhs));
+
+    let (lhs_val, rhs_val) = (
+        values.get(&lhs_src).and_then(Const::convert_to_i32),
+        values.get(&rhs_src).and_then(Const::convert_to_i32),
+    );
+
+    (lhs_src == value && rhs_val == Some(literal)) || (lhs_val == Some(literal) && rhs_src == value)
 }
 
 /// Returns `true` if the given graph has no other nodes between its [`Start`] and [`End`] nodes
@@ -214,7 +498,7 @@ fn gamma_branch_is_empty(branch: &Rvsdg) -> bool {
 
 impl Pass for SquareCell {
     fn pass_name(&self) -> &str {
-        "shift-cell"
+        "square-cell"
     }
 
     fn did_change(&self) -> bool {
@@ -228,7 +512,7 @@ impl Pass for SquareCell {
 
     fn report(&self) {
         tracing::info!(
-            "{} removed {} cell shift motifs",
+            "{} removed {} square motifs",
             self.pass_name(),
             self.squares_removed,
         );
@@ -268,16 +552,185 @@ impl Pass for SquareCell {
         changed |= false_visitor.visit_graph(gamma.false_mut());
 
         if let Some(theta_id) = self.outer_gamma_is_candidate(&gamma) {
-            let outmost_theta = gamma.false_branch().to_node::<Theta>(theta_id);
-            if let Some(candidate) = false_visitor.outmost_theta_is_candidate(outmost_theta) {
-                let OutmostCandidate {
+            let mut outmost_theta_visitor = Self::new();
+            let mut outmost_theta = gamma.false_branch().to_node::<Theta>(theta_id).clone();
+
+            // For each input into the theta region, if the input value is a known constant
+            // then we should associate the input value with said constant
+            for (input, param) in outmost_theta.invariant_input_pairs() {
+                if let Some(constant) = false_visitor
+                    .values
+                    .get(&gamma.false_branch().input_source(input))
+                    .cloned()
+                {
+                    outmost_theta_visitor
+                        .values
+                        .insert(param.output(), constant)
+                        .debug_unwrap_none();
+                }
+            }
+            changed |= outmost_theta_visitor.visit_graph(outmost_theta.body_mut());
+
+            if let Some(candidate) = false_visitor
+                .outmost_theta_is_candidate(&outmost_theta_visitor.values, &outmost_theta)
+            {
+                let OutmostTheta {
                     inner_gamma_id,
                     src_ptr,
                     temp0_ptr,
                     temp1_ptr,
                 } = candidate;
 
-                todo!()
+                let inner_gamma = outmost_theta.body().to_node::<Gamma>(inner_gamma_id);
+                let mut inner_gamma_visitor = Self::new();
+
+                for (&input, &[_, param]) in
+                    inner_gamma.inputs().iter().zip(inner_gamma.input_params())
+                {
+                    if let Some(constant) = outmost_theta_visitor
+                        .values
+                        .get(&outmost_theta.body().input_source(input))
+                        .cloned()
+                    {
+                        let param = inner_gamma.false_branch().to_node::<InputParam>(param);
+
+                        inner_gamma_visitor
+                            .values
+                            .insert(param.output(), constant)
+                            .debug_unwrap_none();
+                    }
+                }
+                inner_gamma_visitor.visit_graph(&mut inner_gamma.false_branch().clone());
+
+                if let Some(InnerGamma { inner_theta_id }) =
+                    inner_gamma_visitor.inner_gamma_is_candidate(inner_gamma)
+                {
+                    let inner_theta = inner_gamma.false_branch().to_node::<Theta>(inner_theta_id);
+                    let mut inner_theta_visitor = Self::new();
+
+                    for (input, param) in inner_theta.invariant_input_pairs() {
+                        if let Some(constant) = inner_gamma_visitor
+                            .values
+                            .get(&inner_gamma.false_branch().input_source(input))
+                            .cloned()
+                        {
+                            inner_theta_visitor
+                                .values
+                                .insert(param.output(), constant)
+                                .debug_unwrap_none();
+                        }
+                    }
+                    inner_theta_visitor.visit_graph(&mut inner_theta.body().clone());
+
+                    if let Some(()) = inner_theta_visitor
+                        .inner_theta_is_candidate(inner_theta, &inner_theta_visitor.values)
+                    {
+                        // FIXME: Check that src/temp0/temp1 pointers are the same
+
+                        // FIXME: ???
+                        let mut get_input = |output| {
+                            outmost_theta_visitor
+                                .values
+                                .get(&output)
+                                .and_then(Const::convert_to_i32)
+                                .map(|int| graph.int(int).value())
+                                .or_else(|| {
+                                    outmost_theta
+                                        .invariant_input_pairs()
+                                        .find_map(|(port, input)| {
+                                            if input.output() == output {
+                                                Some(gamma.false_branch().input_source(port))
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .and_then(|output| {
+                                            self.values
+                                                .get(&output)
+                                                .and_then(Const::convert_to_i32)
+                                                .map(|int| graph.int(int).value())
+                                                .or_else(|| {
+                                                    gamma
+                                                        .inputs()
+                                                        .iter()
+                                                        .zip(gamma.input_params())
+                                                        .find_map(|(&port, &[_, input])| {
+                                                            let input =
+                                                                gamma
+                                                                    .false_branch()
+                                                                    .to_node::<InputParam>(input);
+
+                                                            if input.output() == output {
+                                                                Some(graph.input_source(port))
+                                                            } else {
+                                                                None
+                                                            }
+                                                        })
+                                                })
+                                        })
+                                })
+                        };
+
+                        // ```
+                        // // Load the source value
+                        // src_val := load src_ptr
+                        //
+                        // // Multiply the source value by itself
+                        // src_squared := mul src_val, src_val
+                        //
+                        // // Store the squared value into the source cell
+                        // store src_ptr, src_squared
+                        //
+                        // // Zero out temp0 and temp1's cells
+                        // store temp0_ptr, int 0
+                        // store temp1_ptr, int 0
+                        // ```
+                        if let (Some(src_ptr), Some(temp0_ptr), Some(temp1_ptr)) = (
+                            get_input(src_ptr),
+                            get_input(temp0_ptr),
+                            get_input(temp1_ptr),
+                        ) {
+                            tracing::trace!(
+                                "found square cell candidate in gamma node {:?}",
+                                gamma.node(),
+                            );
+
+                            let input_effect = graph.input_source(gamma.effect_in());
+
+                            // `src_val := load src_ptr`
+                            let src_load = graph.load(src_ptr, input_effect);
+
+                            // `src_squared := mul src_val, src_val`
+                            let src_squared =
+                                graph.mul(src_load.output_value(), src_load.output_value());
+
+                            // `store src_ptr, src_squared`
+                            let src_store =
+                                graph.store(src_ptr, src_squared.value(), src_load.output_effect());
+
+                            let zero = graph.int(0).value();
+
+                            // `store temp0_ptr, int 0`
+                            let zero_temp0 =
+                                graph.store(temp0_ptr, zero, src_store.output_effect());
+
+                            // `store temp1_ptr, int 0`
+                            let zero_temp1 =
+                                graph.store(temp1_ptr, zero, zero_temp0.output_effect());
+
+                            // Wire the final store into the gamma's output effect
+                            graph.rewire_dependents(gamma.effect_out(), zero_temp1.output_effect());
+
+                            // FIXME: Patch up any output ports
+
+                            graph.remove_node(gamma.node());
+                            self.squares_removed += 1;
+                            self.changed();
+
+                            return;
+                        }
+                    }
+                }
             }
         }
 
@@ -293,7 +746,7 @@ impl Pass for SquareCell {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (input, param) in theta.input_pairs() {
+        for (input, param) in theta.invariant_input_pairs() {
             if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
                 visitor
                     .values
@@ -318,14 +771,14 @@ impl Default for SquareCell {
 }
 
 #[derive(Debug)]
-struct OutmostCandidate {
+struct OutmostTheta {
     inner_gamma_id: NodeId,
     src_ptr: OutputPort,
     temp0_ptr: OutputPort,
     temp1_ptr: OutputPort,
 }
 
-impl OutmostCandidate {
+impl OutmostTheta {
     const fn new(
         inner_gamma_id: NodeId,
         src_ptr: OutputPort,
@@ -338,6 +791,17 @@ impl OutmostCandidate {
             temp0_ptr,
             temp1_ptr,
         }
+    }
+}
+
+#[derive(Debug)]
+struct InnerGamma {
+    inner_theta_id: NodeId,
+}
+
+impl InnerGamma {
+    const fn new(inner_theta_id: NodeId) -> Self {
+        Self { inner_theta_id }
     }
 }
 

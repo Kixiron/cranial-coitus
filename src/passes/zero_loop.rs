@@ -160,7 +160,7 @@ impl ZeroLoop {
             return None;
         }
 
-        let _end = graph.cast_output_dest::<End>(store.effect())?;
+        let _end = graph.cast_output_dest::<End>(store.output_effect())?;
 
         Some(target_ptr)
     }
@@ -263,7 +263,7 @@ impl ZeroLoop {
         // Store should be the only/last thing in the branch
         let _end = gamma
             .false_branch()
-            .get_output(store.effect())?
+            .get_output(store.output_effect())?
             .0
             .as_end()?;
 
@@ -356,7 +356,7 @@ impl ZeroLoop {
         // Store should be the only/last thing in the branch
         let _end = gamma
             .false_branch()
-            .cast_output_dest::<End>(store.effect())?;
+            .cast_output_dest::<End>(store.output_effect())?;
 
         tracing::debug!("gamma store motif 2 matched");
         Some(target_ptr)
@@ -440,7 +440,7 @@ impl Pass for ZeroLoop {
 
             let effect = graph.input_source(gamma.effect_in());
             let store = graph.store(target_ptr, zero.value(), effect);
-            graph.rewire_dependents(gamma.effect_out(), store.effect());
+            graph.rewire_dependents(gamma.effect_out(), store.output_effect());
 
             if gamma.outputs().len() == 1 {
                 tracing::warn!("write comprehensive parameter rerouting for gamma nodes");
@@ -464,7 +464,7 @@ impl Pass for ZeroLoop {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (input, param) in theta.input_pairs() {
+        for (input, param) in theta.invariant_input_pairs() {
             if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
                 visitor
                     .values
@@ -495,7 +495,7 @@ impl Pass for ZeroLoop {
             let store = graph.store(target_cell, zero.value(), effect_source);
 
             // Rewire the theta's ports
-            graph.rewire_dependents(theta.output_effect().unwrap(), store.effect());
+            graph.rewire_dependents(theta.output_effect().unwrap(), store.output_effect());
 
             for (input_port, param) in theta.input_pairs() {
                 if let Some((Node::OutputParam(output), _, EdgeKind::Value)) =

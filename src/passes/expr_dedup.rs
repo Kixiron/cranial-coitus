@@ -119,6 +119,7 @@ impl Pass for ExprDedup {
                 );
 
                 graph.rewire_dependents(next_load.output_value(), load.output_value());
+                graph.rewire_dependents(next_load.output_effect(), load.output_effect());
                 graph.remove_node(next_load.node());
 
                 self.deduplicated_loads += 1;

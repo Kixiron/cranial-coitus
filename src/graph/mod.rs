@@ -458,6 +458,15 @@ impl Rvsdg {
 
     #[inline]
     #[track_caller]
+    pub fn cast_input_source<T>(&self, input: InputPort) -> Option<&T>
+    where
+        for<'a> &'a Node: TryInto<&'a T>,
+    {
+        self.input_source_node(input).try_into().ok()
+    }
+
+    #[inline]
+    #[track_caller]
     pub fn input_source_id(&self, input: InputPort) -> NodeId {
         self.input_source_node(input).node()
     }

@@ -30,7 +30,7 @@ pub fn lower_tokens(
 
                 // Store the incremented value into the pointed-to cell
                 let store = graph.store(ptr, inc, effect);
-                effect = store.effect();
+                effect = store.output_effect();
             }
             Token::Dec => {
                 // Load the pointed-to cell's current value
@@ -42,7 +42,7 @@ pub fn lower_tokens(
 
                 // Store the decremented value into the pointed-to cell
                 let store = graph.store(ptr, dec, effect);
-                effect = store.effect();
+                effect = store.output_effect();
             }
 
             Token::Output => {
@@ -61,7 +61,7 @@ pub fn lower_tokens(
 
                 // Store the input's result to the currently pointed-to cell
                 let store = graph.store(ptr, input.output_value(), effect);
-                effect = store.effect();
+                effect = store.output_effect();
             }
 
             Token::Loop(body) => {

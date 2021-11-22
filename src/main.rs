@@ -303,6 +303,10 @@ fn debug(
 
     let elapsed = start_time.elapsed();
 
+    for pass in &passes {
+        pass.report();
+    }
+
     let output_graph_stats = graph.stats();
     let (mut output_program, output_program_ir) = driver::sequentialize_graph(
         args,

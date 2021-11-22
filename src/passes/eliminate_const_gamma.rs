@@ -349,7 +349,7 @@ impl Pass for ElimConstGamma {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (input, param) in theta.input_pairs() {
+        for (input, param) in theta.invariant_input_pairs() {
             if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
                 visitor
                     .values

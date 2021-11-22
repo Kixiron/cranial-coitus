@@ -52,7 +52,7 @@ impl Pass for UnobservedStore {
     }
 
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
-        if let Some((consumer, _, kind)) = graph.get_output(store.effect()) {
+        if let Some((consumer, _, kind)) = graph.get_output(store.output_effect()) {
             debug_assert_eq!(kind, EdgeKind::Effect);
 
             // If the effect consumer can't observe the store, remove this store.
@@ -100,7 +100,7 @@ impl Pass for UnobservedStore {
                     store,
                 );
 
-                graph.splice_ports(store.effect_in(), store.effect());
+                graph.splice_ports(store.effect_in(), store.output_effect());
                 graph.remove_node(store.node());
                 self.unobserved_stores_removed += 1;
 

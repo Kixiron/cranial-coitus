@@ -52,6 +52,7 @@ pub fn default_passes(cells: usize) -> Vec<Box<dyn Pass>> {
         Dataflow::new(cells),
         ElimConstGamma::new(),
         ConstFolding::new(),
+        SquareCell::new(),
         SymbolicEval::new(cells),
         Licm::new(),
         DuplicateCell::new(),
@@ -61,6 +62,7 @@ pub fn default_passes(cells: usize) -> Vec<Box<dyn Pass>> {
 }
 
 // TODO:
+// - Normalization pass
 // - Addition https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.2B_y
 // - Subtraction https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_-_y
 // - Copy https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_y
@@ -290,7 +292,7 @@ test_opts! {
         // Store a non-zero value to the current cell
         let not_zero = graph.int(255).value();
         let store = graph.store(ptr, not_zero, effect);
-        effect = store.effect();
+        effect = store.output_effect();
 
         // Create the theta node
         let theta = graph.theta([], [ptr], effect, |graph, mut effect, _invariant, variant| {

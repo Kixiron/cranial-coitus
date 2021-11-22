@@ -153,7 +153,7 @@ impl AddSubLoop {
 
         // The load of the rhs
         // _rhs_acc := load _acc_ptr
-        let load_acc = graph.cast_target::<Load>(store_dec_counter.effect())?;
+        let load_acc = graph.cast_target::<Load>(store_dec_counter.output_effect())?;
         let acc_ptr = graph.input_source(load_acc.ptr());
 
         // Stores the decremented or incremented value to the rhs cell
@@ -166,7 +166,7 @@ impl AddSubLoop {
         }
 
         // Ensure that the store is the last effect within the loop
-        let _end = graph.cast_target::<End>(store_inc_dec_acc.effect())?;
+        let _end = graph.cast_target::<End>(store_inc_dec_acc.output_effect())?;
 
         // Either incrementing or decrementing the
         // _inc_acc := add _acc_val, int 1
@@ -376,10 +376,11 @@ impl Pass for AddSubLoop {
 
             // Unconditionally store 0 to the counter cell
             let zero = graph.int(0);
-            let zero_counter = graph.store(counter_ptr, zero.value(), store_sum_diff.effect());
+            let zero_counter =
+                graph.store(counter_ptr, zero.value(), store_sum_diff.output_effect());
 
             // Wire the final store into the theta's output effect
-            graph.rewire_dependents(theta.output_effect().unwrap(), zero_counter.effect());
+            graph.rewire_dependents(theta.output_effect().unwrap(), zero_counter.output_effect());
 
             for (port, param) in theta.output_pairs() {
                 if let Some((input_node, ..)) = theta.body().try_input(param.input()) {
@@ -473,13 +474,13 @@ mod tests {
             let y_input = graph.input(effect);
             effect = y_input.output_effect();
             let store = graph.store(y_ptr, y_input.output_value(), effect);
-            effect = store.effect();
+            effect = store.output_effect();
 
             // Get and store the x value
             let x_input = graph.input(effect);
             effect = x_input.output_effect();
             let store = graph.store(x_ptr, x_input.output_value(), effect);
-            effect = store.effect();
+            effect = store.output_effect();
 
             // Compile the loop
             let (x_ptr, mut effect) = compile_brainfuck_into("[->+<]>", graph, y_ptr, effect);

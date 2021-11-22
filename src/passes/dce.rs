@@ -1,18 +1,22 @@
 use crate::{
     graph::{Node, NodeExt, NodeId, Rvsdg},
     passes::Pass,
-    utils::HashSet,
+    utils::{HashMap, HashSet},
 };
-use std::{collections::VecDeque, mem};
+use std::collections::VecDeque;
 
 /// Removes dead code from the graph
 pub struct Dce {
     changed: bool,
+    nodes_removed: usize,
 }
 
 impl Dce {
     pub fn new() -> Self {
-        Self { changed: false }
+        Self {
+            changed: false,
+            nodes_removed: 0,
+        }
     }
 
     fn changed(&mut self) {
@@ -39,6 +43,11 @@ impl Dce {
                     let stack_len = stack.len();
                     match graph.get_node_mut(node_id) {
                         Node::Gamma(gamma) => {
+                            let (true_nodes, false_nodes) = (
+                                gamma.true_branch().node_len(),
+                                gamma.false_branch().node_len(),
+                            );
+
                             stack.reserve(
                                 1 + gamma.output_params().len() + gamma.input_params().len(),
                             );
@@ -112,12 +121,17 @@ impl Dce {
                             if gamma.true_mut().bulk_retain_nodes(visited) {
                                 self.changed();
                             }
+                            self.nodes_removed += true_nodes - gamma.true_branch().node_len();
+
                             if gamma.false_mut().bulk_retain_nodes(visited) {
                                 self.changed();
                             }
+                            self.nodes_removed += false_nodes - gamma.false_branch().node_len();
                         }
 
                         Node::Theta(theta) => {
+                            let body_nodes = theta.body().node_len();
+
                             stack.reserve(2 + theta.outputs_len() + theta.inputs_len());
                             visited.reserve(2 + theta.outputs_len() + theta.inputs_len());
 
@@ -154,6 +168,8 @@ impl Dce {
                             if theta.body_mut().bulk_retain_nodes(visited) {
                                 self.changed();
                             }
+
+                            self.nodes_removed += body_nodes - theta.body().node_len();
                         }
 
                         _ => {}
@@ -194,16 +210,23 @@ impl Pass for Dce {
         self.changed = false;
     }
 
+    fn report(&self) -> HashMap<&'static str, usize> {
+        map! {
+            "dead nodes" => self.nodes_removed,
+        }
+    }
+
     fn visit_graph_inner(
         &mut self,
         graph: &mut Rvsdg,
-        queue: &mut VecDeque<NodeId>,
+        _queue: &mut VecDeque<NodeId>,
         visited: &mut HashSet<NodeId>,
         stack: &mut Vec<NodeId>,
     ) -> bool {
-        mem::take(queue);
+        let start_nodes = graph.node_len();
 
         // Initialize the buffer
+        stack.reserve(start_nodes / 4);
         stack.extend(graph.end_nodes());
 
         // Semi-recursively mark nodes
@@ -214,6 +237,7 @@ impl Pass for Dce {
             self.changed();
         }
 
+        self.nodes_removed += start_nodes - graph.node_len();
         self.did_change()
     }
 }

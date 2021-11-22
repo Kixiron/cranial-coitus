@@ -113,10 +113,10 @@ impl Pass for Dataflow {
             }
 
             // Propagate constants
-            if let Some(constant) = self.constants.get(&source).cloned() {
+            if let Some(constant) = self.constants.get(&source).copied() {
                 true_visitor
                     .constants
-                    .insert(true_param.output(), constant.clone())
+                    .insert(true_param.output(), constant)
                     .debug_unwrap_none();
 
                 false_visitor

@@ -5,7 +5,7 @@ use crate::{
     },
     ir::Const,
     passes::Pass,
-    utils::AssertNone,
+    utils::{AssertNone, HashMap},
 };
 use std::collections::BTreeMap;
 
@@ -510,12 +510,10 @@ impl Pass for SquareCell {
         self.changed = false;
     }
 
-    fn report(&self) {
-        tracing::info!(
-            "{} removed {} square motifs",
-            self.pass_name(),
-            self.squares_removed,
-        );
+    fn report(&self) -> HashMap<&'static str, usize> {
+        map! {
+            "square loops" => self.squares_removed,
+        }
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
@@ -533,11 +531,11 @@ impl Pass for SquareCell {
         {
             let (_, source, _) = graph.get_input(input);
 
-            if let Some(constant) = self.values.get(&source).cloned() {
+            if let Some(constant) = self.values.get(&source).copied() {
                 let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
                 true_visitor
                     .values
-                    .insert(true_param.output(), constant.clone())
+                    .insert(true_param.output(), constant)
                     .debug_unwrap_none();
 
                 let false_param = gamma.false_branch().to_node::<InputParam>(false_param);
@@ -691,6 +689,9 @@ impl Pass for SquareCell {
                             get_input(temp1_ptr),
                         ) {
                             tracing::trace!(
+                                ?src_ptr,
+                                ?temp0_ptr,
+                                ?temp1_ptr,
                                 "found square cell candidate in gamma node {:?}",
                                 gamma.node(),
                             );
@@ -698,7 +699,7 @@ impl Pass for SquareCell {
                             let input_effect = graph.input_source(gamma.effect_in());
 
                             // `src_val := load src_ptr`
-                            let src_load = graph.load(src_ptr, input_effect);
+                            let src_load = graph.load(temp0_ptr, input_effect);
 
                             // `src_squared := mul src_val, src_val`
                             let src_squared =

@@ -5,7 +5,7 @@ use crate::{
     },
     ir::Const,
     passes::Pass,
-    utils::AssertNone,
+    utils::{AssertNone, HashMap},
 };
 use std::collections::BTreeMap;
 
@@ -65,16 +65,14 @@ impl Pass for Mem2Reg {
         self.changed
     }
 
-    fn report(&self) {
-        tracing::info!(
-            "{} removed {} constant loads, {} elided loads, {} constant stores, {} identical stores and {} dependent loads",
-            self.pass_name(),
-            self.constant_loads_elided,
-            self.loads_elided,
-            self.constant_stores_elided,
-            self.identical_stores_removed,
-            self.dependent_loads_removed,
-        );
+    fn report(&self) -> HashMap<&'static str, usize> {
+        map! {
+            "constant loads" => self.constant_loads_elided,
+            "loads" => self.loads_elided,
+            "dependent loads" => self.dependent_loads_removed,
+            "constant stores" => self.constant_stores_elided,
+            "identical stores" => self.identical_stores_removed,
+        }
     }
 
     fn reset(&mut self) {
@@ -283,8 +281,8 @@ impl Pass for Mem2Reg {
         let tape: Vec<_> = self
             .tape
             .iter()
-            .map(|place| match place {
-                Place::Const(constant) => Place::Const(constant.clone()),
+            .map(|place| match *place {
+                Place::Const(constant) => Place::Const(constant),
                 _ => Place::Unknown,
             })
             .collect();
@@ -385,8 +383,8 @@ impl Pass for Mem2Reg {
         } else {
             self.tape
                 .iter()
-                .map(|place| match place {
-                    Place::Const(constant) => Place::Const(constant.clone()),
+                .map(|place| match *place {
+                    Place::Const(constant) => Place::Const(constant),
                     _ => Place::Unknown,
                 })
                 .collect()

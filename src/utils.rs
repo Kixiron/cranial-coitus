@@ -260,6 +260,25 @@ fn panic_none_with_message(value: &dyn Debug, message: &str) -> ! {
     )
 }
 
+pub trait OptionExt<T> {
+    fn inspect<F>(self, inspect: F) -> Self
+    where
+        F: FnOnce(&T);
+}
+
+impl<T> OptionExt<T> for Option<T> {
+    fn inspect<F>(self, inspect: F) -> Self
+    where
+        F: FnOnce(&T),
+    {
+        if let Some(value) = &self {
+            inspect(value);
+        }
+
+        self
+    }
+}
+
 pub(crate) fn set_logger() {
     let fmt_layer = tracing_fmt::layer()
         .with_target(false)
@@ -310,11 +329,41 @@ macro_rules! vec_deque {
         vec
     }};
 
-    ($($x:expr),+ $(,)?) => {{
-        let mut vec = ::std::collections::VecDeque::with_capacity($({ ::std::stringify!($x); 1 } +)+ 0);
-        $(vec.push_back($x);)+
+    ($($elem:expr),+ $(,)?) => {{
+        const LENGTH: usize = <[()]>::len(&[
+            $( $crate::replace_expr!($elem; ()), )+
+        ]);
+
+        let mut vec = ::std::collections::VecDeque::with_capacity(LENGTH);
+        $( vec.push_back($elem); )+
         vec
     }};
+}
+
+#[macro_export]
+macro_rules! map {
+    () => { $crate::utils::HashMap::new() };
+
+    ($($key:expr => $value:expr),+ $(,)?) => {{
+        const LENGTH: usize = <[()]>::len(&[
+            $( $crate::replace_expr!($key; ()), )+
+        ]);
+
+        let mut map = $crate::utils::HashMap::with_capacity_and_hasher(
+            LENGTH,
+            ::std::hash::BuildHasherDefault::default(),
+        );
+        $( map.insert($key, $value); )+
+        map
+    }};
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! replace_expr {
+    ($expr:expr; $replacement:expr) => {
+        $replacement
+    };
 }
 
 // FIXME: Check for structural equivalence between the optimized graph
@@ -323,11 +372,12 @@ macro_rules! vec_deque {
 macro_rules! test_opts {
     (
         $name:ident,
-        passes = [$($pass:expr),* $(,)?],
+        $(default_passes = $default_passes:expr,)?
+        $(passes = [$($pass:expr),* $(,)?],)?
         $(tape_size = $tape_size:expr,)?
         $(step_limit = $step_limit:expr,)?
         $(input = [$($input:expr),* $(,)?],)?
-        output = [$($output:expr),* $(,)?],
+        output = $output:expr,
         $build:expr $(,)?
     ) => {
         #[test]
@@ -346,12 +396,19 @@ macro_rules! test_opts {
 
             let tape_size: usize = $crate::test_opts!(@tape_size $($tape_size)?);
             let step_limit: usize = $crate::test_opts!(@step_limit $($step_limit)?);
+
             let mut passes: Vec<Box<dyn Pass>> = vec![
-                $(Box::new($pass) as Box<dyn Pass>,)*
+                $($(Box::new($pass) as Box<dyn Pass>,)*)?
             ];
+            $(
+                if $default_passes {
+                    passes = $crate::passes::default_passes(tape_size);
+                }
+            )?
+
             let build: fn(&mut Rvsdg, OutputPort) -> OutputPort = $build;
 
-            let expected_output: Vec<u8> = vec![$($output,)*];
+            let expected_output: Vec<u8> = $output.to_vec();
 
             let mut graph = Rvsdg::new();
             let start = graph.start();

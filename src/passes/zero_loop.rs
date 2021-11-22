@@ -1,17 +1,15 @@
 use crate::{
     graph::{
-        Add, Bool, EdgeKind, End, Gamma, InputParam, InputPort, Int, Load, Node, NodeExt, Not,
-        OutputPort, Rvsdg, Start, Store, Theta,
+        Add, Bool, EdgeKind, End, Gamma, InputPort, Int, Load, Node, NodeExt, Not, OutputPort,
+        Rvsdg, Start, Store, Theta,
     },
-    ir::Const,
-    passes::Pass,
-    utils::AssertNone,
+    passes::{utils::ConstantStore, Pass},
+    utils::HashMap,
 };
-use std::collections::BTreeMap;
 
 pub struct ZeroLoop {
     changed: bool,
-    values: BTreeMap<OutputPort, Const>,
+    values: ConstantStore,
     zero_gammas_removed: usize,
     zero_loops_removed: usize,
 }
@@ -20,7 +18,7 @@ impl ZeroLoop {
     pub fn new() -> Self {
         Self {
             changed: false,
-            values: BTreeMap::new(),
+            values: ConstantStore::new(),
             zero_gammas_removed: 0,
             zero_loops_removed: 0,
         }
@@ -65,7 +63,7 @@ impl ZeroLoop {
     fn is_zero_loop(
         &self,
         theta: &Theta,
-        body_values: &BTreeMap<OutputPort, Const>,
+        body_values: &ConstantStore,
     ) -> Option<Result<i32, InputPort>> {
         let graph = theta.body();
 
@@ -78,19 +76,20 @@ impl ZeroLoop {
         let (target_node, source, _) = graph.get_input(load.ptr());
 
         // We can zero out constant addresses or a dynamically generated ones
-        let target_ptr = if let Some(ptr) = body_values.get(&source) {
-            Ok(ptr.convert_to_i32()?)
-        } else {
-            // FIXME: We're pretty strict right now and only take inputs as "dynamic addresses",
-            //        is it possible that this could be relaxed?
-            let input = target_node.as_input_param()?;
+        let target_ptr = match body_values.i32(source) {
+            Some(ptr) => Ok(ptr),
+            None => {
+                // FIXME: We're pretty strict right now and only take inputs as "dynamic addresses",
+                //        is it possible that this could be relaxed?
+                let input = target_node.as_input_param()?;
 
-            // Find the port that the input param refers to
-            let input_port = theta
-                .input_pairs()
-                .find_map(|(port, param)| (param.node() == input.node()).then(|| port))?;
+                // Find the port that the input param refers to
+                let input_port = theta
+                    .input_pairs()
+                    .find_map(|(port, param)| (param.node() == input.node()).then(|| port))?;
 
-            Err(input_port)
+                Err(input_port)
+            }
         };
 
         // Get the add node
@@ -100,7 +99,7 @@ impl ZeroLoop {
 
         // Make sure that one of the add's operands is the loaded cell and the other is 1 or -1
         if lhs.1 == load.output_value() {
-            let value = body_values.get(&rhs.1)?.convert_to_i32()?;
+            let value = body_values.i32(rhs.1)?;
 
             // Any odd integer will eventually converge to zero
             if value.rem_euclid(2) == 0 {
@@ -111,7 +110,7 @@ impl ZeroLoop {
                 return None;
             }
         } else if rhs.1 == load.output_value() {
-            let value = body_values.get(&lhs.1)?.convert_to_i32()?;
+            let value = body_values.i32(lhs.1)?;
 
             // Any odd integer will eventually converge to zero
             if value.rem_euclid(2) == 0 {
@@ -126,7 +125,7 @@ impl ZeroLoop {
         }
 
         let store = graph.cast_output_dest::<Store>(load.output_effect())?;
-        if graph.get_input(store.value()).1 != add.value() {
+        if graph.input_source(store.value()) != add.value() {
             return None;
         }
 
@@ -138,13 +137,13 @@ impl ZeroLoop {
 
         // Make sure that one of the eq's operands is the added val and the other is 0
         if lhs.1 == add.value() {
-            let value = body_values.get(&rhs.1)?.convert_to_i32()?;
+            let value = body_values.i32(rhs.1)?;
 
             if value != 0 {
                 return None;
             }
         } else if rhs.1 == add.value() {
-            let value = body_values.get(&lhs.1)?.convert_to_i32()?;
+            let value = body_values.i32(lhs.1)?;
 
             if value != 0 {
                 return None;
@@ -174,7 +173,7 @@ impl ZeroLoop {
     fn is_zero_gamma_store(
         &self,
         graph: &Rvsdg,
-        false_values: &BTreeMap<OutputPort, Const>,
+        false_values: &ConstantStore,
         gamma: &Gamma,
     ) -> Option<Result<i32, OutputPort>> {
         self.gamma_store_motif_1(graph, false_values, gamma)
@@ -194,7 +193,7 @@ impl ZeroLoop {
     fn gamma_store_motif_1(
         &self,
         graph: &Rvsdg,
-        false_values: &BTreeMap<OutputPort, Const>,
+        false_values: &ConstantStore,
         gamma: &Gamma,
     ) -> Option<Result<i32, OutputPort>> {
         // _eq = eq _value, int 0
@@ -205,8 +204,8 @@ impl ZeroLoop {
         ];
 
         let (lhs_zero, rhs_zero) = (
-            self.values.get(&lhs.1).and_then(Const::convert_to_i32) == Some(0),
-            self.values.get(&rhs.1).and_then(Const::convert_to_i32) == Some(0),
+            self.values.i32(lhs.1) == Some(0),
+            self.values.i32(rhs.1) == Some(0),
         );
 
         // If the eq doesn't fit the pattern of `_eq = eq _value, int 0` this isn't a candidate
@@ -220,106 +219,7 @@ impl ZeroLoop {
         .as_load()?;
 
         let source = graph.input_source(value.ptr());
-        let target_ptr = self
-            .values
-            .get(&source)
-            .and_then(Const::convert_to_i32)
-            .ok_or(source);
-
-        let start_effect = gamma
-            .true_branch()
-            .to_node::<Start>(gamma.starts()[0])
-            .effect();
-        let end_effect = gamma
-            .true_branch()
-            .to_node::<End>(gamma.ends()[0])
-            .input_effect();
-
-        // Make sure the true branch is empty
-        let true_branch_is_empty =
-            gamma.true_branch().output_dest(start_effect).next() == Some(end_effect);
-        if !true_branch_is_empty {
-            return None;
-        }
-
-        let start = gamma.false_branch().to_node::<Start>(gamma.starts()[1]);
-
-        // store _ptr, int 0
-        let store = gamma
-            .false_branch()
-            .get_output(start.effect())?
-            .0
-            .as_store()?;
-
-        // If the stored value isn't zero this isn't a candidate
-        if false_values
-            .get(&gamma.false_branch().input_source(store.value()))
-            .and_then(Const::convert_to_i32)
-            != Some(0)
-        {
-            return None;
-        }
-
-        // Store should be the only/last thing in the branch
-        let _end = gamma
-            .false_branch()
-            .get_output(store.output_effect())?
-            .0
-            .as_end()?;
-
-        tracing::debug!("gamma store motif 1 matched");
-        Some(target_ptr)
-    }
-
-    /// ```
-    /// _eq = eq _value, int 0
-    /// store _ptr, _value
-    /// if _eq {
-    ///
-    /// } else {
-    ///   store _ptr, int 0
-    /// }
-    /// ```
-    #[allow(clippy::logic_bug)]
-    fn gamma_store_motif_2(
-        &self,
-        graph: &Rvsdg,
-        false_values: &BTreeMap<OutputPort, Const>,
-        gamma: &Gamma,
-    ) -> Option<Result<i32, OutputPort>> {
-        // _eq = eq _value, int 0
-        let eq_zero = graph.get_input(gamma.condition()).0.as_eq()?;
-        let [lhs, rhs] = [
-            graph.get_input(eq_zero.lhs()),
-            graph.get_input(eq_zero.rhs()),
-        ];
-
-        let (lhs_zero, rhs_zero) = (
-            self.values.get(&lhs.1).and_then(Const::convert_to_i32) == Some(0),
-            self.values.get(&rhs.1).and_then(Const::convert_to_i32) == Some(0),
-        );
-
-        // If the eq doesn't fit the pattern of `_eq = eq _value, int 0` this isn't a candidate
-        let value = if lhs_zero && rhs_zero || !lhs_zero && rhs_zero {
-            lhs.1
-        } else if lhs_zero && !rhs_zero {
-            rhs.1
-        } else {
-            return None;
-        };
-
-        // store _ptr, _value
-        let store = graph.try_input(gamma.effect_in())?.0.as_store()?;
-        if graph.input_source(store.value()) != value {
-            return None;
-        }
-
-        let source = graph.input_source(store.ptr());
-        let target_ptr = self
-            .values
-            .get(&source)
-            .and_then(Const::convert_to_i32)
-            .ok_or(source);
+        let target_ptr = self.values.i32(source).ok_or(source);
 
         let start_effect = gamma
             .true_branch()
@@ -345,11 +245,90 @@ impl ZeroLoop {
             .cast_output_dest::<Store>(start.effect())?;
 
         // If the stored value isn't zero this isn't a candidate
-        if false_values
-            .get(&gamma.false_branch().input_source(store.value()))
-            .and_then(Const::convert_to_i32)
-            != Some(0)
-        {
+        if false_values.i32(gamma.false_branch().input_source(store.value())) != Some(0) {
+            return None;
+        }
+
+        // Store should be the only/last thing in the branch
+        let _end = gamma
+            .false_branch()
+            .cast_output_dest::<End>(store.output_effect())?;
+
+        tracing::debug!("gamma store motif 1 matched");
+        Some(target_ptr)
+    }
+
+    /// ```
+    /// _eq = eq _value, int 0
+    /// store _ptr, _value
+    /// if _eq {
+    ///
+    /// } else {
+    ///   store _ptr, int 0
+    /// }
+    /// ```
+    #[allow(clippy::logic_bug)]
+    fn gamma_store_motif_2(
+        &self,
+        graph: &Rvsdg,
+        false_values: &ConstantStore,
+        gamma: &Gamma,
+    ) -> Option<Result<i32, OutputPort>> {
+        // _eq = eq _value, int 0
+        let eq_zero = graph.get_input(gamma.condition()).0.as_eq()?;
+        let [lhs, rhs] = [
+            graph.get_input(eq_zero.lhs()),
+            graph.get_input(eq_zero.rhs()),
+        ];
+
+        let (lhs_zero, rhs_zero) = (
+            self.values.i32(lhs.1) == Some(0),
+            self.values.i32(rhs.1) == Some(0),
+        );
+
+        // If the eq doesn't fit the pattern of `_eq = eq _value, int 0` this isn't a candidate
+        let value = if lhs_zero && rhs_zero || !lhs_zero && rhs_zero {
+            lhs.1
+        } else if lhs_zero && !rhs_zero {
+            rhs.1
+        } else {
+            return None;
+        };
+
+        // store _ptr, _value
+        let store = graph.try_input(gamma.effect_in())?.0.as_store()?;
+        if graph.input_source(store.value()) != value {
+            return None;
+        }
+
+        let source = graph.input_source(store.ptr());
+        let target_ptr = self.values.i32(source).ok_or(source);
+
+        let start_effect = gamma
+            .true_branch()
+            .to_node::<Start>(gamma.starts()[0])
+            .effect();
+        let end_effect = gamma
+            .true_branch()
+            .to_node::<End>(gamma.ends()[0])
+            .input_effect();
+
+        // Make sure the true branch is empty
+        let true_branch_is_empty =
+            gamma.true_branch().output_dest(start_effect).next() == Some(end_effect);
+        if !true_branch_is_empty {
+            return None;
+        }
+
+        let start = gamma.false_branch().to_node::<Start>(gamma.starts()[1]);
+
+        // store _ptr, int 0
+        let store = gamma
+            .false_branch()
+            .cast_output_dest::<Store>(start.effect())?;
+
+        // If the stored value isn't zero this isn't a candidate
+        if false_values.i32(gamma.false_branch().input_source(store.value())) != Some(0) {
             return None;
         }
 
@@ -377,49 +356,31 @@ impl Pass for ZeroLoop {
         self.changed = false;
     }
 
-    fn report(&self) {
-        tracing::info!(
-            "{} removed {} zero loops and {} zero gammas",
-            self.pass_name(),
-            self.zero_loops_removed,
-            self.zero_gammas_removed,
-        );
+    fn report(&self) -> HashMap<&'static str, usize> {
+        map! {
+            "zero loops" => self.zero_loops_removed,
+            "zero gammas" => self.zero_gammas_removed,
+        }
     }
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
-        let replaced = self.values.insert(bool.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Bool(value)));
+        self.values.add(bool.value(), value);
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
-        let replaced = self.values.insert(int.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
+        self.values.add(int.value(), value);
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
+
         let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
-
-        // For each input into the gamma region, if the input value is a known constant
-        // then we should associate the input value with said constant
-        for (&input, &[true_param, false_param]) in gamma.inputs().iter().zip(gamma.input_params())
-        {
-            let (_, source, _) = graph.get_input(input);
-
-            if let Some(constant) = self.values.get(&source).cloned() {
-                let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
-                true_visitor
-                    .values
-                    .insert(true_param.output(), constant.clone())
-                    .debug_unwrap_none();
-
-                let false_param = gamma.false_branch().to_node::<InputParam>(false_param);
-                false_visitor
-                    .values
-                    .insert(false_param.output(), constant)
-                    .debug_unwrap_none();
-            }
-        }
+        self.values.gamma_inputs_into(
+            &gamma,
+            graph,
+            &mut true_visitor.values,
+            &mut false_visitor.values,
+        );
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
         changed |= false_visitor.visit_graph(gamma.false_mut());
@@ -460,18 +421,10 @@ impl Pass for ZeroLoop {
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
-        let mut visitor = Self::new();
 
-        // For each input into the theta region, if the input value is a known constant
-        // then we should associate the input value with said constant
-        for (input, param) in theta.invariant_input_pairs() {
-            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
-                visitor
-                    .values
-                    .insert(param.output(), constant)
-                    .debug_unwrap_none();
-            }
-        }
+        let mut visitor = Self::new();
+        self.values
+            .theta_invariant_inputs_into(&theta, graph, &mut visitor.values);
 
         changed |= visitor.visit_graph(theta.body_mut());
 

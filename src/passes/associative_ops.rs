@@ -166,11 +166,11 @@ impl Pass for AssociativeOps {
         {
             let (_, source, _) = graph.get_input(input);
 
-            if let Some(constant) = self.values.get(&source).cloned() {
+            if let Some(constant) = self.values.get(&source).copied() {
                 let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
                 true_visitor
                     .values
-                    .insert(true_param.output(), constant.clone())
+                    .insert(true_param.output(), constant)
                     .debug_unwrap_none();
 
                 let false_param = gamma.false_branch().to_node::<InputParam>(false_param);

@@ -1,21 +1,22 @@
 use crate::{
-    graph::{Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg, Start, Store, Theta},
-    ir::Const,
-    passes::Pass,
-    utils::{AssertNone, HashMap},
+    graph::{
+        Bool, Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg, Start, Store, Theta,
+    },
+    passes::{utils::ConstantStore, Pass},
+    utils::HashMap,
 };
 
 #[derive(Debug)]
 pub struct ShiftCell {
     changed: bool,
-    values: HashMap<OutputPort, Const>,
+    constants: ConstantStore,
     shifts_removed: usize,
 }
 
 impl ShiftCell {
     pub fn new() -> Self {
         Self {
-            values: HashMap::with_hasher(Default::default()),
+            constants: ConstantStore::new(),
             changed: false,
             shifts_removed: 0,
         }
@@ -35,19 +36,13 @@ impl ShiftCell {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (input, param) in theta.invariant_input_pairs() {
-            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
-                visitor
-                    .values
-                    .insert(param.output(), constant)
-                    .debug_unwrap_none();
-            }
-        }
+        self.constants
+            .theta_invariant_inputs_into(theta, graph, &mut visitor.constants);
 
         changed |= visitor.visit_graph(theta.body_mut());
 
         let candidate = self
-            .theta_is_candidate(&visitor.values, theta)
+            .theta_is_candidate(&visitor.constants, theta)
             .map(|candidate| (candidate, visitor));
 
         (changed, candidate)
@@ -72,24 +67,22 @@ impl ShiftCell {
 
         let mut get_gamma_input = |output| {
             visitor
-                .values
-                .get(&output)
-                .and_then(Const::convert_to_i32)
+                .constants
+                .i32(output)
                 .map(|int| graph.int(int).value())
                 .or_else(|| {
                     theta
                         .invariant_input_pairs()
                         .find_map(|(port, input)| {
                             if input.output() == output {
-                                Some(theta_graph.get_input(port).1)
+                                Some(theta_graph.input_source(port))
                             } else {
                                 None
                             }
                         })
                         .and_then(|output| {
-                            self.values
-                                .get(&output)
-                                .and_then(Const::convert_to_i32)
+                            self.constants
+                                .i32(output)
                                 .map(|int| graph.int(int).value())
                                 .or_else(|| {
                                     gamma.inputs().iter().zip(gamma.input_params()).find_map(
@@ -98,7 +91,7 @@ impl ShiftCell {
                                                 gamma.false_branch().to_node::<InputParam>(input);
 
                                             if input.output() == output {
-                                                Some(graph.get_input(port).1)
+                                                Some(graph.input_source(port))
                                             } else {
                                                 None
                                             }
@@ -147,7 +140,7 @@ impl ShiftCell {
                                 theta
                                     .input_pairs()
                                     .find_map(|(port, input)| {
-                                        (input.node() == param.node()).then(|| port)
+                                        (input.node() == param.node()).then_some(port)
                                     })
                                     .unwrap(),
                             );
@@ -220,11 +213,7 @@ impl ShiftCell {
     /// // Zero out the source cell
     /// store src_ptr, int 0
     /// ```
-    fn theta_is_candidate(
-        &self,
-        values: &HashMap<OutputPort, Const>,
-        theta: &Theta,
-    ) -> Option<ShiftCandidate> {
+    fn theta_is_candidate(&self, values: &ConstantStore, theta: &Theta) -> Option<ShiftCandidate> {
         let graph = theta.body();
 
         // Get the body's start node
@@ -255,15 +244,13 @@ impl ShiftCell {
         );
 
         // Get the offset being applied by figuring out which side is the loaded value
-        let offset_one = values
-            .get(&if lhs_operand == load_one.output_value() {
-                rhs_operand
-            } else if rhs_operand == load_one.output_value() {
-                lhs_operand
-            } else {
-                return None;
-            })?
-            .as_i32()?;
+        let offset_one = values.i32(if lhs_operand == load_one.output_value() {
+            rhs_operand
+        } else if rhs_operand == load_one.output_value() {
+            lhs_operand
+        } else {
+            return None;
+        })?;
 
         // Get the second load
         let load_two = graph.cast_output_dest::<Load>(store_one.output_effect())?;
@@ -287,15 +274,13 @@ impl ShiftCell {
         );
 
         // Get the offset being applied by figuring out which side is the loaded value
-        let offset_two = values
-            .get(&if lhs_operand == load_two.output_value() {
-                rhs_operand
-            } else if rhs_operand == load_two.output_value() {
-                lhs_operand
-            } else {
-                return None;
-            })?
-            .as_i32()?;
+        let offset_two = values.i32(if lhs_operand == load_two.output_value() {
+            rhs_operand
+        } else if rhs_operand == load_two.output_value() {
+            lhs_operand
+        } else {
+            return None;
+        })?;
 
         // Make sure that the second store is the last effect in the body
         let end = theta.end_node();
@@ -334,10 +319,7 @@ impl ShiftCell {
             graph.input_source(src_eq_zero.lhs()),
             graph.input_source(src_eq_zero.rhs()),
         );
-        let (lhs_const, rhs_const) = (
-            values.get(&lhs_operand).and_then(Const::convert_to_i32),
-            values.get(&rhs_operand).and_then(Const::convert_to_i32),
-        );
+        let (lhs_const, rhs_const) = (values.i32(lhs_operand), values.i32(rhs_operand));
 
         // Make sure that one of the operands of the eq is `src_dec` and the other is a zero
         if !((lhs_operand == src_dec && matches!(rhs_const, Some(0)))
@@ -362,47 +344,34 @@ impl Pass for ShiftCell {
     }
 
     fn reset(&mut self) {
-        self.values.clear();
+        self.constants.clear();
         self.changed = false;
     }
 
-    fn report(&self) {
-        tracing::info!(
-            "{} removed {} cell shift motifs",
-            self.pass_name(),
-            self.shifts_removed,
-        );
+    fn report(&self) -> HashMap<&'static str, usize> {
+        map! {
+            "shift loops" => self.shifts_removed,
+        }
+    }
+
+    fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
+        self.constants.add(bool.value(), value);
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
-        let replaced = self.values.insert(int.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
+        self.constants.add(int.value(), value);
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
+
         let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
-
-        // For each input into the gamma region, if the input value is a known constant
-        // then we should associate the input value with said constant
-        for (&input, &[true_param, false_param]) in gamma.inputs().iter().zip(gamma.input_params())
-        {
-            let (_, source, _) = graph.get_input(input);
-
-            if let Some(constant) = self.values.get(&source).cloned() {
-                let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
-                true_visitor
-                    .values
-                    .insert(true_param.output(), constant.clone())
-                    .debug_unwrap_none();
-
-                let false_param = gamma.false_branch().to_node::<InputParam>(false_param);
-                false_visitor
-                    .values
-                    .insert(false_param.output(), constant)
-                    .debug_unwrap_none();
-            }
-        }
+        self.constants.gamma_inputs_into(
+            &gamma,
+            graph,
+            &mut true_visitor.constants,
+            &mut false_visitor.constants,
+        );
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
         changed |= false_visitor.visit_graph(gamma.false_mut());
@@ -476,18 +445,10 @@ impl Pass for ShiftCell {
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
-        let mut visitor = Self::new();
 
-        // For each input into the theta region, if the input value is a known constant
-        // then we should associate the input value with said constant
-        for (input, param) in theta.invariant_input_pairs() {
-            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
-                visitor
-                    .values
-                    .insert(param.output(), constant)
-                    .debug_unwrap_none();
-            }
-        }
+        let mut visitor = Self::new();
+        self.constants
+            .theta_invariant_inputs_into(&theta, graph, &mut visitor.constants);
 
         changed |= visitor.visit_graph(theta.body_mut());
 

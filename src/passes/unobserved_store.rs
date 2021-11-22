@@ -1,6 +1,7 @@
 use crate::{
-    graph::{EdgeKind, Gamma, NodeExt, Rvsdg, Store, Theta},
-    passes::Pass,
+    graph::{Bool, EdgeKind, Gamma, Int, NodeExt, Rvsdg, Store, Theta},
+    passes::{utils::ConstantStore, Pass},
+    utils::HashMap,
 };
 
 /// Removes unobserved stores
@@ -10,6 +11,7 @@ pub struct UnobservedStore {
     //       loop invariant cells would be required for anything better
     within_theta: bool,
     within_gamma: bool,
+    constants: ConstantStore,
     unobserved_stores_removed: usize,
 }
 
@@ -19,6 +21,7 @@ impl UnobservedStore {
             changed: false,
             within_theta: false,
             within_gamma: false,
+            constants: ConstantStore::new(),
             unobserved_stores_removed: 0,
         }
     }
@@ -39,56 +42,95 @@ impl Pass for UnobservedStore {
 
     fn reset(&mut self) {
         self.changed = false;
+        self.constants.clear();
         self.within_theta = false;
         self.within_gamma = false;
     }
 
-    fn report(&self) {
-        tracing::info!(
-            "{} removed {} unobservable stores",
-            self.pass_name(),
-            self.unobserved_stores_removed,
-        );
+    fn report(&self) -> HashMap<&'static str, usize> {
+        map! {
+            "unobserved stores" => self.unobserved_stores_removed,
+        }
     }
 
+    // If the effect consumer can't observe the store, remove this store.
+    // This happens when the next effect is either an end node or a store to
+    // the same address.
+    //
+    // This addresses these two cases:
+    //
+    // ```
+    // block {
+    //   store _0, _1 // Removes this store, nothing's after it to observe it
+    // }
+    // ```
+    //
+    // Successive stores to the same address are redundant, only the last one
+    // can be observed
+    //
+    // ```
+    // store _0, _1
+    // store _0, _1
+    // store _0, _1
+    // ```
+    //
+    // TODO: This can get broken up by a sequence like this:
+    // ```
+    // store _0, _2
+    // store _1, _2
+    // store _0, _2
+    // ```
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
-        if let Some((consumer, _, kind)) = graph.get_output(store.output_effect()) {
+        let store_ptr = graph.input_source(store.ptr());
+        let store_ptr_value = self.constants.i32(store_ptr);
+
+        let mut last_effect = store.output_effect();
+        while let Some((consumer, _, kind)) = graph.get_output(last_effect) {
             debug_assert_eq!(kind, EdgeKind::Effect);
 
-            // If the effect consumer can't observe the store, remove this store.
-            // This happens when the next effect is either an end node or a store to
-            // the same address.
-            //
-            // This addresses these two cases:
-            //
-            // ```
-            // block {
-            //   store _0, _1 // Removes this store, nothing's after it to observe it
-            // }
-            // ```
-            //
-            // Successive stores to the same address are redundant, only the last one
-            // can be observed
-            //
-            // ```
-            // store _0, _1
-            // store _0, _1
-            // store _0, _1
-            // ```
-            //
-            // TODO: This can get broken up by a sequence like this:
-            // ```
-            // store _0, _2
-            // store _1, _2
-            // store _0, _2
-            // ```
-            // So ideally we should try to follow the effect chain to try and remove
-            // as many redundant stores as possible
-            let stores_to_identical_cell = consumer.as_store().map_or(false, |consumer| {
-                graph.get_input(consumer.ptr()).1 == graph.get_input(store.ptr()).1
-            });
+            // If the two stores go to the same cell, we can remove the first store
+            let stores_to_identical_cell = consumer
+                .as_store()
+                .map(|consumer| graph.input_source(consumer.ptr()) == store_ptr)
+                .unwrap_or(false);
 
+            // TODO: We'd like to have more robust stuff for this to allow getting rid of redundant
+            //       stores within gammas, for instance
             let consumer_is_end = consumer.is_end() && !self.within_theta && !self.within_gamma;
+
+            // If the consumer is a load from a totally different cell, we can keep scanning forward
+            let loads_from_different_cell = consumer
+                .as_load()
+                .and_then(|load| {
+                    Some((
+                        load.output_effect(),
+                        self.constants.i32(graph.input_source(load.ptr()))?,
+                    ))
+                })
+                .zip(store_ptr_value)
+                .and_then(|((load_effect, load_ptr_value), store_ptr_value)| {
+                    (load_ptr_value == store_ptr_value).then_some(load_effect)
+                });
+
+            // If the consumer is a store to a totally different cell, we can keep scanning forward
+            let stores_to_different_cell = consumer
+                .as_store()
+                .and_then(|consumer| {
+                    Some((
+                        consumer.output_effect(),
+                        self.constants.i32(graph.input_source(consumer.ptr()))?,
+                    ))
+                })
+                .zip(store_ptr_value)
+                .and_then(|((consumer_effect, consumer_ptr_value), store_ptr_value)| {
+                    (consumer_ptr_value == store_ptr_value).then_some(consumer_effect)
+                });
+
+            // If the consumer is an I/O operation then it doesn't affect memory
+            let is_io_operation = consumer
+                .as_output()
+                .map(|output| output.output_effect())
+                .or_else(|| consumer.as_input().map(|input| input.output_effect()));
 
             if consumer_is_end || stores_to_identical_cell {
                 tracing::debug!(
@@ -103,6 +145,27 @@ impl Pass for UnobservedStore {
                 self.unobserved_stores_removed += 1;
 
                 self.changed();
+                break;
+
+            // If the consumer doesn't affect program memory in a way relevant to the target store, we
+            // can keep scanning past it
+            } else if let Some(effect) = is_io_operation
+                .or(loads_from_different_cell)
+                .or(stores_to_different_cell)
+            {
+                tracing::trace!(
+                    ?is_io_operation,
+                    ?loads_from_different_cell,
+                    ?stores_to_different_cell,
+                    "consumer {:?} of store {:?} doesn't affect memory in a way relevant to the store",
+                    store.node(),
+                    consumer.node(),
+                );
+                last_effect = effect;
+
+            // Otherwise this is an operation that affects program memory, so we can't remove stores past it
+            } else {
+                break;
             }
         }
     }
@@ -110,14 +173,22 @@ impl Pass for UnobservedStore {
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
 
-        let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
-        truthy_visitor.within_gamma = true;
-        falsy_visitor.within_gamma = true;
-        truthy_visitor.within_theta = self.within_theta;
-        falsy_visitor.within_theta = self.within_theta;
+        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
+        true_visitor.within_gamma = true;
+        false_visitor.within_gamma = true;
+        true_visitor.within_theta = self.within_theta;
+        false_visitor.within_theta = self.within_theta;
 
-        changed |= truthy_visitor.visit_graph(gamma.true_mut());
-        changed |= falsy_visitor.visit_graph(gamma.false_mut());
+        // Get constant inputs from the current context and propagate them into the branches
+        self.constants.gamma_inputs_into(
+            &gamma,
+            graph,
+            &mut true_visitor.constants,
+            &mut false_visitor.constants,
+        );
+
+        changed |= true_visitor.visit_graph(gamma.true_mut());
+        changed |= false_visitor.visit_graph(gamma.false_mut());
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
@@ -132,12 +203,25 @@ impl Pass for UnobservedStore {
         visitor.within_theta = true;
         visitor.within_gamma = self.within_gamma;
 
+        // Get invariant inputs from the current context and place them into the
+        // theta body's context
+        self.constants
+            .theta_invariant_inputs_into(&theta, graph, &mut visitor.constants);
+
         changed |= visitor.visit_graph(theta.body_mut());
 
         if changed {
             graph.replace_node(theta.node(), theta);
             self.changed();
         }
+    }
+
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+        self.constants.add(int.value(), value);
+    }
+
+    fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
+        self.constants.add(bool.value(), value);
     }
 }
 

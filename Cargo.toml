@@ -22,6 +22,9 @@ xxhash-rust = { version = "0.8.2", features = ["xxh3"] }
 tracing = { version = "0.1.29", features = [] }                                  # "release_max_level_info"
 tui = { version = "0.16.0", default-features = false, features = ["crossterm"] }
 
+[dev-dependencies]
+expect-test = "1.1.0"
+
 [profile.release]
 debug = 2
 lto = "thin"

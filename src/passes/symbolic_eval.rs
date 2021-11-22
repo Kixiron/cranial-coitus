@@ -1,16 +1,18 @@
 use crate::{
     graph::{Bool, Gamma, Int, Load, NodeExt, OutputPort, PortId, Rvsdg, Store, Theta},
     interpreter::Machine,
-    ir::{Const, IrBuilder, Value, VarId},
-    passes::Pass,
-    utils::AssertNone,
+    ir::{IrBuilder, Value, VarId},
+    passes::{utils::ConstantStore, Pass},
+    utils::{AssertNone, HashMap},
 };
 use std::{collections::BTreeMap, mem};
 
 pub struct SymbolicEval {
     changed: bool,
     tape: Vec<Option<u8>>,
-    values: BTreeMap<OutputPort, Const>,
+    constants: ConstantStore,
+    evaluated_outputs: usize,
+    evaluated_thetas: usize,
 }
 
 impl SymbolicEval {
@@ -18,7 +20,9 @@ impl SymbolicEval {
         Self {
             changed: false,
             tape: vec![Some(0); tape_len],
-            values: BTreeMap::new(),
+            constants: ConstantStore::new(),
+            evaluated_outputs: 0,
+            evaluated_thetas: 0,
         }
     }
 
@@ -50,31 +54,32 @@ impl Pass for SymbolicEval {
 
     fn reset(&mut self) {
         self.changed = false;
-        self.values.clear();
+        self.constants.clear();
         self.zero_tape();
     }
 
+    fn report(&self) -> HashMap<&'static str, usize> {
+        map! {
+            "evaluated outputs" => self.evaluated_outputs,
+            "evaluated thetas" => self.evaluated_thetas,
+        }
+    }
+
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
-        let replaced = self.values.insert(bool.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Bool(value)));
+        self.constants.add(bool.value(), value);
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
-        let replaced = self.values.insert(int.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
+        self.constants.add(int.value(), value);
     }
 
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
         let ptr = self
-            .values
-            .get(&graph.input_source(store.ptr()))
-            .and_then(Const::convert_to_i32)
+            .constants
+            .i32(graph.input_source(store.ptr()))
             .map(|ptr| ptr.rem_euclid(self.tape.len() as i32) as usize);
 
-        let value = self
-            .values
-            .get(&graph.input_source(store.value()))
-            .and_then(Const::convert_to_u8);
+        let value = self.constants.u8(graph.input_source(store.value()));
 
         if let Some(ptr) = ptr {
             self.tape[ptr] = value;
@@ -85,15 +90,12 @@ impl Pass for SymbolicEval {
 
     fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
         let ptr = self
-            .values
-            .get(&graph.input_source(load.ptr()))
-            .and_then(Const::convert_to_i32)
+            .constants
+            .i32(graph.input_source(load.ptr()))
             .map(|ptr| ptr.rem_euclid(self.tape.len() as i32) as usize);
 
         if let Some(value) = ptr.and_then(|ptr| self.tape[ptr]) {
-            self.values
-                .insert(load.output_value(), value.into())
-                .debug_unwrap_none();
+            self.constants.add(load.output_value(), value);
         }
     }
 
@@ -116,7 +118,7 @@ impl Pass for SymbolicEval {
         for (port, param) in theta.variant_input_pairs() {
             let source = graph.input_source(port);
 
-            if let Some(value) = self.values.get(&source).cloned() {
+            if let Some(value) = self.constants.get(source) {
                 values
                     .insert(VarId::new(param.output()), value)
                     .debug_unwrap_none();
@@ -181,19 +183,21 @@ impl Pass for SymbolicEval {
                 for (output, param) in theta.output_pairs() {
                     let source = theta.body().input_source(param.input());
 
-                    let value = machine
+                    let value = *machine
                         .values
                         .last()
                         .unwrap()
                         .get(&VarId::new(source))
-                        .unwrap()
-                        .clone();
+                        .unwrap();
 
                     let int = graph.int(value.convert_to_i32().unwrap());
-                    self.values.insert(output, value).debug_unwrap_none();
+                    self.constants.add(output, value);
                     graph.rewire_dependents(output, int.value());
+
+                    self.evaluated_outputs += 1;
                 }
 
+                self.evaluated_thetas += 1;
                 graph.remove_node(theta.node());
                 self.changed();
             }

@@ -301,11 +301,11 @@ impl Pass for ConstFolding {
         {
             let (_, output, _) = graph.get_input(input);
 
-            if let Some(constant) = self.values.get(&output).cloned() {
+            if let Some(constant) = self.values.get(&output).copied() {
                 let true_param = gamma.true_branch().to_node::<InputParam>(truthy_param);
                 truthy_visitor
                     .values
-                    .insert(true_param.output(), constant.clone())
+                    .insert(true_param.output(), constant)
                     .debug_unwrap_none();
 
                 let false_param = gamma.false_branch().to_node::<InputParam>(falsy_param);

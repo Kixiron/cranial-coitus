@@ -400,12 +400,10 @@ impl Pass for DuplicateCell {
         self.changed = false;
     }
 
-    fn report(&self) {
-        tracing::info!(
-            "{} removed {} duplicate cell motifs",
-            self.pass_name(),
-            self.duplicates_removed,
-        );
+    fn report(&self) -> HashMap<&'static str, usize> {
+        map! {
+            "cell duplications" => self.duplicates_removed,
+        }
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
@@ -423,11 +421,11 @@ impl Pass for DuplicateCell {
         {
             let (_, source, _) = graph.get_input(input);
 
-            if let Some(constant) = self.values.get(&source).cloned() {
+            if let Some(constant) = self.values.get(&source).copied() {
                 let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
                 true_visitor
                     .values
-                    .insert(true_param.output(), constant.clone())
+                    .insert(true_param.output(), constant)
                     .debug_unwrap_none();
 
                 let false_param = gamma.false_branch().to_node::<InputParam>(false_param);

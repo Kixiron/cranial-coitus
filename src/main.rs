@@ -1,6 +1,7 @@
 #![feature(
     try_blocks,
     result_cloned,
+    bool_to_option,
     hash_drain_filter,
     vec_into_raw_parts,
     destructuring_assignment
@@ -20,6 +21,7 @@ mod parse;
 mod passes;
 mod patterns;
 mod union_find;
+mod tests;
 
 use crate::{
     args::{Args, Command},
@@ -303,8 +305,63 @@ fn debug(
 
     let elapsed = start_time.elapsed();
 
-    for pass in &passes {
-        pass.report();
+    {
+        let mut reports = Vec::with_capacity(passes.len());
+        let mut max_len = 0;
+
+        for pass in &passes {
+            let mut pass_name = pass.pass_name().to_owned();
+
+            let mut idx = 1;
+            while reports.iter().any(|(name, _)| name == &pass_name) {
+                pass_name = format!("{}-{}", pass.pass_name(), idx);
+                idx += 1;
+            }
+
+            let mut report: Vec<_> = pass.report().into_iter().collect();
+            report.sort_unstable_by_key(|&(aspect, _)| aspect);
+
+            if let Some(longest) = report.iter().map(|(aspect, _)| aspect.len()).max() {
+                if longest > max_len {
+                    max_len = longest;
+                }
+            }
+
+            reports.push((pass_name, report));
+        }
+
+        let mut report_file = BufWriter::new(
+            File::create(dump_dir.join("pass-report.txt"))
+                .context("failed to create report file")?,
+        );
+        for (pass_name, report) in &reports {
+            if !report.is_empty() {
+                writeln!(&mut report_file, "{}", pass_name)?;
+
+                for (aspect, total) in report {
+                    writeln!(
+                        &mut report_file,
+                        "{:<padding$} : {}",
+                        aspect,
+                        total,
+                        padding = max_len,
+                    )?;
+                }
+
+                writeln!(&mut report_file)?;
+            }
+        }
+
+        let no_info = reports.iter().filter(|(_, report)| report.is_empty());
+        if no_info.clone().count() != 0 {
+            writeln!(&mut report_file, "No info for the following passes:")?;
+
+            for (pass, _) in no_info {
+                writeln!(&mut report_file, "  - {}", pass)?;
+            }
+        }
+
+        report_file.flush().context("failed to flush report file")?;
     }
 
     let output_graph_stats = graph.stats();

@@ -128,7 +128,7 @@ where
             Expr::Mul(mul) => self.mul(mul),
             Expr::Not(not) => self.not(not),
             Expr::Neg(neg) => self.neg(neg),
-            Expr::Value(value) => self.get_const(value).cloned(),
+            Expr::Value(value) => self.get_const(value),
             Expr::Load(load) => self.load(load),
             Expr::Call(call) => Ok(self
                 .call(call, should_profile)?
@@ -191,11 +191,11 @@ where
         }
 
         self.values[self.values_idx]
-            .insert(assign.var, value.clone())
+            .insert(assign.var, value)
             .debug_unwrap_none();
 
         if assign.tag.is_output_param() {
-            self.values[self.values_idx - 1].insert(assign.var, value.clone());
+            self.values[self.values_idx - 1].insert(assign.var, value);
         }
 
         tracing::trace!(
@@ -289,7 +289,7 @@ where
                 let mut values_buffer = BTreeMap::new();
                 for (output, value) in &theta.outputs {
                     let input_var = theta.output_feedback[output];
-                    let feedback_value = self.get_const(value)?.clone();
+                    let feedback_value = self.get_const(value)?;
 
                     tracing::trace!(
                         values_idx = self.values_idx,
@@ -413,15 +413,13 @@ where
         Ok(self.get_const(&neg.value)?.neg())
     }
 
-    fn get_const<'a, 'b>(&'a self, value: &'b Value) -> Result<&'b Const>
-    where
-        'a: 'b,
-    {
+    fn get_const(&self, value: &Value) -> Result<Const> {
         match value {
             Value::Var(var) => Ok(self.values[self.values_idx]
                 .get(var)
+                .copied()
                 .unwrap_or_else(|| panic!("expected a value for the given variable {:?}", var))),
-            Value::Const(constant) => Ok(constant),
+            &Value::Const(constant) => Ok(constant),
             Value::Missing => Err(EvaluationError::UnknownCellRead),
         }
     }

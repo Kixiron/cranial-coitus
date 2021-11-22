@@ -12,6 +12,7 @@ mod shift;
 mod square_cell;
 mod symbolic_eval;
 mod unobserved_store;
+mod utils;
 mod zero_loop;
 
 pub use add_sub_loop::AddSubLoop;
@@ -35,7 +36,7 @@ use crate::{
         Add, Bool, End, Eq, Gamma, Input, InputParam, Int, Load, Mul, Neg, Node, NodeExt, NodeId,
         Not, Output, OutputParam, Rvsdg, Start, Store, Theta,
     },
-    utils::HashSet,
+    utils::{HashMap, HashSet},
 };
 use std::collections::VecDeque;
 
@@ -108,7 +109,9 @@ pub trait Pass {
 
     fn reset(&mut self);
 
-    fn report(&self) {}
+    fn report(&self) -> HashMap<&'static str, usize> {
+        HashMap::default()
+    }
 
     fn visit_graph(&mut self, graph: &mut Rvsdg) -> bool {
         let (mut stack, mut visited, mut buffer) = (

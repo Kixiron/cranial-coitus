@@ -1183,7 +1183,7 @@ impl From<Const> for Value {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Const {
     Int(i32),
     U8(u8),
@@ -1252,7 +1252,7 @@ impl ops::Not for &Const {
     type Output = Const;
 
     fn not(self) -> Self::Output {
-        !self.clone()
+        !*self
     }
 }
 
@@ -1272,7 +1272,7 @@ impl ops::Neg for &Const {
     type Output = Const;
 
     fn neg(self) -> Self::Output {
-        -self.clone()
+        -*self
     }
 }
 
@@ -1294,7 +1294,7 @@ impl ops::Add for &Const {
     type Output = Const;
 
     fn add(self, rhs: Self) -> Self::Output {
-        self.clone() + rhs.clone()
+        *self + *rhs
     }
 }
 
@@ -1316,7 +1316,7 @@ impl ops::Mul for &Const {
     type Output = Const;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        self.clone() * rhs.clone()
+        *self * *rhs
     }
 }
 

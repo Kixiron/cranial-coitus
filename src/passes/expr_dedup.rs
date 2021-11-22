@@ -55,12 +55,10 @@ impl Pass for ExprDedup {
         self.changed = false;
     }
 
-    fn report(&self) {
-        tracing::info!(
-            "{} removed {} duplicate loads",
-            self.pass_name(),
-            self.deduplicated_loads,
-        );
+    fn report(&self) -> HashMap<&'static str, usize> {
+        map! {
+            "deduplicated loads" => self.deduplicated_loads,
+        }
     }
 
     fn visit_bool(&mut self, graph: &mut Rvsdg, bool: Bool, value: bool) {
@@ -132,7 +130,7 @@ impl Pass for ExprDedup {
         if let Some((&const_id, _)) = self
             .constants
             .iter()
-            .find(|&(_, known)| known.convert_to_i32().map_or(false, |known| known == value))
+            .find(|&(_, known)| known.as_i32().map_or(false, |known| known == value))
         {
             let existing_const = graph.get_node(graph.port_parent(const_id));
             let (const_id, const_value) = existing_const.as_int().map_or_else(
@@ -170,11 +168,11 @@ impl Pass for ExprDedup {
         // then we should associate the input value with said constant
         for (&input, &[true_param, false_param]) in gamma.inputs().iter().zip(gamma.input_params())
         {
-            if let Some(constant) = self.constants.get(&graph.input_source(input)).cloned() {
+            if let Some(constant) = self.constants.get(&graph.input_source(input)).copied() {
                 let param = gamma.true_branch().to_node::<InputParam>(true_param);
                 truthy_visitor
                     .constants
-                    .insert(param.output(), constant.clone())
+                    .insert(param.output(), constant)
                     .debug_unwrap_none();
 
                 let param = gamma.false_branch().to_node::<InputParam>(false_param);

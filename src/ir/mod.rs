@@ -15,6 +15,7 @@ use std::{
     time::Instant,
 };
 
+const INDENT_WIDTH: usize = 4;
 const COMMENT_ALIGNMENT_OFFSET: usize = 25;
 
 pub trait Pretty {
@@ -58,6 +59,15 @@ impl Block {
     pub const fn new() -> Self {
         Self {
             instructions: Vec::new(),
+        }
+    }
+
+    pub fn single<I>(inst: I) -> Self
+    where
+        I: Into<Instruction>,
+    {
+        Self {
+            instructions: vec![inst.into()],
         }
     }
 
@@ -303,7 +313,7 @@ impl Pretty for Theta {
                                     .map(|inst| inst.pretty(allocator, total_instructions)),
                                 allocator.hardline(),
                             )
-                            .indent(2),
+                            .indent(INDENT_WIDTH),
                     )
                     .append(allocator.hardline())
             })
@@ -424,7 +434,7 @@ impl Pretty for Gamma {
                                     .map(|inst| inst.pretty(allocator, total_instructions)),
                                 allocator.hardline(),
                             )
-                            .indent(2),
+                            .indent(INDENT_WIDTH),
                     )
                     .append(allocator.hardline())
             })
@@ -446,7 +456,7 @@ impl Pretty for Gamma {
                                     .map(|inst| inst.pretty(allocator, total_instructions)),
                                 allocator.hardline(),
                             )
-                            .indent(2),
+                            .indent(INDENT_WIDTH),
                     )
                     .append(allocator.hardline())
             })
@@ -1136,7 +1146,7 @@ impl Pretty for Store {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Value {
     Var(VarId),
     Const(Const),

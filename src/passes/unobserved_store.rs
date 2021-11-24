@@ -109,7 +109,7 @@ impl Pass for UnobservedStore {
                 })
                 .zip(store_ptr_value)
                 .and_then(|((load_effect, load_ptr_value), store_ptr_value)| {
-                    (load_ptr_value == store_ptr_value).then_some(load_effect)
+                    (load_ptr_value != store_ptr_value).then_some(load_effect)
                 });
 
             // If the consumer is a store to a totally different cell, we can keep scanning forward
@@ -123,7 +123,7 @@ impl Pass for UnobservedStore {
                 })
                 .zip(store_ptr_value)
                 .and_then(|((consumer_effect, consumer_ptr_value), store_ptr_value)| {
-                    (consumer_ptr_value == store_ptr_value).then_some(consumer_effect)
+                    (consumer_ptr_value != store_ptr_value).then_some(consumer_effect)
                 });
 
             // If the consumer is an I/O operation then it doesn't affect memory
@@ -153,7 +153,8 @@ impl Pass for UnobservedStore {
                 .or(loads_from_different_cell)
                 .or(stores_to_different_cell)
             {
-                tracing::trace!(
+                tracing::debug!(
+                    ?consumer,
                     ?is_io_operation,
                     ?loads_from_different_cell,
                     ?stores_to_different_cell,

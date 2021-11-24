@@ -34,7 +34,7 @@ where
         match self {
             Element::Single(elem) => Debug::fmt(elem, f),
             Element::Many(elem, start, len) => {
-                write!(f, "{:?}... ({}..{})", elem, start, start + len)
+                write!(f, "{:?} × {}..{}", elem, start, start + len)
             }
         }
     }
@@ -355,6 +355,24 @@ macro_rules! map {
         );
         $( map.insert($key, $value); )+
         map
+    }};
+}
+
+#[macro_export]
+macro_rules! set {
+    () => { $crate::utils::HashSet::new() };
+
+    ($($key:expr),+ $(,)?) => {{
+        const LENGTH: usize = <[()]>::len(&[
+            $( $crate::replace_expr!($key; ()), )+
+        ]);
+
+        let mut set = $crate::utils::HashSet::with_capacity_and_hasher(
+            LENGTH,
+            ::std::hash::BuildHasherDefault::default(),
+        );
+        $( set.insert($key); )+
+        set
     }};
 }
 

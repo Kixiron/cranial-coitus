@@ -3,10 +3,11 @@ use crate::{
         Add, Assign, AssignTag, Block, Call, Const, Eq, Expr, Gamma, Instruction, Load, Mul, Neg,
         Not, Store, Theta, Value, VarId, Variance,
     },
-    utils::AssertNone,
+    utils::{self, AssertNone},
 };
 use std::{
     collections::BTreeMap,
+    fmt::{self, Display},
     ops::{Neg as _, Not as _},
 };
 
@@ -181,7 +182,6 @@ where
         tracing::trace!(
             ?assign,
             values_idx = self.values_idx,
-            values = ?self.values[self.values_idx],
             "getting assign value for input param",
         );
         let value = self.eval(&mut assign.value, should_profile)?;
@@ -200,7 +200,6 @@ where
 
         tracing::trace!(
             values_idx = self.values_idx,
-            values = ?self.values[self.values_idx],
             ?assign,
             "assigned {:?} to {}",
             value,
@@ -476,11 +475,70 @@ impl ExecutionStats {
             in_loop_instructions: 0,
         }
     }
+
+    pub fn display(&self) -> DisplayStats<'_> {
+        DisplayStats::new(self)
+    }
+
+    fn fields(&self) -> [(&'static str, usize); 7] {
+        [
+            ("instructions", self.instructions),
+            ("loads", self.loads),
+            ("stores", self.stores),
+            ("loop iters", self.loop_iterations),
+            ("branches", self.branches),
+            ("input calls", self.input_calls),
+            ("output calls", self.output_calls),
+        ]
+    }
 }
 
 impl Default for ExecutionStats {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub struct DisplayStats<'a> {
+    stats: &'a ExecutionStats,
+}
+
+impl<'a> DisplayStats<'a> {
+    pub const fn new(stats: &'a ExecutionStats) -> Self {
+        Self { stats }
+    }
+}
+
+impl Display for DisplayStats<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let fields = self.stats.fields();
+        let longest_field = fields
+            .iter()
+            .map(|(field, _)| field.len())
+            .max()
+            .unwrap_or(0);
+
+        for (name, value) in fields {
+            write!(
+                f,
+                "  {:<padding$} : {}",
+                name,
+                value,
+                padding = longest_field,
+            )?;
+
+            if !matches!(name, "instructions" | "loop iters" | "branches") {
+                writeln!(
+                    f,
+                    ", {:.02}%",
+                    utils::percent_total(self.stats.instructions, value),
+                )?;
+            } else {
+                writeln!(f)?;
+            }
+        }
+
+        Ok(())
     }
 }
 

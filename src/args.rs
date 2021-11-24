@@ -37,6 +37,10 @@ pub enum Command {
     Run {
         /// The file to run
         file: PathBuf,
+
+        /// Disable optimizations
+        #[clap(long)]
+        no_opt: bool,
     },
 
     /// Optimize and run a brainfuck file along with all intermediate steps

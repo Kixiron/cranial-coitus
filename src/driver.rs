@@ -55,7 +55,7 @@ pub fn run_opt_passes(graph: &mut Rvsdg, cells: usize, iteration_limit: usize) -
         let mut changed = false;
 
         for (pass_idx, pass) in passes.iter_mut().enumerate() {
-            let span = tracing::info_span!("pass", pass = pass.pass_name());
+            let span = tracing::info_span!("optimization-pass", pass = pass.pass_name());
             span.in_scope(|| {
                 tracing::info!(
                     "running {} (pass #{}.{})",

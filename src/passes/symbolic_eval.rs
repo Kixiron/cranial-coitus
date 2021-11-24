@@ -1,11 +1,11 @@
 use crate::{
     graph::{Bool, Gamma, Int, Load, NodeExt, OutputPort, PortId, Rvsdg, Store, Theta},
     interpreter::Machine,
-    ir::{IrBuilder, Value, VarId},
+    ir::{IrBuilder, Pretty, Value, VarId},
     passes::{utils::ConstantStore, Pass},
-    utils::{AssertNone, HashMap},
+    utils::{self, AssertNone, HashMap},
 };
-use std::{collections::BTreeMap, mem};
+use std::collections::BTreeMap;
 
 pub struct SymbolicEval {
     changed: bool,
@@ -39,6 +39,174 @@ impl SymbolicEval {
     fn zero_tape(&mut self) {
         for cell in &mut self.tape {
             *cell = Some(0);
+        }
+    }
+
+    fn try_evaluate_theta(&mut self, graph: &mut Rvsdg, theta: &Theta) -> Option<OutputPort> {
+        let tape_len = self.tape.len();
+
+        // We don't currently accept variant inputs
+        if theta.variant_inputs_len() != 0 {
+            tracing::trace!(
+                theta = ?theta.node(),
+                "failed to evaluate theta node, it has variant inputs",
+            );
+            self.clear_tape();
+
+            return None;
+        }
+
+        // If all of our input values aren't const-known we can't continue
+        let (mut values, mut inputs) = (BTreeMap::new(), BTreeMap::new());
+        for (port, param) in theta.invariant_input_pairs() {
+            let source = graph.input_source(port);
+
+            if let Some(value) = self.constants.get(source) {
+                values
+                    .insert(VarId::new(param.output()), value)
+                    .debug_unwrap_none();
+
+                inputs.insert(port, Value::Const(value)).debug_unwrap_none();
+            } else {
+                tracing::trace!(
+                    theta = ?theta.node(),
+                    "failed to evaluate theta node, it's missing const inputs",
+                );
+                self.clear_tape();
+
+                return None;
+            }
+        }
+
+        // We don't want io operations or gamma/theta nodes
+        // Gamma and theta nodes could be evaluated, but I don't have the capacity
+        // for that right now
+        let mut contains_disallowed_nodes = false;
+        theta.body().for_each_transitive_node(|_, node| {
+            contains_disallowed_nodes |=
+                node.is_input() || node.is_output() || node.is_gamma() || node.is_theta();
+        });
+        if contains_disallowed_nodes {
+            tracing::trace!(
+                theta = ?theta.node(),
+                "failed to evaluate theta node, it contains disallowed nodes",
+            );
+            self.clear_tape();
+
+            return None;
+        }
+
+        let mut machine =
+            Machine::new(100_000_000, tape_len, || unreachable!(), |_| unreachable!());
+        // Give the machine our current tape state
+        machine.tape = self.tape.clone();
+
+        // Add all the input values to the machine
+        machine
+            .values
+            .last_mut()
+            .unwrap()
+            .append(&mut values.clone());
+        machine.values.insert(0, values.clone());
+        machine.values_idx += 1;
+
+        // Translate the theta's body into ir
+        let mut builder = IrBuilder::new(false);
+        let mut values: BTreeMap<_, _> = values
+            .into_iter()
+            .map(|(var, val)| (OutputPort::new(PortId::new(var.0)), Value::Const(val)))
+            .collect();
+        builder.values.append(&mut values);
+
+        let mut builder = IrBuilder::new(false);
+        builder.push_theta(graph, &inputs, theta);
+
+        let mut body = builder.finish();
+        tracing::debug!(
+            theta = ?theta.node(),
+            "symbolically evaluating theta node: {}",
+            body.pretty_print(None),
+        );
+
+        // If we successfully evaluate the ir, we want to retain its output state
+        match machine
+            .execute(&mut body, false)
+            .map(|output_tape| output_tape.to_vec())
+        {
+            Ok(output_tape) => {
+                tracing::debug!(
+                    theta = ?theta.node(),
+                    input_tape = ?utils::debug_collapse(&self.tape),
+                    output_tape = ?utils::debug_collapse(&output_tape),
+                    "successfully evaluated theta node",
+                );
+
+                for (output, param) in theta.output_pairs() {
+                    let source = theta.body().input_source(param.input());
+
+                    let value = *machine
+                        .values
+                        .last()
+                        .unwrap()
+                        .get(&VarId::new(source))
+                        .unwrap();
+
+                    let int = graph.int(value.convert_to_i32().unwrap());
+                    self.constants.add(output, value);
+                    graph.rewire_dependents(output, int.value());
+
+                    self.evaluated_outputs += 1;
+                }
+
+                let input_effect = theta.input_effect().unwrap();
+                let mut last_effect = graph.input_source(input_effect);
+
+                let mut created_values = BTreeMap::new();
+                for (cell, (old, new)) in self
+                    .tape
+                    .iter()
+                    .copied()
+                    .zip(output_tape.iter().copied())
+                    .enumerate()
+                {
+                    if let (Some(old), Some(new)) = (old, new) {
+                        if old != new {
+                            let ptr = *created_values
+                                .entry(cell as i32)
+                                .or_insert_with(|| graph.int(cell as i32).value());
+                            let value = *created_values
+                                .entry(new as i32)
+                                .or_insert_with(|| graph.int(new as i32).value());
+
+                            let store = graph.store(ptr, value, last_effect);
+                            last_effect = store.output_effect();
+                        }
+                    } else if let Some(value) = new {
+                        let ptr = *created_values
+                            .entry(cell as i32)
+                            .or_insert_with(|| graph.int(cell as i32).value());
+                        let value = *created_values
+                            .entry(value as i32)
+                            .or_insert_with(|| graph.int(value as i32).value());
+
+                        let store = graph.store(ptr, value, last_effect);
+                        last_effect = store.output_effect();
+                    }
+                }
+
+                self.tape = output_tape;
+                Some(last_effect)
+            }
+
+            Err(error) => {
+                tracing::trace!(
+                    theta = ?theta.node(),
+                    "failed to evaluate theta node: {:?}",
+                    error,
+                );
+
+                None
+            }
         }
     }
 }
@@ -79,10 +247,8 @@ impl Pass for SymbolicEval {
             .i32(graph.input_source(store.ptr()))
             .map(|ptr| ptr.rem_euclid(self.tape.len() as i32) as usize);
 
-        let value = self.constants.u8(graph.input_source(store.value()));
-
         if let Some(ptr) = ptr {
-            self.tape[ptr] = value;
+            self.tape[ptr] = self.constants.u8(graph.input_source(store.value()));
         } else {
             self.clear_tape();
         }
@@ -95,121 +261,86 @@ impl Pass for SymbolicEval {
             .map(|ptr| ptr.rem_euclid(self.tape.len() as i32) as usize);
 
         if let Some(value) = ptr.and_then(|ptr| self.tape[ptr]) {
+            // let int = graph.int(value as i32);
+
             self.constants.add(load.output_value(), value);
+            // self.constants.add(int.value(), value);
+            //
+            // graph.rewire_dependents(load.output_value(), int.value());
+            // graph.splice_ports(load.input_effect(), load.output_effect());
+            // graph.remove_node(load.node());
+            //
+            // self.removed_loads += 1;
+            // self.changed();
         }
     }
 
-    fn visit_theta(&mut self, graph: &mut Rvsdg, theta: Theta) {
-        let tape_len = self.tape.len();
+    fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
+        if let Some(last_effect) = self.try_evaluate_theta(graph, &theta) {
+            let output_effect = theta.output_effect().unwrap();
 
-        // We don't currently accept variant inputs
-        if theta.variant_inputs_len() != 0 {
-            tracing::trace!(
-                theta = ?theta.node(),
-                "failed to evaluate theta node, it has variant inputs",
-            );
-            self.clear_tape();
+            graph.rewire_dependents(output_effect, last_effect);
+            graph.remove_node(theta.node());
 
-            return;
-        }
+            self.evaluated_thetas += 1;
+            self.changed();
+        } else {
+            let mut body_has_stores = false;
+            theta
+                .body()
+                .for_each_transitive_node(|_node_id, node| body_has_stores |= node.is_store());
 
-        // If all of our input values aren't const-known we can't continue
-        let mut values = BTreeMap::new();
-        for (port, param) in theta.variant_input_pairs() {
-            let source = graph.input_source(port);
+            let mut changed = false;
+            let mut visitor = Self::new(0);
 
-            if let Some(value) = self.constants.get(source) {
-                values
-                    .insert(VarId::new(param.output()), value)
-                    .debug_unwrap_none();
-            } else {
-                tracing::trace!(
-                    theta = ?theta.node(),
-                    "failed to evaluate theta node, it's missing const inputs",
-                );
-                self.clear_tape();
+            visitor.tape = self.tape.clone();
+            self.constants
+                .theta_invariant_inputs_into(&theta, graph, &mut visitor.constants);
 
-                return;
-            }
-        }
+            changed |= visitor.visit_graph(theta.body_mut());
 
-        // We don't want io operations or gamma/theta nodes
-        // Gamma and theta nodes could be evaluated, but I don't have the capacity
-        // for that right now
-        let mut contains_disallowed_nodes = false;
-        theta.body().for_each_transitive_node(|_, node| {
-            contains_disallowed_nodes |=
-                node.is_input() || node.is_output() || node.is_gamma() || node.is_theta();
-        });
-        if contains_disallowed_nodes {
-            tracing::trace!(
-                theta = ?theta.node(),
-                "failed to evaluate theta node, it contains disallowed nodes",
-            );
-            self.clear_tape();
-
-            return;
-        }
-
-        let mut machine = Machine::new(1_000_000, tape_len, || unreachable!(), |_| unreachable!());
-        // Give the machine our current tape state
-        machine.tape = mem::replace(&mut self.tape, vec![None; tape_len]);
-
-        // Add all the input values to the machine
-        machine
-            .values
-            .last_mut()
-            .unwrap()
-            .append(&mut values.clone());
-        machine.values.insert(0, values.clone());
-        machine.values_idx += 1;
-
-        // Translate the theta's body into ir
-        let mut builder = IrBuilder::new(false);
-        let mut values: BTreeMap<_, _> = values
-            .into_iter()
-            .map(|(var, val)| (OutputPort::new(PortId::new(var.0)), Value::Const(val)))
-            .collect();
-        builder.values.append(&mut values);
-
-        let mut body = builder.translate(theta.body());
-
-        // If we successfully evaluate the ir, we want to retain its output state
-        match machine.execute(&mut body, false) {
-            Ok(output_tape) => {
-                tracing::trace!(theta = ?theta.node(), "evaluated theta node");
-                self.tape = output_tape.to_vec();
-
-                for (output, param) in theta.output_pairs() {
-                    let source = theta.body().input_source(param.input());
-
-                    let value = *machine
-                        .values
-                        .last()
-                        .unwrap()
-                        .get(&VarId::new(source))
-                        .unwrap();
-
-                    let int = graph.int(value.convert_to_i32().unwrap());
-                    self.constants.add(output, value);
-                    graph.rewire_dependents(output, int.value());
-
-                    self.evaluated_outputs += 1;
-                }
-
-                self.evaluated_thetas += 1;
-                graph.remove_node(theta.node());
+            if changed {
+                graph.replace_node(theta.node(), theta);
                 self.changed();
             }
 
-            Err(error) => {
-                tracing::trace!(theta = ?theta.node(), "failed to evaluate theta node: {:?}", error);
+            if body_has_stores {
+                self.clear_tape();
             }
         }
     }
 
-    // TODO: Evaluate within gamma nodes
-    fn visit_gamma(&mut self, _graph: &mut Rvsdg, _gamma: Gamma) {
-        self.clear_tape();
+    fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
+        let mut has_stores = false;
+        gamma
+            .true_branch()
+            .for_each_transitive_node(|_node_id, node| has_stores |= node.is_store());
+        gamma
+            .false_branch()
+            .for_each_transitive_node(|_node_id, node| has_stores |= node.is_store());
+
+        let mut changed = false;
+        let (mut true_visitor, mut false_visitor) = (Self::new(0), Self::new(0));
+
+        true_visitor.tape = self.tape.clone();
+        false_visitor.tape = self.tape.clone();
+        self.constants.gamma_inputs_into(
+            &gamma,
+            graph,
+            &mut true_visitor.constants,
+            &mut false_visitor.constants,
+        );
+
+        changed |= true_visitor.visit_graph(gamma.true_mut());
+        changed |= false_visitor.visit_graph(gamma.false_mut());
+
+        if changed {
+            graph.replace_node(gamma.node(), gamma);
+            self.changed();
+        }
+
+        if has_stores {
+            self.clear_tape();
+        }
     }
 }

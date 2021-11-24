@@ -1,10 +1,14 @@
 #![feature(
+    asm,
     try_blocks,
     result_cloned,
+    slice_ptr_get,
+    slice_ptr_len,
     bool_to_option,
     hash_drain_filter,
     vec_into_raw_parts,
-    destructuring_assignment
+    destructuring_assignment,
+    nonnull_slice_from_raw_parts
 )]
 
 #[macro_use]
@@ -20,11 +24,12 @@ mod lower_tokens;
 mod parse;
 mod passes;
 mod patterns;
-mod union_find;
 mod tests;
+mod union_find;
 
 use crate::{
     args::{Args, Command},
+    codegen::Codegen,
     graph::{EdgeKind, Node, NodeExt, Rvsdg},
     interpreter::EvaluationError,
     ir::{IrBuilder, Pretty},
@@ -34,8 +39,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::{
     collections::VecDeque,
+    fmt::Write,
     fs::{self, File},
-    io::{BufWriter, Write},
+    io::{BufWriter, Write as _},
     path::Path,
     time::Instant,
 };
@@ -54,7 +60,7 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
     match &args.command {
-        Command::Run { file } => run(&args, file, start_time),
+        Command::Run { file, no_opt } => run(&args, file, *no_opt, start_time),
         &Command::Debug {
             ref file,
             only_final_run,
@@ -96,7 +102,7 @@ fn debug(
     // Note: This happens *after* we print out the initial graph for better debugging
     validate(&graph);
 
-    if !only_final_run {
+    let unoptimized_execution = if !only_final_run {
         let result_path = dump_dir.join("input-result.txt");
         let mut result_file = File::create(&result_path)
             .with_context(|| format!("failed to create '{}'", result_path.display()))?;
@@ -142,29 +148,12 @@ fn debug(
             Ok(()) => {
                 println!(
                     "Unoptimized program finished execution in {:#?}\n\
-                     Execution stats:\n  \
-                       instructions : {}\n  \
-                       loads        : {}, {:.02}%\n  \
-                       stores       : {}, {:.02}%\n  \
-                       loop iters   : {}\n  \
-                       branches     : {}\n  \
-                       input calls  : {}, {:.02}%\n  \
-                       output calls : {}, {:.02}%\n\
+                     Execution stats:\n{}\
                      output (bytes): {:?}\n\
                      output (escaped): {:?}\n\
                      output (utf8):\n{}",
                     execution_duration,
-                    stats.instructions,
-                    stats.loads,
-                    utils::percent_total(stats.instructions, stats.loads),
-                    stats.stores,
-                    utils::percent_total(stats.instructions, stats.stores),
-                    stats.loop_iterations,
-                    stats.branches,
-                    stats.input_calls,
-                    utils::percent_total(stats.instructions, stats.input_calls),
-                    stats.output_calls,
-                    utils::percent_total(stats.instructions, stats.output_calls),
+                    stats.display(),
                     output_vec,
                     output_str,
                     output_str,
@@ -174,37 +163,24 @@ fn debug(
             Err(_) => {
                 println!(
                     "Unoptimized program hit the step limit of {} steps in {:#?}\n\
-                     Execution stats:\n  \
-                       instructions : {}\n  \
-                       loads        : {}, {:.02}%\n  \
-                       stores       : {}, {:.02}%\n  \
-                       loop iters   : {}\n  \
-                       branches     : {}\n  \
-                       input calls  : {}, {:.02}%\n  \
-                       output calls : {}, {:.02}%\n\
+                     Execution stats:\n{}\
                      output (bytes): {:?}\n\
                      output (escaped): {:?}\n\
                      output (utf8): {}",
                     step_limit,
                     execution_duration,
-                    stats.instructions,
-                    stats.loads,
-                    utils::percent_total(stats.instructions, stats.loads),
-                    stats.stores,
-                    utils::percent_total(stats.instructions, stats.stores),
-                    stats.loop_iterations,
-                    stats.branches,
-                    stats.input_calls,
-                    utils::percent_total(stats.instructions, stats.input_calls),
-                    stats.output_calls,
-                    utils::percent_total(stats.instructions, stats.output_calls),
+                    stats.display(),
                     output_vec,
                     output_str,
                     output_str,
                 );
             }
         }
-    }
+
+        Some((stats, execution_duration))
+    } else {
+        None
+    };
 
     let mut evolution = BufWriter::new(File::create(dump_dir.join("evolution.diff")).unwrap());
     write!(&mut evolution, ">>>>> input\n{}", input_program_ir).unwrap();
@@ -258,16 +234,21 @@ fn debug(
                 let diff = utils::diff_ir(&previous_program_ir, &output_program_ir);
 
                 if !diff.is_empty() {
-                    fs::write(
-                        dump_dir.join(format!(
-                            "{}-{}.{}.cir",
-                            pass.pass_name(),
-                            pass_num,
-                            pass_idx,
-                        )),
-                        &output_program_ir,
-                    )
-                    .unwrap();
+                    let input_file = dump_dir.join(format!(
+                        "{}-{}.{}.input.cir",
+                        pass.pass_name(),
+                        pass_num,
+                        pass_idx,
+                    ));
+                    fs::write(input_file, &previous_program_ir).unwrap();
+
+                    let output_file = dump_dir.join(format!(
+                        "{}-{}.{}.cir",
+                        pass.pass_name(),
+                        pass_num,
+                        pass_idx,
+                    ));
+                    fs::write(output_file, &output_program_ir).unwrap();
 
                     write!(
                         &mut evolution,
@@ -279,16 +260,13 @@ fn debug(
                     )
                     .unwrap();
 
-                    fs::write(
-                        dump_dir.join(format!(
-                            "{}-{}.{}.diff",
-                            pass.pass_name(),
-                            pass_num,
-                            pass_idx,
-                        )),
-                        diff,
-                    )
-                    .unwrap();
+                    let diff_file = dump_dir.join(format!(
+                        "{}-{}.{}.diff",
+                        pass.pass_name(),
+                        pass_num,
+                        pass_idx,
+                    ));
+                    fs::write(diff_file, diff).unwrap();
                 }
 
                 previous_program_ir = output_program_ir;
@@ -385,7 +363,7 @@ fn debug(
     let mut result_file = File::create(&result_path)
         .with_context(|| format!("failed to create '{}'", result_path.display()))?;
 
-    let (stats, execution_duration) = {
+    let (optimized_stats, optimized_execution_duration) = {
         // FIXME: Allow user supplied input
         let mut input = vec_deque![b'1', b'0'];
         let input_vec: Vec<_> = input.iter().copied().collect();
@@ -449,7 +427,7 @@ fn debug(
 
     // FIXME: Utility function
     let difference = input_graph_stats.difference(output_graph_stats);
-    let change = format!(
+    let mut change = format!(
         "Optimized Program (took {} iterations and {:#?})\n\
          Input:\n  \
            instructions : {}\n  \
@@ -474,17 +452,7 @@ fn debug(
            loads        : {:>+6.02}%\n  \
            stores       : {:>+6.02}%\n  \
            constants    : {:>+6.02}%\n  \
-           io ops       : {:>+6.02}%\n\
-         Finished execution in {:#?}\n\
-         Execution stats:\n  \
-           instructions : {}\n  \
-           loads        : {}, {:.02}%\n  \
-           stores       : {}, {:.02}%\n  \
-           loop iters   : {}\n  \
-           branches     : {}\n  \
-           input calls  : {}, {:.02}%\n  \
-           output calls : {}, {:.02}%\n\
-        ",
+           io ops       : {:>+6.02}%\n\n",
         pass_num,
         elapsed,
         input_graph_stats.instructions,
@@ -508,30 +476,38 @@ fn debug(
         difference.stores,
         difference.constants,
         difference.io_ops,
-        execution_duration,
-        stats.instructions,
-        stats.loads,
-        utils::percent_total(stats.instructions, stats.loads),
-        stats.stores,
-        utils::percent_total(stats.instructions, stats.stores),
-        stats.loop_iterations,
-        stats.branches,
-        stats.input_calls,
-        utils::percent_total(stats.instructions, stats.input_calls),
-        stats.output_calls,
-        utils::percent_total(stats.instructions, stats.output_calls),
     );
+
+    if let Some((unoptimized_stats, unoptimized_execution_duration)) = unoptimized_execution {
+        writeln!(
+            &mut change,
+            "Finished unoptimized execution in {:#?}\n\
+            Unoptimized execution stats:\n{}",
+            unoptimized_execution_duration,
+            unoptimized_stats.display(),
+        )
+        .unwrap();
+    }
+
+    writeln!(
+        &mut change,
+        "Finished optimized execution in {:#?}\n\
+        Optimized execution stats:\n{}",
+        optimized_execution_duration,
+        optimized_stats.display(),
+    )
+    .unwrap();
 
     print!("{}", change);
     fs::write(dump_dir.join("change.txt"), change).unwrap();
 
-    let annotated_program = output_program.pretty_print(Some(stats.instructions));
+    let annotated_program = output_program.pretty_print(Some(optimized_stats.instructions));
     fs::write(dump_dir.join("annotated_output.cir"), annotated_program).unwrap();
 
     Ok(())
 }
 
-fn run(args: &Args, file: &Path, start_time: Instant) -> Result<()> {
+fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()> {
     let cells = args.cells as usize;
     let step_limit = args.step_limit.unwrap_or(usize::MAX);
 
@@ -568,14 +544,23 @@ fn run(args: &Args, file: &Path, start_time: Instant) -> Result<()> {
         graph
     };
 
+    Codegen::new(cells)
+        .assemble(&IrBuilder::new(false).translate(&graph))
+        .unwrap();
+    return Ok(());
+
     let input_stats = graph.stats();
     validate(&graph);
 
-    let opt_iters = driver::run_opt_passes(
-        &mut graph,
-        cells,
-        args.iteration_limit.unwrap_or(usize::MAX),
-    );
+    let opt_iters = if no_opt {
+        0
+    } else {
+        driver::run_opt_passes(
+            &mut graph,
+            cells,
+            args.iteration_limit.unwrap_or(usize::MAX),
+        )
+    };
 
     let mut program = IrBuilder::new(args.inline_constants).translate(&graph);
     let elapsed = start_time.elapsed();
@@ -647,27 +632,9 @@ fn run(args: &Args, file: &Path, start_time: Instant) -> Result<()> {
             println!(
                 "\n\
                 Finished execution in {:#?}\n\
-                Execution stats:\n  \
-                  instructions : {}\n  \
-                  loads        : {}, {:.02}%\n  \
-                  stores       : {}, {:.02}%\n  \
-                  loop iters   : {}\n  \
-                  branches     : {}\n  \
-                  input calls  : {}, {:.02}%\n  \
-                  output calls : {}, {:.02}%\
-                ",
+                Execution stats:\n{}",
                 execution_duration,
-                stats.instructions,
-                stats.loads,
-                utils::percent_total(stats.instructions, stats.loads),
-                stats.stores,
-                utils::percent_total(stats.instructions, stats.stores),
-                stats.loop_iterations,
-                stats.branches,
-                stats.input_calls,
-                utils::percent_total(stats.instructions, stats.input_calls),
-                stats.output_calls,
-                utils::percent_total(stats.instructions, stats.output_calls),
+                stats.display(),
             );
         }
 
@@ -677,28 +644,10 @@ fn run(args: &Args, file: &Path, start_time: Instant) -> Result<()> {
             println!(
                 "\n\
                 Program hit step limit of {} in {:#?}\n\
-                Execution stats:\n  \
-                  instructions : {}\n  \
-                  loads        : {}, {:.02}%\n  \
-                  stores       : {}, {:.02}%\n  \
-                  loop iters   : {}\n  \
-                  branches     : {}\n  \
-                  input calls  : {}, {:.02}%\n  \
-                  output calls : {}, {:.02}%\
-                ",
+                Execution stats:\n{}",
                 step_limit,
                 execution_duration,
-                stats.instructions,
-                stats.loads,
-                utils::percent_total(stats.instructions, stats.loads),
-                stats.stores,
-                utils::percent_total(stats.instructions, stats.stores),
-                stats.loop_iterations,
-                stats.branches,
-                stats.input_calls,
-                utils::percent_total(stats.instructions, stats.input_calls),
-                stats.output_calls,
-                utils::percent_total(stats.instructions, stats.output_calls),
+                stats.display(),
             );
         }
     }

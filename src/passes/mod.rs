@@ -1,5 +1,6 @@
 mod add_sub_loop;
 mod associative_ops;
+mod canonicalize;
 mod const_folding;
 mod dataflow;
 mod dce;
@@ -17,6 +18,7 @@ mod zero_loop;
 
 pub use add_sub_loop::AddSubLoop;
 pub use associative_ops::AssociativeOps;
+pub use canonicalize::Canonicalize;
 pub use const_folding::ConstFolding;
 pub use dataflow::Dataflow;
 pub use dce::Dce;
@@ -59,6 +61,7 @@ pub fn default_passes(cells: usize) -> Vec<Box<dyn Pass>> {
         DuplicateCell::new(),
         ExprDedup::new(),
         Dce::new(),
+        Canonicalize::new(),
     ]
 }
 

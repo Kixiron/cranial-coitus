@@ -3,6 +3,7 @@
 test_opts! {
     beer,
     default_passes = true,
+    step_limit = usize::MAX,
     output = include_bytes!("corpus/beer.out"),
     |graph, effect| {
         let ptr = graph.int(0).value();

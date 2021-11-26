@@ -2,7 +2,7 @@ use crate::{
     args::Args,
     graph::Rvsdg,
     interpreter::{EvaluationError, ExecutionStats, Machine},
-    ir::{Block, IrBuilder, Pretty},
+    ir::{Block, IrBuilder, Pretty, PrettyConfig},
     lower_tokens,
     parse::{self, Token},
     passes,
@@ -34,7 +34,7 @@ pub fn debugger(args: &Args, file: &Path, start_time: Instant) -> Result<()> {
 
     let ir = IrBuilder::new(args.inline_constants)
         .translate(&graph)
-        .pretty_print(None);
+        .pretty_print(PrettyConfig::minimal());
 
     debugger_tui(cells, &ir)?;
 
@@ -244,7 +244,7 @@ pub fn sequentialize_graph(
     args: &Args,
     graph: &Rvsdg,
     dump_dir: Option<&Path>,
-    total_instructions: Option<usize>,
+    config: PrettyConfig,
 ) -> Result<(Block, String)> {
     // Sequentialize the graph into serial instructions
     let program = {
@@ -264,7 +264,7 @@ pub fn sequentialize_graph(
         tracing::debug!("started pretty printing sequentialized graph");
         let event = PerfEvent::new("pretty-printing-sequentialized-graph");
 
-        let pretty_printed = program.pretty_print(total_instructions);
+        let pretty_printed = program.pretty_print(config);
 
         let elapsed = event.finish();
         tracing::debug!(

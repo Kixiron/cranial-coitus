@@ -1,12 +1,19 @@
-use crate::ir::{Assign, Block, Call, Expr, Instruction, Value};
+use crate::{
+    ir::{
+        Add, Assign, Block, Call, Const, Eq, Expr, Instruction, Pretty, PrettyConfig, Store, Value,
+        VarId,
+    },
+    utils::{self, AssertNone},
+};
 use core::slice;
 use iced_x86::{
     code_asm::{CodeAssembler, *},
-    Decoder, DecoderOptions, Formatter, Instruction as X86Instruction, MasmFormatter,
-    SymbolResolver, SymbolResult,
+    FlowControl, Formatter, Instruction as X86Instruction, MasmFormatter, SymbolResolver,
+    SymbolResult,
 };
 use std::{
     ascii,
+    collections::BTreeMap,
     io::{self, Read, StdinLock, StdoutLock, Write},
     mem::transmute,
     ops::{Deref, DerefMut},
@@ -24,6 +31,7 @@ use winapi::um::{
 const BITNESS: u32 = 64;
 
 const RETURN_SUCCESS: i64 = 0;
+
 const RETURN_IO_FAILURE: i64 = 101;
 
 pub struct Codegen {
@@ -31,6 +39,16 @@ pub struct Codegen {
     io_failure: CodeLabel,
     has_io_functions: bool,
     tape_len: usize,
+    values: BTreeMap<VarId, Immediate>,
+    registers: Vec<(AsmRegister64, Option<()>)>,
+    comments: BTreeMap<usize, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Immediate {
+    Register(AsmRegister64),
+    Const(Const),
+    // TODO: Stack values
 }
 
 impl Codegen {
@@ -43,24 +61,39 @@ impl Codegen {
             io_failure,
             has_io_functions: false,
             tape_len,
+            values: BTreeMap::new(),
+            registers: vec![
+                // (r8, None),
+                (r9, None),
+                (r10, None),
+                (r11, None),
+                (r12, None),
+                (r13, None),
+                (r14, None),
+                (r15, None),
+            ],
+            comments: BTreeMap::new(),
         }
     }
 
     pub fn assemble(&mut self, block: &Block) -> Result<(), IcedError> {
+        let prologue_start = self.asm.instructions().len();
         self.prologue()?;
 
+        let body_start = self.asm.instructions().len();
         for inst in &**block {
             self.assemble_inst(inst)?;
         }
 
+        let epilogue_start = self.asm.instructions().len();
         self.epilogue()?;
 
         // Only build the IO handler if there's IO functions
         if self.has_io_functions {
-            build_io_failure(&mut self.asm, &mut self.io_failure)?;
+            self.build_io_failure()?;
         }
 
-        let (code, code_buffer) = {
+        let code_buffer = {
             // The maximum size of an instruction is 15 bytes, so we allocate the most memory we could possibly use
             let maximum_possible_size = self.asm.instructions().len() * 15;
             let mut code_buffer = CodeBuffer::new(maximum_possible_size).unwrap();
@@ -71,35 +104,139 @@ impl Codegen {
             code_buffer[..code.len()].copy_from_slice(&code);
 
             // TODO: Shrink code_buffer to the used size?
-            (code, code_buffer)
+            code_buffer
         };
 
-        let disassembled = {
-            let mut decoder = Decoder::new(BITNESS, &code, DecoderOptions::NONE);
+        let assembly = {
             let mut formatter = MasmFormatter::with_options(Some(Box::new(Resolver)), None);
 
+            // Set up the formatter's options
             {
                 let options = formatter.options_mut();
 
+                // Set up hex formatting
                 options.set_uppercase_hex(true);
                 options.set_hex_prefix("0x");
                 options.set_hex_suffix("");
 
+                // Make operand formatting pretty
                 options.set_space_after_operand_separator(true);
                 options.set_space_between_memory_add_operators(true);
                 options.set_space_between_memory_mul_operators(true);
                 options.set_scale_before_index(false);
             }
 
-            let mut output = String::new();
-            let mut inst = X86Instruction::default();
+            // Collect all jump targets
+            let mut labels = Vec::new();
 
-            while decoder.can_decode() {
-                // Decode the instruction
-                decoder.decode_out(&mut inst);
+            for inst in self.asm.instructions() {
+                if matches!(
+                    inst.flow_control(),
+                    FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch,
+                ) {
+                    labels.push(inst.near_branch_target());
+                }
+            }
 
-                // Format the instruction into the output buffer
-                formatter.format(&inst, &mut output);
+            // Sort and deduplicate the jump targets
+            labels.sort_unstable();
+            labels.dedup();
+
+            // Name each jump target in increasing order
+            let labels: BTreeMap<u64, String> = labels
+                .into_iter()
+                .enumerate()
+                .map(|(idx, address)| (address, format!("LBL_{}", idx)))
+                .collect();
+
+            // Format all instructions
+            let (mut output, mut is_indented) = (String::new(), false);
+            for (idx, inst) in self.asm.instructions().iter().enumerate() {
+                let address = inst.ip();
+
+                // Create pseudo labels for points of interest
+                let mut pseudo_label = None;
+                if idx == prologue_start {
+                    pseudo_label = Some(".PROLOGUE:\n");
+                } else if idx == body_start {
+                    pseudo_label = Some(".BODY:\n");
+                } else if idx == epilogue_start {
+                    pseudo_label = Some(".EPILOGUE:\n");
+                }
+
+                if let Some(label) = pseudo_label {
+                    is_indented = true;
+
+                    if idx != 0 {
+                        output.push('\n');
+                    }
+                    output.push_str(label);
+                }
+
+                // If the current address is jumped to, add a label to the output text
+                if let Some(label) = labels.get(&address) {
+                    is_indented = true;
+
+                    if idx != 0
+                        && idx != prologue_start
+                        && idx != body_start
+                        && idx != epilogue_start
+                    {
+                        output.push('\n');
+                    }
+
+                    output.push('.');
+                    output.push_str(label);
+                    output.push_str(":\n");
+                }
+
+                // Display any comments
+                if let Some(comments) = self.comments.get(&idx) {
+                    for comment in comments {
+                        if is_indented {
+                            output.push_str("  ");
+                        }
+
+                        output.push_str("; ");
+                        output.push_str(comment);
+                        output.push('\n');
+                    }
+                }
+
+                // Indent the line if needed
+                if is_indented {
+                    output.push_str("  ");
+                }
+
+                // If this is a branch instruction we want to replace the branch address with
+                // our human readable label
+                if matches!(
+                    inst.flow_control(),
+                    FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch,
+                ) {
+                    // Use the label name if we can find it
+                    if let Some(label) = labels.get(&inst.near_branch_target()) {
+                        let mnemonic = format!("{:?}", inst.mnemonic()).to_lowercase();
+                        output.push_str(&mnemonic);
+                        output.push_str(" .");
+                        output.push_str(label);
+
+                    // Otherwise fall back to normal formatting
+                    } else {
+                        tracing::warn!(
+                            "failed to get branch label for {} (address: {:#x})",
+                            inst,
+                            inst.near_branch_target(),
+                        );
+
+                        formatter.format(inst, &mut output);
+                    }
+
+                // Otherwise format the instruction into the output buffer
+                } else {
+                    formatter.format(inst, &mut output);
+                }
+
                 // Add a newline between each instruction (and a trailing one)
                 output.push('\n');
             }
@@ -122,14 +259,15 @@ impl Codegen {
                 let end = start.add(tape_len);
 
                 println!(
-                    "state = {}, current = {}, start = {}, end = {}",
-                    &state as *const _ as usize, start as usize, start as usize, end as usize,
+                    "state = {}, start = {}, end = {}",
+                    &state as *const _ as usize, start as usize, end as usize,
                 );
 
-                code_buffer.call(&mut state, start, start, end)
+                code_buffer.call(&mut state, start, end)
             }));
 
             println!("\njitted function returned {:?}", jit_return);
+            println!("tape: {:?}", utils::debug_collapse(&tape));
         }
 
         Ok(())
@@ -137,112 +275,200 @@ impl Codegen {
 
     fn assemble_inst(&mut self, inst: &Instruction) -> Result<(), IcedError> {
         match inst {
-            Instruction::Call(call) => self.assemble_call(call),
+            Instruction::Call(call) => {
+                self.add_comment(call.pretty_print(PrettyConfig::minimal()));
+                self.assemble_call(call)?.debug_unwrap_none();
+
+                Ok(())
+            }
+
             Instruction::Assign(assign) => self.assemble_assign(assign),
+
             Instruction::Theta(theta) => Ok(()),
+
             Instruction::Gamma(gamma) => Ok(()),
-            Instruction::Store(store) => Ok(()),
+
+            Instruction::Store(store) => {
+                self.add_comment(store.pretty_print(PrettyConfig::minimal()));
+                self.assemble_store(store)
+            }
         }
     }
 
+    fn add_comment<C>(&mut self, comment: C)
+    where
+        C: ToString,
+    {
+        let idx = self.asm.instructions().len();
+        self.comments
+            .entry(idx)
+            .or_insert_with(|| Vec::with_capacity(1))
+            .push(comment.to_string());
+    }
+
     #[allow(clippy::fn_to_numeric_cast)]
-    fn assemble_call(&mut self, call: &Call) -> Result<(), IcedError> {
+    fn assemble_call(&mut self, call: &Call) -> Result<Option<AsmRegister64>, IcedError> {
         match &*call.function {
             "input" => {
                 debug_assert!(call.args.is_empty());
                 self.has_io_functions = true;
 
-                self.asm.mov(rsp + 0x38, rdx)?;
+                // Move the state pointer into rcx
+                self.asm.mov(rcx, rsp + 8)?;
+
+                // Reserve stack space for the passed argument
+                self.asm.sub(rsp, 8)?;
 
                 // Call the input function
                 type_eq::<unsafe extern "win64" fn(state: *mut State) -> u16>(input);
                 self.asm.mov(rax, input as u64)?;
                 self.asm.call(rax)?;
 
-                // Take args off the stack
-                self.asm.mov(rcx, rsp + 0x30)?;
-                self.asm.mov(rdx, rsp + 0x38)?;
-                self.asm.mov(r8, rsp + 0x40)?;
-                self.asm.mov(r9, rsp + 0x48)?;
+                // Deallocate the argument stack space
+                self.asm.add(rsp, 8)?;
 
                 // `input()` returns a u16 within the rax register where the top six bytes are garbage, the
                 // 7th byte is the input value (if the function succeeded) and the 8th byte is the status
                 // code, 1 for error and 0 for success
 
-                // Save rax to r15
-                self.asm.mov(rax, r15)?;
+                // Save rax to rcx
+                self.asm.mov(rcx, rax)?;
 
-                // Take only the lowest bit of r15 in order to get the success code
-                self.asm.and(r15, 0x0000_0000_0000_0001)?;
-                // Shift right by one byte in order to keep only the input value
-                self.asm.shr(rax, 8)?;
+                // Take only the lowest bit of rcx in order to get the success code
+                self.asm.and(rcx, 0x0000_0000_0000_0001)?;
 
                 // Check if an IO error occurred
-                self.asm.cmp(r15, 0)?;
+                self.asm.cmp(rcx, 0)?;
 
                 // If so, jump to the io error label and exit
                 self.asm.jnz(self.io_failure)?;
 
+                // Shift right by one byte in order to keep only the input value
+                self.asm.shr(rax, 8)?;
+
                 // Otherwise rax holds the input value
+                let input_reg = self.allocate_register();
+                self.asm.mov(input_reg, rax)?;
+
+                Ok(Some(input_reg))
             }
 
             "output" => {
                 debug_assert_eq!(call.args.len(), 1);
-
                 self.has_io_functions = true;
 
-                let arg = &call.args[0];
-                let value = match *arg {
-                    Value::Var(var) => 0,
-                    Value::Const(constant) => constant.convert_to_u8().unwrap(),
+                // Move the state pointer into rcx
+                self.asm.mov(rcx, rsp + 8)?;
+
+                // Move the given byte into rdx
+                match call.args[0] {
+                    Value::Var(var) => match *self
+                        .values
+                        .get(&var)
+                        .unwrap_or(&Immediate::Const(Const::U8(0xFF)))
+                    {
+                        Immediate::Register(reg) => self.asm.mov(rdx, reg)?,
+                        Immediate::Const(constant) => self
+                            .asm
+                            .mov(rdx, constant.convert_to_u8().unwrap() as u64)?,
+                    },
+
+                    Value::Const(constant) => self
+                        .asm
+                        .mov(rdx, constant.convert_to_u8().unwrap() as u64)?,
+
                     Value::Missing => todo!(),
                 };
 
-                self.asm.mov(rsp + 0x38, rdx)?;
+                // Reserve stack space for the passed arguments
+                self.asm.sub(rsp, 16)?;
 
                 // Call the output function
                 type_eq::<unsafe extern "win64" fn(state: *mut State, byte: u8) -> bool>(output);
                 self.asm.mov(rax, output as u64)?;
                 self.asm.call(rax)?;
 
-                // Take args off the stack
-                self.asm.mov(rcx, rsp + 0x30)?;
-                self.asm.mov(rdx, rsp + 0x38)?;
-                self.asm.mov(r8, rsp + 0x40)?;
-                self.asm.mov(r9, rsp + 0x48)?;
+                // Deallocate the argument stack space
+                self.asm.add(rsp, 16)?;
 
                 // Check if an IO error occurred
                 self.asm.cmp(al, 0)?;
                 // If so, jump to the io error label and exit
                 self.asm.jnz(self.io_failure)?;
+
+                Ok(None)
             }
 
             _ => todo!(),
         }
-
-        Ok(())
     }
 
     fn assemble_assign(&mut self, assign: &Assign) -> Result<(), IcedError> {
+        self.add_comment(assign.pretty_print(PrettyConfig::minimal()));
+
         match &assign.value {
-            Expr::Eq(_) => Ok(()),
-            Expr::Add(_) => Ok(()),
+            Expr::Eq(eq) => self.eq(eq),
+
+            Expr::Add(add) => {
+                let add_reg = self.assemble_add(add)?;
+                self.values
+                    .insert(assign.var, Immediate::Register(add_reg))
+                    .debug_unwrap_none();
+
+                Ok(())
+            }
+
             Expr::Mul(_) => Ok(()),
             Expr::Not(_) => Ok(()),
             Expr::Neg(_) => Ok(()),
             Expr::Load(_) => Ok(()),
-            Expr::Call(_) => Ok(()),
-            Expr::Value(_) => Ok(()),
+
+            Expr::Call(call) => {
+                let input_reg = self.assemble_call(call)?.unwrap();
+                self.values
+                    .insert(assign.var, Immediate::Register(input_reg))
+                    .debug_unwrap_none();
+
+                Ok(())
+            }
+
+            Expr::Value(value) => {
+                match value {
+                    &Value::Var(var) => {
+                        self.values
+                            .insert(assign.var, *self.values.get(&var).unwrap())
+                            .debug_unwrap_none();
+                    }
+                    &Value::Const(constant) => {
+                        self.values
+                            .insert(assign.var, Immediate::Const(constant))
+                            .debug_unwrap_none();
+                    }
+
+                    Value::Missing => todo!(),
+                }
+
+                Ok(())
+            }
         }
+    }
+
+    /// Set up the function's prologue
+    fn prologue(&mut self) -> Result<(), IcedError> {
+        // rcx contains the state pointer
+        self.asm.mov(rsp + 8, rcx)?;
+
+        // rdx contains the tape's start pointer
+        self.asm.mov(rsp + 16, rdx)?;
+
+        // r8 contains the tape's end pointer
+        self.asm.mov(rsp + 24, r8)?;
+
+        Ok(())
     }
 
     /// Set up the function's epilog
     fn epilogue(&mut self) -> Result<(), IcedError> {
-        // Return the callee registers
-        self.asm.pop(rdx)?;
-        self.asm.pop(r8)?;
-        self.asm.pop(r9)?;
-
         // Return zero as the return code
         self.asm.mov(rax, RETURN_SUCCESS)?;
 
@@ -252,42 +478,177 @@ impl Codegen {
         Ok(())
     }
 
-    /// Set up the function's prologue
-    fn prologue(&mut self) -> Result<(), IcedError> {
-        // Save callee registers
-        self.asm.mov(rsp + 8, rcx)?;
-        self.asm.push(rdx)?;
-        self.asm.push(r8)?;
-        self.asm.push(r9)?;
+    #[allow(clippy::fn_to_numeric_cast)]
+    fn build_io_failure(&mut self) -> Result<(), IcedError> {
+        self.asm.set_label(&mut self.io_failure)?;
+
+        // Move the state pointer into the rcx register
+        self.asm.mov(rcx, rsp + 8)?;
+
+        // Reserve stack space for the state pointer
+        self.asm.sub(rsp, 8)?;
+
+        // Call the io error function
+        type_eq::<unsafe extern "win64" fn(*mut State) -> bool>(io_error_encountered);
+        self.asm.mov(rax, io_error_encountered as u64)?;
+        self.asm.call(rax)?;
+
+        // Deallocate the parameter stack space
+        self.asm.add(rsp, 8)?;
+
+        // Move the io error code into the rax register to be used as the exit code
+        self.asm.mov(rax, RETURN_IO_FAILURE)?;
+
+        // Return from the function
+        self.asm.ret()?;
 
         Ok(())
     }
-}
 
-#[allow(clippy::fn_to_numeric_cast)]
-fn build_io_failure(asm: &mut CodeAssembler, io_failure: &mut CodeLabel) -> Result<(), IcedError> {
-    asm.set_label(io_failure)?;
+    fn assemble_store(&mut self, store: &Store) -> Result<(), IcedError> {
+        // Get the start pointer from the stack
+        self.asm.mov(rax, rsp + 16)?;
 
-    // Set up the stack for a function call
-    asm.mov(rax, io_error_encountered as u64)?;
+        // Offset the tape pointer
+        let ptr = match self.get_value(store.ptr) {
+            Immediate::Register(reg) => {
+                // FIXME: Subtract from register??
+                // FIXME: Get the actual tape pointer's register
+                self.asm.add(rax, reg)?;
 
-    // Call the io error function
-    asm.call(rax)?;
+                byte_ptr(rax)
+            }
 
-    // Pop callee registers
-    asm.mov(rcx, rsp + 0x30)?;
-    asm.mov(rdx, rsp + 0x38)?;
-    asm.mov(r8, rsp + 0x40)?;
-    asm.mov(r9, rsp + 0x48)?;
+            Immediate::Const(constant) => {
+                let offset = constant.convert_to_i32().unwrap();
 
-    // Move the io error code into the rax register to be used as the exit code
-    asm.mov(rax, RETURN_IO_FAILURE)?;
-    asm.add(rsp, 0x28)?;
+                // FIXME: Get the actual tape pointer's register
+                if offset.is_negative() {
+                    self.asm.sub(rax, offset.abs())?;
+                } else {
+                    self.asm.add(rax, offset)?;
+                }
 
-    // Return from the function
-    asm.ret()?;
+                byte_ptr(rax)
+            }
+        };
 
-    Ok(())
+        // Store the given value to the given pointer
+        match self.get_value(store.value) {
+            Immediate::Register(value) => self.asm.mov(ptr, value)?,
+            Immediate::Const(value) => self.asm.mov(ptr, value.convert_to_u8().unwrap() as i32)?,
+        }
+
+        Ok(())
+    }
+
+    fn get_value(&mut self, value: Value) -> Immediate {
+        match value {
+            Value::Var(var) => *self
+                .values
+                .get(&var)
+                .unwrap_or(&Immediate::Const(Const::U8(0xFF))),
+            Value::Const(constant) => Immediate::Const(constant),
+            Value::Missing => todo!(),
+        }
+    }
+
+    fn assemble_add(&mut self, add: &Add) -> Result<AsmRegister64, IcedError> {
+        let dest = self.allocate_register();
+
+        // FIXME: These could actually be optimized a lot with register reuse
+        match (self.get_value(add.lhs), self.get_value(add.rhs)) {
+            (Immediate::Register(lhs), Immediate::Register(rhs)) => {
+                self.asm.mov(dest, lhs)?;
+                // FIXME: Subtracting registers?
+                self.asm.add(dest, rhs)?;
+            }
+
+            (Immediate::Register(lhs), Immediate::Const(rhs)) => {
+                self.asm.mov(dest, lhs)?;
+
+                let rhs = rhs.convert_to_i32().unwrap();
+                if rhs.is_negative() {
+                    self.asm.sub(dest, rhs.abs())?;
+                } else {
+                    self.asm.add(dest, rhs)?;
+                }
+            }
+
+            (Immediate::Const(lhs), Immediate::Register(rhs)) => {
+                self.asm.mov(dest, lhs.convert_to_i32().unwrap() as i64)?;
+                self.asm.add(dest, rhs)?;
+            }
+
+            (Immediate::Const(lhs), Immediate::Const(rhs)) => {
+                self.asm.mov(dest, lhs.convert_to_i32().unwrap() as i64)?;
+
+                let rhs = rhs.convert_to_i32().unwrap();
+                if rhs.is_negative() {
+                    self.asm.sub(dest, rhs.abs())?;
+                } else {
+                    self.asm.add(dest, rhs)?;
+                }
+            }
+        }
+
+        Ok(dest)
+    }
+
+    fn eq(&mut self, eq: &Eq) -> Result<(), IcedError> {
+        // FIXME: There's opportunities for register reuse here as well
+        match (self.get_value(eq.lhs), self.get_value(eq.rhs)) {
+            (Immediate::Register(lhs), Immediate::Register(rhs)) => self.asm.cmp(lhs, rhs),
+
+            (Immediate::Register(lhs), Immediate::Const(rhs)) => {
+                self.asm.cmp(lhs, rhs.convert_to_i32().unwrap())
+            }
+
+            (Immediate::Const(lhs), Immediate::Register(rhs)) => {
+                let lhs_reg = self.allocate_register();
+                self.asm
+                    .mov(lhs_reg, lhs.convert_to_i32().unwrap() as i64)?;
+                self.asm.cmp(lhs_reg, rhs)?;
+                self.deallocate_register(lhs_reg);
+
+                Ok(())
+            }
+
+            (Immediate::Const(lhs), Immediate::Const(rhs)) => {
+                let lhs_reg = self.allocate_register();
+                self.asm
+                    .mov(lhs_reg, lhs.convert_to_i32().unwrap() as i64)?;
+                self.asm.cmp(lhs_reg, rhs.convert_to_i32().unwrap())?;
+                self.deallocate_register(lhs_reg);
+
+                Ok(())
+            }
+        }
+    }
+
+    // TODO: Stack spilling
+    fn allocate_register(&mut self) -> AsmRegister64 {
+        self.registers
+            .iter_mut()
+            .find_map(|(register, used)| {
+                if used.is_none() {
+                    *used = Some(());
+                    Some(*register)
+                } else {
+                    None
+                }
+            })
+            .unwrap()
+    }
+
+    fn deallocate_register(&mut self, register: AsmRegister64) {
+        for (reg, used) in &mut self.registers {
+            if *reg == register {
+                *used = None;
+                return;
+            }
+        }
+    }
 }
 
 struct State<'a> {
@@ -325,7 +686,52 @@ impl SymbolResolver for Resolver {
     }
 }
 
+macro_rules! log_registers {
+    () => {
+        let (
+            mut rcx_val,
+            mut rdx_val,
+            mut r8_val,
+            mut r9_val,
+            mut rax_val,
+            mut rsp_val,
+        ): (u64, u64, u64, u64, u64, u64);
+
+        asm!(
+            "mov {0}, rax",
+            "mov {1}, rcx",
+            "mov {2}, rdx",
+            "mov {3}, r8",
+            "mov {4}, r9",
+            "mov {5}, rsp",
+            out(reg) rax_val,
+            out(reg) rcx_val,
+            out(reg) rdx_val,
+            out(reg) r8_val,
+            out(reg) r9_val,
+            out(reg) rsp_val,
+            options(pure, nostack, readonly),
+        );
+
+        println!(
+            "[{}:{}:{}]: rax = {}, rcx = {}, rdx = {}, r8 = {}, r9 = {}, rsp = {}",
+            file!(),
+            line!(),
+            column!(),
+            rax_val,
+            rcx_val,
+            rdx_val,
+            r8_val,
+            r9_val,
+            rsp_val,
+        );
+    };
+}
+
 unsafe extern "win64" fn io_error_encountered(state: *mut State) -> bool {
+    log_registers!();
+    println!("state = {}", state as usize);
+
     panic::catch_unwind(|| {
         let state = &mut *state;
 
@@ -342,6 +748,9 @@ unsafe extern "win64" fn io_error_encountered(state: *mut State) -> bool {
 /// Returns a `u16` where the first byte is the input value and the second
 /// byte is a 1 upon IO failure and a 0 upon success
 unsafe extern "win64" fn input(state: *mut State) -> u16 {
+    log_registers!();
+    println!("state = {}", state as usize);
+
     let state = &mut *state;
     let mut value = 0;
 
@@ -351,39 +760,26 @@ unsafe extern "win64" fn input(state: *mut State) -> u16 {
     }))
     .unwrap_or(true);
 
+    println!("value = {}", value);
+
     u16::from_ne_bytes([value, status as u8])
 }
 
 unsafe extern "win64" fn output(state: *mut State, byte: u8) -> bool {
-    let (mut rcx_val, mut rdx_val, mut r8_val, mut r9_val, mut rax_val): (u64, u64, u64, u64, u64);
-    asm!(
-        "mov rcx, {0}",
-        "mov rdx, {1}",
-        "mov r8, {2}",
-        "mov r9, {3}",
-        "mov rax, {4}",
-        out(reg) rcx_val,
-        out(reg) rdx_val,
-        out(reg) r8_val,
-        out(reg) r9_val,
-        out(reg) rax_val,
-        options(pure, nostack, readonly),
-    );
-
-    println!(
-        "rax = {}, rcx = {}, rdx = {}, r8 = {}, r9 = {}",
-        rax_val, rcx_val, rdx_val, r8_val, r9_val,
-    );
+    log_registers!();
+    println!("state = {}, byte = {}", state as usize, byte);
 
     panic::catch_unwind(|| {
         let state = &mut *state;
 
-        if byte.is_ascii() {
-            state.stdout.write_all(&[byte]).is_err()
-        } else {
-            let escape = ascii::escape_default(byte);
-            write!(&mut state.stdout, "{}", escape).is_err()
-        }
+        // if byte.is_ascii() {
+        //     state.stdout.write_all(&[byte]).is_err()
+        // } else {
+        //     let escape = ascii::escape_default(byte);
+        //     write!(&mut state.stdout, "{}", escape).is_err()
+        // }
+        let escape = ascii::escape_default(byte);
+        write!(&mut state.stdout, "{}", escape).is_err()
     })
     .unwrap_or(true)
 }
@@ -530,16 +926,10 @@ impl<T> Executable<T> {
 }
 
 impl Executable<CodeBuffer> {
-    pub unsafe fn call(
-        &self,
-        state: *mut State,
-        current: *mut u8,
-        start: *mut u8,
-        end: *mut u8,
-    ) -> u8 {
-        let func: unsafe extern "win64" fn(*mut State, *mut u8, *mut u8, *const u8) -> u8 =
+    pub unsafe fn call(&self, state: *mut State, start: *mut u8, end: *mut u8) -> u8 {
+        let func: unsafe extern "win64" fn(*mut State, *mut u8, *const u8) -> u8 =
             transmute(self.0.as_ptr());
 
-        func(state, current, start, end)
+        func(state, start, end)
     }
 }

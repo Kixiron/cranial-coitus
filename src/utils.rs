@@ -404,7 +404,7 @@ macro_rules! test_opts {
             use $crate::{
                 graph::{Rvsdg, OutputPort, ThetaData, GammaData},
                 interpreter::Machine,
-                ir::{IrBuilder, Pretty},
+                ir::{IrBuilder, Pretty, PrettyConfig},
                 passes::{Pass, Dce},
                 utils::{compile_brainfuck_into, HashSet},
             };
@@ -444,7 +444,7 @@ macro_rules! test_opts {
                 let output_func = |byte| unoptimized_output.push(byte);
 
                 let mut unoptimized_graph_ir = IrBuilder::new(false).translate(&graph);
-                let unoptimized_text = unoptimized_graph_ir.pretty_print(None);
+                let unoptimized_text = unoptimized_graph_ir.pretty_print(PrettyConfig::minimal());
 
                 let mut machine = Machine::new(step_limit, tape_size, input_func, output_func);
                 machine
@@ -505,7 +505,7 @@ macro_rules! test_opts {
                 let output_func = |byte| optimized_output.push(byte);
 
                 let mut optimized_graph_ir = IrBuilder::new(false).translate(&graph);
-                let optimized_text = optimized_graph_ir.pretty_print(None);
+                let optimized_text = optimized_graph_ir.pretty_print(PrettyConfig::minimal());
 
                 let mut machine = Machine::new(step_limit, tape_size, input_func, output_func);
                 machine

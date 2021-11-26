@@ -32,7 +32,7 @@ use crate::{
     codegen::Codegen,
     graph::{EdgeKind, Node, NodeExt, Rvsdg},
     interpreter::EvaluationError,
-    ir::{IrBuilder, Pretty},
+    ir::{IrBuilder, Pretty, PrettyConfig},
     utils::{HashSet, PerfEvent},
 };
 use anyhow::{Context, Result};
@@ -94,8 +94,12 @@ fn debug(
     let mut graph = driver::build_graph(&tokens);
 
     // Sequentialize the input program
-    let (mut input_program, input_program_ir) =
-        driver::sequentialize_graph(args, &graph, Some(&dump_dir.join("input.cir")), None)?;
+    let (mut input_program, input_program_ir) = driver::sequentialize_graph(
+        args,
+        &graph,
+        Some(&dump_dir.join("input.cir")),
+        PrettyConfig::minimal(),
+    )?;
     let input_graph_stats = graph.stats();
 
     // Validate the initial program
@@ -229,7 +233,7 @@ fn debug(
                 stack.clear();
 
                 let (_output_program, output_program_ir) =
-                    driver::sequentialize_graph(args, &graph, None, None)?;
+                    driver::sequentialize_graph(args, &graph, None, PrettyConfig::minimal())?;
 
                 let diff = utils::diff_ir(&previous_program_ir, &output_program_ir);
 
@@ -347,7 +351,7 @@ fn debug(
         args,
         &graph,
         Some(&dump_dir.join("output.cir")),
-        Some(output_graph_stats.instructions),
+        PrettyConfig::instrumented(output_graph_stats.instructions),
     )?;
 
     if args.print_output_ir {
@@ -501,7 +505,8 @@ fn debug(
     print!("{}", change);
     fs::write(dump_dir.join("change.txt"), change).unwrap();
 
-    let annotated_program = output_program.pretty_print(Some(optimized_stats.instructions));
+    let annotated_program =
+        output_program.pretty_print(PrettyConfig::instrumented(optimized_stats.instructions));
     fs::write(dump_dir.join("annotated_output.cir"), annotated_program).unwrap();
 
     Ok(())
@@ -547,7 +552,22 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
     Codegen::new(cells)
         .assemble(&IrBuilder::new(false).translate(&graph))
         .unwrap();
-    return Ok(());
+
+    // {
+    //     let mut graph = Rvsdg::new();
+    //     let start = graph.start();
+    //     let zero = graph.int(0);
+    //     let max = graph.int(0xFF);
+    //     let store = graph.store(zero.value(), max.value(), start.effect());
+    //     graph.end(store.output_effect());
+    //
+    //     let ir = IrBuilder::new(false).translate(&graph);
+    //     println!("{}", ir.pretty_print(PrettyConfig::minimal()));
+    //
+    //     Codegen::new(10).assemble(&ir).unwrap();
+    //
+    //     return Ok(());
+    // }
 
     let input_stats = graph.stats();
     validate(&graph);

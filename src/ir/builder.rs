@@ -343,7 +343,7 @@ impl IrBuilder {
         for (input, param) in theta.invariant_input_pairs() {
             let input_id = VarId::new(param.output());
             let value = input_values.get(&input).cloned().unwrap_or(Value::Missing);
-            body.push(Assign::input(input_id, value.clone(), Variance::Invariant).into());
+            body.push(Assign::input(input_id, value, Variance::Invariant).into());
 
             if value.is_missing() {
                 tracing::warn!(
@@ -366,9 +366,7 @@ impl IrBuilder {
             let value = input_values.get(&input).cloned().unwrap_or(Value::Missing);
             let feedback_from = VarId::new(feedback);
 
-            body.push(
-                Assign::input(input_id, value.clone(), Variance::Variant { feedback_from }).into(),
-            );
+            body.push(Assign::input(input_id, value, Variance::Variant { feedback_from }).into());
 
             if value.is_missing() {
                 tracing::warn!(
@@ -378,7 +376,7 @@ impl IrBuilder {
                 );
             }
 
-            inputs.insert(input_id, value.clone()).debug_unwrap_none();
+            inputs.insert(input_id, value).debug_unwrap_none();
             input_vars.insert(input, input_id).debug_unwrap_none();
 
             builder
@@ -405,10 +403,7 @@ impl IrBuilder {
             }
 
             let output_id = VarId::new(output);
-            body.push(Instruction::Assign(Assign::output(
-                output_id,
-                value.clone(),
-            )));
+            body.push(Instruction::Assign(Assign::output(output_id, value)));
 
             self.values
                 .insert(output, output_id.into())
@@ -591,10 +586,7 @@ impl IrBuilder {
         }
 
         let output_id = VarId::new(output);
-        block.push(Instruction::Assign(Assign::output(
-            output_id,
-            value.clone(),
-        )));
+        block.push(Instruction::Assign(Assign::output(output_id, value)));
 
         // FIXME: This causes values to be overwritten since there's two branches
         self.values.insert(output, output_id.into()); // .debug_unwrap_none();
@@ -628,7 +620,7 @@ fn gamma_input_param(
     let input_id = VarId::new(input_param.output());
 
     let value = input_values.get(&input).cloned().unwrap_or(Value::Missing);
-    block.push(Assign::input(input_id, value.clone(), Variance::None).into());
+    block.push(Assign::input(input_id, value, Variance::None).into());
 
     if value.is_missing() {
         tracing::warn!(

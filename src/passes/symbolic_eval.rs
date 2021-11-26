@@ -1,7 +1,7 @@
 use crate::{
     graph::{Bool, Gamma, Int, Load, NodeExt, OutputPort, PortId, Rvsdg, Store, Theta},
     interpreter::Machine,
-    ir::{IrBuilder, Pretty, Value, VarId},
+    ir::{IrBuilder, Pretty, PrettyConfig, Value, VarId},
     passes::{utils::ConstantStore, Pass},
     utils::{self, AssertNone, HashMap},
 };
@@ -125,7 +125,7 @@ impl SymbolicEval {
         tracing::debug!(
             theta = ?theta.node(),
             "symbolically evaluating theta node: {}",
-            body.pretty_print(None),
+            body.pretty_print(PrettyConfig::minimal()),
         );
 
         // If we successfully evaluate the ir, we want to retain its output state

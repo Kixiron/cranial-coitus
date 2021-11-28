@@ -63,7 +63,7 @@ impl Codegen {
             tape_len,
             values: BTreeMap::new(),
             registers: vec![
-                // (r8, None),
+                (r8, None),
                 (r9, None),
                 (r10, None),
                 (r11, None),
@@ -317,15 +317,32 @@ impl Codegen {
                 self.asm.mov(rcx, rsp + 8)?;
 
                 // Reserve stack space for the passed argument
-                self.asm.sub(rsp, 8)?;
+                self.asm.sub(rsp, 40)?;
+
+                for reg in self
+                    .registers
+                    .iter()
+                    .filter_map(|&(reg, occupied)| occupied.map(|()| reg))
+                {
+                    self.asm.push(reg)?;
+                }
 
                 // Call the input function
                 type_eq::<unsafe extern "win64" fn(state: *mut State) -> u16>(input);
                 self.asm.mov(rax, input as u64)?;
                 self.asm.call(rax)?;
 
+                for reg in self
+                    .registers
+                    .iter()
+                    .filter_map(|&(reg, occupied)| occupied.map(|()| reg))
+                    .rev()
+                {
+                    self.asm.pop(reg)?;
+                }
+
                 // Deallocate the argument stack space
-                self.asm.add(rsp, 8)?;
+                self.asm.add(rsp, 40)?;
 
                 // `input()` returns a u16 within the rax register where the top six bytes are garbage, the
                 // 7th byte is the input value (if the function succeeded) and the 8th byte is the status
@@ -381,18 +398,35 @@ impl Codegen {
                 };
 
                 // Reserve stack space for the passed arguments
-                self.asm.sub(rsp, 16)?;
+                self.asm.sub(rsp, 40)?;
+
+                for reg in self
+                    .registers
+                    .iter()
+                    .filter_map(|&(reg, occupied)| occupied.map(|()| reg))
+                {
+                    self.asm.push(reg)?;
+                }
 
                 // Call the output function
                 type_eq::<unsafe extern "win64" fn(state: *mut State, byte: u8) -> bool>(output);
                 self.asm.mov(rax, output as u64)?;
                 self.asm.call(rax)?;
 
+                for reg in self
+                    .registers
+                    .iter()
+                    .filter_map(|&(reg, occupied)| occupied.map(|()| reg))
+                    .rev()
+                {
+                    self.asm.pop(reg)?;
+                }
+
                 // Deallocate the argument stack space
-                self.asm.add(rsp, 16)?;
+                self.asm.add(rsp, 40)?;
 
                 // Check if an IO error occurred
-                self.asm.cmp(al, 0)?;
+                self.asm.cmp(rax, 0)?;
                 // If so, jump to the io error label and exit
                 self.asm.jnz(self.io_failure)?;
 
@@ -421,7 +455,47 @@ impl Codegen {
             Expr::Mul(_) => Ok(()),
             Expr::Not(_) => Ok(()),
             Expr::Neg(_) => Ok(()),
-            Expr::Load(_) => Ok(()),
+            Expr::Load(load) => {
+                let destination = self.allocate_register();
+
+                // Get the start pointer from the stack
+                self.asm.mov(rax, rsp + 16)?;
+
+                // Offset the tape pointer
+                let ptr = match self.get_value(load.ptr) {
+                    Immediate::Register(reg) => {
+                        // FIXME: Subtract from register??
+                        // FIXME: Get the actual tape pointer's register
+                        self.asm.add(rax, reg)?;
+
+                        byte_ptr(rax)
+                    }
+
+                    Immediate::Const(constant) => {
+                        let offset = constant.convert_to_i32().unwrap();
+
+                        if offset != 0 {
+                            // FIXME: Get the actual tape pointer's register
+                            if offset.is_negative() {
+                                self.asm.sub(rax, offset.abs())?;
+                            } else {
+                                self.asm.add(rax, offset)?;
+                            }
+                        }
+
+                        byte_ptr(rax)
+                    }
+                };
+
+                // Dereference the pointer and store its value in the destination register
+                self.asm.mov(destination, ptr)?;
+
+                self.values
+                    .insert(assign.var, Immediate::Register(destination))
+                    .debug_unwrap_none();
+
+                Ok(())
+            }
 
             Expr::Call(call) => {
                 let input_reg = self.assemble_call(call)?.unwrap();
@@ -486,7 +560,7 @@ impl Codegen {
         self.asm.mov(rcx, rsp + 8)?;
 
         // Reserve stack space for the state pointer
-        self.asm.sub(rsp, 8)?;
+        self.asm.sub(rsp, 40)?;
 
         // Call the io error function
         type_eq::<unsafe extern "win64" fn(*mut State) -> bool>(io_error_encountered);
@@ -494,7 +568,7 @@ impl Codegen {
         self.asm.call(rax)?;
 
         // Deallocate the parameter stack space
-        self.asm.add(rsp, 8)?;
+        self.asm.add(rsp, 40)?;
 
         // Move the io error code into the rax register to be used as the exit code
         self.asm.mov(rax, RETURN_IO_FAILURE)?;
@@ -522,11 +596,12 @@ impl Codegen {
             Immediate::Const(constant) => {
                 let offset = constant.convert_to_i32().unwrap();
 
-                // FIXME: Get the actual tape pointer's register
-                if offset.is_negative() {
-                    self.asm.sub(rax, offset.abs())?;
-                } else {
-                    self.asm.add(rax, offset)?;
+                if offset != 0 {
+                    if offset.is_negative() {
+                        self.asm.sub(rax, offset.abs())?;
+                    } else {
+                        self.asm.add(rax, offset)?;
+                    }
                 }
 
                 byte_ptr(rax)
@@ -649,6 +724,14 @@ impl Codegen {
             }
         }
     }
+
+    fn infinite_loop(&mut self) -> Result<(), IcedError> {
+        let mut label = self.asm.create_label();
+        self.asm.set_label(&mut label)?;
+        self.asm.jmp(label)?;
+
+        Ok(())
+    }
 }
 
 struct State<'a> {
@@ -732,17 +815,37 @@ unsafe extern "win64" fn io_error_encountered(state: *mut State) -> bool {
     log_registers!();
     println!("state = {}", state as usize);
 
-    panic::catch_unwind(|| {
-        let state = &mut *state;
+    let state = &mut *state;
 
-        let mut errored = state
-            .stdout
-            .write_all(b"encountered an io failure during execution")
-            .is_err();
-        errored |= state.stdout.flush().is_err();
-        errored
-    })
-    .unwrap_or(true)
+    let io_failure_panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+        const IO_FAILURE_MESSAGE: &[u8] = b"encountered an io failure during execution";
+
+        let write_failed = match state.stdout.write_all(IO_FAILURE_MESSAGE) {
+            Ok(()) => false,
+            Err(err) => {
+                tracing::error!("failed to write to stdout during io failure: {:?}", err);
+                true
+            }
+        };
+
+        let flush_failed = match state.stdout.flush() {
+            Ok(()) => false,
+            Err(err) => {
+                tracing::error!("failed to flush stdout during io failure: {:?}", err);
+                true
+            }
+        };
+
+        write_failed || flush_failed
+    }));
+
+    match io_failure_panicked {
+        Ok(result) => result,
+        Err(err) => {
+            tracing::error!("ip failure panicked: {:?}", err);
+            true
+        }
+    }
 }
 
 /// Returns a `u16` where the first byte is the input value and the second
@@ -754,34 +857,68 @@ unsafe extern "win64" fn input(state: *mut State) -> u16 {
     let state = &mut *state;
     let mut value = 0;
 
-    let status = panic::catch_unwind(AssertUnwindSafe(|| {
-        let flush_error = state.stdout.flush().is_err();
-        state.stdin.read_exact(slice::from_mut(&mut value)).is_err() || flush_error
-    }))
-    .unwrap_or(true);
+    let input_panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+        // Flush stdout
+        let flush_failed = match state.stdout.flush() {
+            Ok(()) => false,
+            Err(err) => {
+                tracing::error!("failed to flush stdout while getting byte: {:?}", err);
+                true
+            }
+        };
 
-    println!("value = {}", value);
+        // Read one byte from stdin
+        let read_failed = match state.stdin.read_exact(slice::from_mut(&mut value)) {
+            Ok(()) => false,
+            Err(err) => {
+                tracing::error!("getting byte from stdin failed: {:?}", err);
+                true
+            }
+        };
 
-    u16::from_ne_bytes([value, status as u8])
+        read_failed || flush_failed
+    }));
+
+    let failed = match input_panicked {
+        Ok(result) => result,
+        Err(err) => {
+            tracing::error!("getting byte from stdin panicked: {:?}", err);
+            true
+        }
+    };
+
+    u16::from_be_bytes([value, failed as u8])
 }
 
 unsafe extern "win64" fn output(state: *mut State, byte: u8) -> bool {
     log_registers!();
     println!("state = {}, byte = {}", state as usize, byte);
 
-    panic::catch_unwind(|| {
-        let state = &mut *state;
+    let state = &mut *state;
+    let output_panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+        let write_result = if byte.is_ascii() {
+            state.stdout.write_all(&[byte])
+        } else {
+            let escape = ascii::escape_default(byte);
+            write!(&mut state.stdout, "{}", escape)
+        };
 
-        // if byte.is_ascii() {
-        //     state.stdout.write_all(&[byte]).is_err()
-        // } else {
-        //     let escape = ascii::escape_default(byte);
-        //     write!(&mut state.stdout, "{}", escape).is_err()
-        // }
-        let escape = ascii::escape_default(byte);
-        write!(&mut state.stdout, "{}", escape).is_err()
-    })
-    .unwrap_or(true)
+        match write_result {
+            Ok(()) => false,
+            Err(err) => {
+                tracing::error!("writing byte to stdout failed: {:?}", err);
+                true
+            }
+        }
+    }));
+
+    match output_panicked {
+        Ok(result) => result,
+        Err(err) => {
+            tracing::error!("writing byte to stdout panicked: {:?}", err);
+            true
+        }
+    }
 }
 
 fn type_eq<T>(_: T) {}

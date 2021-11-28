@@ -549,17 +549,19 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
         graph
     };
 
-    Codegen::new(cells)
-        .assemble(&IrBuilder::new(false).translate(&graph))
-        .unwrap();
+    let ir = IrBuilder::new(false).translate(&graph);
+    println!("{}", ir.pretty_print(PrettyConfig::minimal()));
+    Codegen::new(cells).assemble(&ir).unwrap();
 
     // {
     //     let mut graph = Rvsdg::new();
     //     let start = graph.start();
     //     let zero = graph.int(0);
-    //     let max = graph.int(0xFF);
-    //     let store = graph.store(zero.value(), max.value(), start.effect());
-    //     graph.end(store.output_effect());
+    //     let input = graph.input(start.effect());
+    //     let store = graph.store(zero.value(), input.output_value(), input.output_effect());
+    //     let load = graph.load(zero.value(), store.output_effect());
+    //     let output = graph.output(load.output_value(), load.output_effect());
+    //     graph.end(output.output_effect());
     //
     //     let ir = IrBuilder::new(false).translate(&graph);
     //     println!("{}", ir.pretty_print(PrettyConfig::minimal()));

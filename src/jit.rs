@@ -447,7 +447,7 @@ impl Codegen {
         let condition = self.get_value(theta.cond.unwrap());
         match condition {
             Operand::Register(register) => self.asm.cmp(register, 0)?,
-            Operand::Const(constant) => self.asm.mov(al, constant.as_bool().unwrap() as i32)?,
+            Operand::Const(constant) => self.asm.cmp(al, constant.as_bool().unwrap() as i32)?,
             Operand::Stack(offset) => self
                 .asm
                 .cmp(rsp + (self.stack_top - (self.stack_bottom + offset)), 0)?,
@@ -455,27 +455,6 @@ impl Codegen {
 
         // If the condition is true, jump to the beginning of the theta's body
         self.asm.jz(theta_head)?;
-
-        // Deallocate all registers & stack space from the theta's body
-        for inst in &theta.body {
-            if let &Instruction::Assign(Assign {
-                var,
-                // TODO: What to do with `AssignTag::InputParam(_)`?
-                tag: AssignTag::None,
-                ..
-            }) = inst
-            {
-                match self.get_value(Value::Var(var)) {
-                    Operand::Register(register) => self.deallocate_register(register),
-                    Operand::Stack(_) => {
-                        // TODO: Deallocate stack slot?
-                    }
-                    Operand::Const(_) => {}
-                }
-
-                self.values.remove(&var).debug_unwrap();
-            }
-        }
 
         Ok(())
     }
@@ -562,7 +541,7 @@ impl Codegen {
         let stack_allocation = self.before_win64_call()?;
 
         // Call the output function
-        type_eq::<unsafe extern "win64" fn(state: *mut State, byte: u8) -> bool>(output);
+        type_eq::<unsafe extern "win64" fn(state: *mut State, byte: u64) -> bool>(output);
         self.asm.mov(rax, output as u64)?;
         self.asm.call(rax)?;
 
@@ -681,7 +660,7 @@ impl Codegen {
                 }
 
                 // Dereference the pointer and store its value in the destination register
-                self.asm.mov(destination, byte_ptr(rax))?;
+                self.asm.mov(destination, rax)?;
 
                 self.values
                     .insert(assign.var, Operand::Register(destination))
@@ -748,21 +727,21 @@ impl Codegen {
 
         // Store the given value to the given pointer
         match self.get_value(store.value) {
-            Operand::Register(register) => self.asm.mov(byte_ptr(rax), register)?,
+            Operand::Register(register) => self.asm.mov(qword_ptr(rax), register)?,
 
             Operand::Stack(offset) => {
                 let temp = self.allocate_register()?;
 
                 self.asm
                     .mov(temp, rsp + (self.stack_top - (self.stack_bottom + offset)))?;
-                self.asm.mov(byte_ptr(rax), temp)?;
+                self.asm.mov(qword_ptr(rax), temp)?;
 
                 self.deallocate_register(temp);
             }
 
             Operand::Const(value) => self
                 .asm
-                .mov(byte_ptr(rax), value.convert_to_u8().unwrap() as i32)?,
+                .mov(qword_ptr(rax), value.convert_to_u8().unwrap() as i32)?,
         }
 
         Ok(())
@@ -1268,9 +1247,11 @@ unsafe extern "win64" fn input(state: *mut State) -> u16 {
     u16::from_be_bytes([value, failed as u8])
 }
 
-unsafe extern "win64" fn output(state: *mut State, byte: u8) -> bool {
+unsafe extern "win64" fn output(state: *mut State, byte: u64) -> bool {
     // log_registers!();
     // println!("state = {}, byte = {}", state as usize, byte);
+
+    let byte = byte as u8;
 
     let state = &mut *state;
     let output_panicked = panic::catch_unwind(AssertUnwindSafe(|| {

@@ -69,7 +69,7 @@ where
             })
         );
 
-        if !is_subgraph_param {
+        if !is_subgraph_param && !inst.is_lifetime_end() {
             self.stats.instructions += 1;
         }
 
@@ -79,6 +79,7 @@ where
             Instruction::Theta(theta) => self.theta(theta, should_profile)?,
             Instruction::Gamma(gamma) => self.gamma(gamma, should_profile)?,
             Instruction::Store(store) => self.store(store, should_profile)?,
+            Instruction::LifetimeEnd(_) => {}
         }
 
         if self.steps >= self.step_limit {
@@ -101,6 +102,7 @@ where
                 Instruction::Store(store) => {
                     tracing::info!("hit step limit within store {}", store.effect);
                 }
+                Instruction::LifetimeEnd(_) => unreachable!(),
             }
 
             Err(EvaluationError::StepLimitReached)
@@ -114,7 +116,7 @@ where
             );
 
             // Don't penalize constant assignments or subgraph params
-            if !is_subgraph_param && !is_var_assign {
+            if !is_subgraph_param && !is_var_assign && !inst.is_lifetime_end() {
                 self.steps += 1;
             }
 
@@ -330,13 +332,13 @@ where
                 gamma.true_branches += 1;
             }
 
-            &mut gamma.truthy
+            &mut gamma.true_branch
         } else {
             if should_profile {
                 gamma.false_branches += 1;
             }
 
-            &mut gamma.falsy
+            &mut gamma.false_branch
         };
 
         for inst in branch {

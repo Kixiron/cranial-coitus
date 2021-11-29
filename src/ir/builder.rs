@@ -1,8 +1,8 @@
 use crate::{
     graph::{self, InputParam, InputPort, Node, NodeExt, NodeId, OutputParam, OutputPort, Rvsdg},
     ir::{
-        Add, Assign, Block, Call, Const, EffectId, Eq, Gamma, Instruction, Load, Mul, Neg, Not,
-        Store, Theta, Value, VarId, Variance,
+        lifetime, Add, Assign, AssignTag, Block, Call, Const, EffectId, Eq, Expr, Gamma,
+        Instruction, Load, Mul, Neg, Not, Store, Theta, Value, VarId, Variance,
     },
     utils::AssertNone,
 };
@@ -71,6 +71,18 @@ impl IrBuilder {
             tracing::debug!(
                 target: "timings",
                 "took {:#?} to sequentialize rvsdg",
+                elapsed,
+            );
+
+            tracing::debug!(target: "timings", "started lifetime analysis");
+            let start_time = Instant::now();
+
+            lifetime::analyze_block(&mut self.instructions, |_| false);
+
+            let elapsed = start_time.elapsed();
+            tracing::debug!(
+                target: "timings",
+                "finished lifetime analysis in {:#?}",
                 elapsed,
             );
         }

@@ -22,8 +22,16 @@ tinyvec = { version = "1.5.0", features = ["alloc"] }
 winapi = { version = "0.3.9", features = ["memoryapi"] }
 xxhash-rust = { version = "0.8.2", features = ["xxh3"] }
 iced-x86 = { version = "1.15.0", features = ["code_asm"] }
-tracing-subscriber = { version = "0.3.2", features = ["env-filter"] }
-tui = { version = "0.16.0", default-features = false, features = ["crossterm"] }
+tracing-tree = { version = "0.1.11", default-features = false }
+
+    [dependencies.tui]
+    version = "0.16.0"
+    default-features = false
+    features = ["crossterm"]
+
+    [dependencies.tracing-subscriber]
+    version = "0.2.25"
+    features = ["env-filter", "registry"]
 
 [dev-dependencies]
 expect-test = "1.1.0"

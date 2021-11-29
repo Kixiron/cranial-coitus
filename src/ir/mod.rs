@@ -1,4 +1,5 @@
 mod builder;
+mod lifetime;
 
 pub use builder::IrBuilder;
 
@@ -12,7 +13,9 @@ use std::{
     collections::BTreeMap,
     fmt::{self, Debug, Display, Write},
     ops::{self, Deref, DerefMut},
+    slice,
     time::Instant,
+    vec,
 };
 
 const INDENT_WIDTH: usize = 4;
@@ -99,6 +102,33 @@ impl Block {
     }
 }
 
+impl IntoIterator for Block {
+    type Item = Instruction;
+    type IntoIter = vec::IntoIter<Instruction>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.instructions.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Block {
+    type Item = &'a Instruction;
+    type IntoIter = slice::Iter<'a, Instruction>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.instructions.as_slice().into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Block {
+    type Item = &'a mut Instruction;
+    type IntoIter = slice::IterMut<'a, Instruction>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.instructions.as_mut_slice().into_iter()
+    }
+}
+
 impl Deref for Block {
     type Target = Vec<Instruction>;
 
@@ -138,6 +168,16 @@ pub enum Instruction {
     Theta(Theta),
     Gamma(Gamma),
     Store(Store),
+    LifetimeEnd(LifetimeEnd),
+}
+
+impl Instruction {
+    /// Returns `true` if the instruction is a [`LifetimeEnd`].
+    ///
+    /// [`LifetimeEnd`]: Instruction::LifetimeEnd
+    pub const fn is_lifetime_end(&self) -> bool {
+        matches!(self, Self::LifetimeEnd(..))
+    }
 }
 
 impl Pretty for Instruction {
@@ -196,6 +236,7 @@ impl Pretty for Instruction {
             Self::Theta(theta) => theta.pretty(allocator, config),
             Self::Gamma(gamma) => gamma.pretty(allocator, config),
             Self::Store(store) => store.pretty(allocator, config),
+            Self::LifetimeEnd(lifetime) => lifetime.pretty(allocator, config),
         }
     }
 }
@@ -227,6 +268,37 @@ impl From<Assign> for Instruction {
 impl From<Call> for Instruction {
     fn from(call: Call) -> Self {
         Self::Call(call)
+    }
+}
+
+impl From<LifetimeEnd> for Instruction {
+    fn from(lifetime: LifetimeEnd) -> Self {
+        Self::LifetimeEnd(lifetime)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LifetimeEnd {
+    pub var: VarId,
+}
+
+impl LifetimeEnd {
+    pub fn new(var: VarId) -> Self {
+        Self { var }
+    }
+}
+
+impl Pretty for LifetimeEnd {
+    fn pretty<'a, D, A>(&'a self, allocator: &'a D, config: PrettyConfig) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+    {
+        allocator
+            .text("lifetime_end")
+            .append(allocator.space())
+            .append(self.var.pretty(allocator, config))
     }
 }
 
@@ -377,9 +449,9 @@ impl Pretty for Theta {
 pub struct Gamma {
     pub node: NodeId,
     pub cond: Value,
-    pub truthy: Vec<Instruction>,
+    pub true_branch: Vec<Instruction>,
     pub true_outputs: BTreeMap<VarId, Value>,
-    pub falsy: Vec<Instruction>,
+    pub false_branch: Vec<Instruction>,
     pub false_outputs: BTreeMap<VarId, Value>,
     pub effect: EffectId,
     pub prev_effect: Option<EffectId>,
@@ -392,9 +464,9 @@ impl Gamma {
     pub fn new<C, E>(
         node: NodeId,
         cond: C,
-        truthy: Vec<Instruction>,
+        true_branch: Vec<Instruction>,
         true_outputs: BTreeMap<VarId, Value>,
-        falsy: Vec<Instruction>,
+        false_branch: Vec<Instruction>,
         false_outputs: BTreeMap<VarId, Value>,
         effect: EffectId,
         prev_effect: E,
@@ -406,15 +478,39 @@ impl Gamma {
         Self {
             node,
             cond: cond.into(),
-            truthy,
+            true_branch,
             true_outputs,
-            falsy,
+            false_branch,
             false_outputs,
             effect,
             prev_effect: prev_effect.into(),
             true_branches: 0,
             false_branches: 0,
         }
+    }
+
+    pub fn true_is_empty(&self) -> bool {
+        self.true_branch.iter().all(|inst| {
+            matches!(
+                inst,
+                &Instruction::Assign(Assign {
+                    tag: AssignTag::InputParam(_) | AssignTag::OutputParam,
+                    ..
+                }),
+            )
+        })
+    }
+
+    pub fn false_is_empty(&self) -> bool {
+        self.false_branch.iter().all(|inst| {
+            matches!(
+                inst,
+                &Instruction::Assign(Assign {
+                    tag: AssignTag::InputParam(_) | AssignTag::OutputParam,
+                    ..
+                }),
+            )
+        })
     }
 }
 
@@ -470,15 +566,14 @@ impl Pretty for Gamma {
         if comment.is_empty() {
             allocator.nil()
         } else {
-            allocator.text(comment)
+            allocator.text(comment).append(allocator.hardline())
         }
-        .append(allocator.hardline())
         .append(allocator.text("if"))
         .append(allocator.space())
         .append(self.cond.pretty(allocator, config))
         .append(allocator.space())
         .append(allocator.text("{"))
-        .append(if self.truthy.is_empty() {
+        .append(if self.true_branch.is_empty() {
             allocator.nil()
         } else {
             allocator
@@ -486,7 +581,7 @@ impl Pretty for Gamma {
                 .append(
                     allocator
                         .intersperse(
-                            self.truthy
+                            self.true_branch
                                 .iter()
                                 .map(|inst| inst.pretty(allocator, config)),
                             allocator.hardline(),
@@ -500,7 +595,7 @@ impl Pretty for Gamma {
         .append(allocator.text("else"))
         .append(allocator.space())
         .append(allocator.text("{"))
-        .append(if self.falsy.is_empty() {
+        .append(if self.false_branch.is_empty() {
             allocator.nil()
         } else {
             allocator
@@ -508,7 +603,9 @@ impl Pretty for Gamma {
                 .append(
                     allocator
                         .intersperse(
-                            self.falsy.iter().map(|inst| inst.pretty(allocator, config)),
+                            self.false_branch
+                                .iter()
+                                .map(|inst| inst.pretty(allocator, config)),
                             allocator.hardline(),
                         )
                         .indent(INDENT_WIDTH),
@@ -1189,7 +1286,7 @@ impl Pretty for Store {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
     Var(VarId),
     Const(Const),

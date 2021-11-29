@@ -7,9 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 use tracing_subscriber::{
-    fmt as tracing_fmt, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
+    fmt::TestWriter, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
     EnvFilter,
 };
+use tracing_tree::HierarchicalLayer;
 use xxhash_rust::xxh3::Xxh3;
 
 #[cfg(test)]
@@ -280,24 +281,24 @@ impl<T> OptionExt<T> for Option<T> {
 }
 
 pub(crate) fn set_logger() {
-    let fmt_layer = tracing_fmt::layer()
-        .with_target(false)
-        // .with_timer(time::uptime())
-        .without_time()
+    let fmt_layer = HierarchicalLayer::new(2)
         // Don't use ansi codes if we're not printing to a console
         .with_ansi(atty::is(Stream::Stdout));
 
     let filter_layer = EnvFilter::try_from_env("COITUS_LOG")
-        .or_else(|_| EnvFilter::try_new("info"))
+        .or_else(|_| EnvFilter::try_new("off"))
         .unwrap();
 
-    let registry = tracing_subscriber::registry().with(filter_layer);
+    let registry = tracing_subscriber::registry();
     let _ = if cfg!(test) {
         // Use a logger that'll be captured by libtest if we're running
         // under a test harness
-        registry.with(fmt_layer.with_test_writer()).try_init()
+        registry
+            .with(fmt_layer.with_writer(TestWriter::new()))
+            .with(filter_layer)
+            .try_init()
     } else {
-        registry.with(fmt_layer).try_init()
+        registry.with(fmt_layer).with(filter_layer).try_init()
     };
 }
 

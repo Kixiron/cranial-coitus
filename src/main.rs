@@ -14,11 +14,11 @@
 #[macro_use]
 mod utils;
 mod args;
-mod codegen;
 mod driver;
 mod graph;
 mod interpreter;
 mod ir;
+mod jit;
 mod lattice;
 mod lower_tokens;
 mod parse;
@@ -29,10 +29,10 @@ mod union_find;
 
 use crate::{
     args::{Args, Command},
-    codegen::Codegen,
     graph::{EdgeKind, Node, NodeExt, Rvsdg},
     interpreter::EvaluationError,
     ir::{IrBuilder, Pretty, PrettyConfig},
+    jit::Codegen,
     utils::{HashSet, PerfEvent},
 };
 use anyhow::{Context, Result};
@@ -551,7 +551,10 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
 
     let ir = IrBuilder::new(false).translate(&graph);
     println!("{}", ir.pretty_print(PrettyConfig::minimal()));
-    Codegen::new(cells).assemble(&ir).unwrap();
+    fs::write(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/output.asm"),
+        Codegen::new(cells).unwrap().assemble(&ir).unwrap(),
+    )?;
 
     // {
     //     let mut graph = Rvsdg::new();
@@ -566,7 +569,7 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
     //     let ir = IrBuilder::new(false).translate(&graph);
     //     println!("{}", ir.pretty_print(PrettyConfig::minimal()));
     //
-    //     Codegen::new(10).assemble(&ir).unwrap();
+    //     Codegen::new(10).unwrap().assemble(&ir).unwrap();
     //
     //     return Ok(());
     // }

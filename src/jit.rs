@@ -399,7 +399,7 @@ impl Codegen {
         // If the true branch is empty and the false isn't
         if gamma.true_is_empty() && !gamma.false_is_empty() {
             // If the condition is true, skip the false branch's code
-            self.asm.jnz(after_gamma)?;
+            self.asm.jz(after_gamma)?;
 
             // Build the false branch
             self.assemble_block(&gamma.false_branch)?;
@@ -407,7 +407,7 @@ impl Codegen {
         // If the true branch isn't empty and the false is
         } else if !gamma.true_is_empty() && gamma.false_is_empty() {
             // If the condition is false, skip the true branch's code
-            self.asm.jz(after_gamma)?;
+            self.asm.jnz(after_gamma)?;
 
             // Build the true branch
             self.assemble_block(&gamma.true_branch)?;
@@ -416,7 +416,7 @@ impl Codegen {
         } else {
             // If the condition is false, jump to the false branch
             let mut false_branch = self.create_label();
-            self.asm.jz(false_branch)?;
+            self.asm.jnz(false_branch)?;
 
             // Build the true branch
             self.assemble_block(&gamma.true_branch)?;
@@ -454,7 +454,7 @@ impl Codegen {
         }
 
         // If the condition is true, jump to the beginning of the theta's body
-        self.asm.jnz(theta_head)?;
+        self.asm.jz(theta_head)?;
 
         // Deallocate all registers & stack space from the theta's body
         for inst in &theta.body {

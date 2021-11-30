@@ -1,6 +1,8 @@
 #![feature(
     asm,
     try_blocks,
+    drain_filter,
+    array_windows,
     result_cloned,
     slice_ptr_get,
     slice_ptr_len,
@@ -32,7 +34,7 @@ use crate::{
     graph::{EdgeKind, Node, NodeExt, Rvsdg},
     interpreter::EvaluationError,
     ir::{IrBuilder, Pretty, PrettyConfig},
-    jit::Codegen,
+    jit::Jit,
     utils::{HashSet, PerfEvent},
 };
 use anyhow::{Context, Result};
@@ -549,30 +551,40 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
         graph
     };
 
-    let ir = IrBuilder::new(false).translate(&graph);
-    println!("{}", ir.pretty_print(PrettyConfig::minimal()));
-    fs::write(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/output.asm"),
-        Codegen::new(cells).unwrap().assemble(&ir).unwrap(),
-    )?;
+    // let ir = IrBuilder::new(false).translate(&graph);
+    // println!("{}", ir.pretty_print(PrettyConfig::minimal()));
+    // fs::write(
+    //     concat!(env!("CARGO_MANIFEST_DIR"), "/output.asm"),
+    //     Jit::new(cells).unwrap().assemble(&ir).unwrap(),
+    // )?;
 
-    // {
-    //     let mut graph = Rvsdg::new();
-    //     let start = graph.start();
-    //     let zero = graph.int(0);
-    //     let input = graph.input(start.effect());
-    //     let store = graph.store(zero.value(), input.output_value(), input.output_effect());
-    //     let load = graph.load(zero.value(), store.output_effect());
-    //     let output = graph.output(load.output_value(), load.output_effect());
-    //     graph.end(output.output_effect());
-    //
-    //     let ir = IrBuilder::new(false).translate(&graph);
-    //     println!("{}", ir.pretty_print(PrettyConfig::minimal()));
-    //
-    //     Codegen::new(10).unwrap().assemble(&ir).unwrap();
-    //
-    //     return Ok(());
-    // }
+    {
+        let mut graph = Rvsdg::new();
+        let start = graph.start();
+        let zero = graph.int(0);
+
+        // Inflate the stack some to force spilling
+        let mut last_effect = start.effect();
+        for _ in 0..20 {
+            last_effect = graph.load(zero.value(), last_effect).output_effect();
+        }
+
+        let input = graph.input(last_effect);
+        let store = graph.store(zero.value(), input.output_value(), input.output_effect());
+        let load = graph.load(zero.value(), store.output_effect());
+        let output = graph.output(load.output_value(), load.output_effect());
+        graph.end(output.output_effect());
+
+        let ir = IrBuilder::new(false).translate(&graph);
+        println!("{}", ir.pretty_print(PrettyConfig::minimal()));
+
+        fs::write(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/output.asm"),
+            Jit::new(cells).unwrap().assemble(&ir).unwrap(),
+        )?;
+
+        return Ok(());
+    }
 
     let input_stats = graph.stats();
     validate(&graph);

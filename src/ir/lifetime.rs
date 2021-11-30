@@ -52,13 +52,7 @@ fn analyze_instruction(
             }
         }
 
-        Instruction::Assign(Assign {
-            var, value, tag, ..
-        }) => {
-            if matches!(tag, AssignTag::InputParam(_) | AssignTag::OutputParam) {
-                return;
-            }
-
+        Instruction::Assign(Assign { var, value, .. }) => {
             last_usage.insert(*var, idx);
 
             match value {
@@ -130,6 +124,7 @@ fn analyze_instruction(
             body,
             inputs,
             outputs,
+            cond,
             ..
         }) => {
             for &var in inputs.keys().chain(outputs.keys()) {
@@ -140,6 +135,8 @@ fn analyze_instruction(
                 outputs.contains_key(&var)
                     || inputs.contains_key(&var)
                     || outputs.values().any(|value| *value == Value::Var(var))
+                    || inputs.values().any(|value| *value == Value::Var(var))
+                    || Some(Value::Var(var)) == *cond
             });
         }
 

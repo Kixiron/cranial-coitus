@@ -48,17 +48,17 @@ impl PrettyConfig {
 
 pub trait Pretty {
     fn pretty_print(&self, config: PrettyConfig) -> String {
-        let start_time = Instant::now();
+        // let start_time = Instant::now();
 
         let arena = Arena::<()>::new();
         let pretty = self.pretty(&arena, config).1.pretty(80).to_string();
 
-        let elapsed = start_time.elapsed();
-        tracing::debug!(
-            target: "timings",
-            "took {:#?} to pretty print ir",
-            elapsed,
-        );
+        // let elapsed = start_time.elapsed();
+        // tracing::debug!(
+        //     target: "timings",
+        //     "took {:#?} to pretty print ir",
+        //     elapsed,
+        // );
 
         pretty
     }
@@ -493,10 +493,10 @@ impl Gamma {
         self.true_branch.iter().all(|inst| {
             matches!(
                 inst,
-                &Instruction::Assign(Assign {
+                Instruction::Assign(Assign {
                     tag: AssignTag::InputParam(_) | AssignTag::OutputParam,
                     ..
-                }),
+                }) | Instruction::LifetimeEnd(_),
             )
         })
     }
@@ -505,10 +505,10 @@ impl Gamma {
         self.false_branch.iter().all(|inst| {
             matches!(
                 inst,
-                &Instruction::Assign(Assign {
+                Instruction::Assign(Assign {
                     tag: AssignTag::InputParam(_) | AssignTag::OutputParam,
                     ..
-                }),
+                }) | Instruction::LifetimeEnd(_),
             )
         })
     }

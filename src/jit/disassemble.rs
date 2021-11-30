@@ -1,5 +1,8 @@
-use crate::jit::{Jit, Resolver};
-use iced_x86::{FlowControl, Formatter, FormatterOptions, MasmFormatter};
+use crate::jit::{ffi, Jit};
+use iced_x86::{
+    FlowControl, Formatter, FormatterOptions, Instruction, MasmFormatter, SymbolResolver,
+    SymbolResult,
+};
 use std::collections::BTreeMap;
 
 impl Jit {
@@ -134,6 +137,30 @@ impl Jit {
             .enumerate()
             .map(|(idx, address)| (address, format!(".LBL_{}", idx)))
             .collect()
+    }
+}
+
+struct Resolver;
+
+impl SymbolResolver for Resolver {
+    #[allow(clippy::fn_to_numeric_cast)]
+    fn symbol(
+        &mut self,
+        _instruction: &Instruction,
+        _operand: u32,
+        _instruction_operand: Option<u32>,
+        address: u64,
+        _address_size: u32,
+    ) -> Option<SymbolResult<'_>> {
+        if address == ffi::io_error_encountered as u64 {
+            Some(SymbolResult::with_str(address, "io_error_encountered"))
+        } else if address == ffi::input as u64 {
+            Some(SymbolResult::with_str(address, "input"))
+        } else if address == ffi::output as u64 {
+            Some(SymbolResult::with_str(address, "output"))
+        } else {
+            None
+        }
     }
 }
 

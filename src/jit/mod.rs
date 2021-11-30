@@ -1,4 +1,7 @@
+#[macro_use]
+mod ffi;
 mod disassemble;
+mod memory;
 mod regalloc;
 
 use crate::{
@@ -6,30 +9,19 @@ use crate::{
         Add, Assign, Block, Call, Const, Eq, Expr, Gamma, Instruction, Pretty, PrettyConfig, Store,
         Theta, Value, VarId,
     },
-    jit::regalloc::{Regalloc, StackSlot},
+    jit::{
+        ffi::State,
+        memory::CodeBuffer,
+        regalloc::{Regalloc, StackSlot, NONVOLATILE_REGISTERS},
+    },
     utils::{self, AssertNone},
 };
-use iced_x86::{
-    code_asm::{CodeAssembler, *},
-    Instruction as X86Instruction, SymbolResolver, SymbolResult,
-};
+use iced_x86::code_asm::{CodeAssembler, *};
 use std::{
-    ascii,
     borrow::Cow,
     collections::BTreeMap,
-    io::{self, Read, StdinLock, StdoutLock, Write},
-    mem::{size_of, transmute},
-    ops::{Deref, DerefMut},
+    io,
     panic::{self, AssertUnwindSafe},
-    ptr::{self, NonNull},
-    slice,
-};
-use winapi::um::{
-    errhandlingapi::GetLastError,
-    handleapi::CloseHandle,
-    memoryapi::{VirtualAlloc, VirtualFree, VirtualProtect},
-    processthreadsapi::{FlushInstructionCache, GetCurrentProcess},
-    winnt::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE, PAGE_READWRITE},
 };
 
 type AsmResult<T> = Result<T, IcedError>;
@@ -48,8 +40,8 @@ pub struct Jit {
     tape_len: usize,
     values: BTreeMap<VarId, Operand>,
     regalloc: Regalloc,
+    non_volatile_registers: Vec<(AsmRegister64, StackSlot)>,
     comments: BTreeMap<usize, Vec<String>>,
-    vacant_stack_slots: Vec<usize>,
     named_labels: BTreeMap<usize, Cow<'static, str>>,
 }
 
@@ -74,8 +66,8 @@ impl Jit {
             tape_len,
             values: BTreeMap::new(),
             regalloc: Regalloc::new(),
+            non_volatile_registers: Vec::new(),
             comments: BTreeMap::new(),
-            vacant_stack_slots: Vec::new(),
             named_labels: BTreeMap::new(),
         })
     }
@@ -114,6 +106,11 @@ impl Jit {
 
         let assembly = self.disassemble();
         println!("{}", assembly);
+        std::fs::write(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/output.asm"),
+            &assembly,
+        )
+        .unwrap();
 
         {
             let code_buffer = code_buffer.executable().unwrap();
@@ -133,7 +130,11 @@ impl Jit {
                     &state as *const _ as usize, start as usize, end as usize,
                 );
 
-                code_buffer.call(&mut state, start, end)
+                log_registers!();
+                let value = code_buffer.call(&mut state, start, end);
+                log_registers!();
+
+                value
             }));
 
             println!("\njitted function returned {:?}", jit_return);
@@ -286,8 +287,8 @@ impl Jit {
         let (stack_padding, slots) = self.before_win64_call()?;
 
         // Call the input function
-        type_eq::<unsafe extern "win64" fn(state: *mut State) -> u16>(input);
-        self.asm.mov(rax, input as u64)?;
+        type_eq::<unsafe extern "win64" fn(state: *mut State) -> u16>(ffi::input);
+        self.asm.mov(rax, ffi::input as u64)?;
         self.asm.call(rax)?;
 
         // Restore saved registers and deallocate stack space
@@ -351,8 +352,8 @@ impl Jit {
         let (stack_padding, slots) = self.before_win64_call()?;
 
         // Call the output function
-        type_eq::<unsafe extern "win64" fn(state: *mut State, byte: u64) -> bool>(output);
-        self.asm.mov(rax, output as u64)?;
+        type_eq::<unsafe extern "win64" fn(state: *mut State, byte: u64) -> bool>(ffi::output);
+        self.asm.mov(rax, ffi::output as u64)?;
         self.asm.call(rax)?;
 
         // Restore saved registers and deallocate stack space
@@ -484,7 +485,7 @@ impl Jit {
 
             Expr::Value(value) => {
                 match *value {
-                    Value::Var(var) => match *self.values.get(&dbg!(var)).unwrap() {
+                    Value::Var(var) => match *self.values.get(&var).unwrap() {
                         Operand::Register(register) => {
                             let dest = self.allocate_register()?;
                             self.asm.mov(dest, register)?;
@@ -736,8 +737,8 @@ impl Jit {
         let (stack_padding, slots) = self.before_win64_call()?;
 
         // Call the io error function
-        type_eq::<unsafe extern "win64" fn(*mut State) -> bool>(io_error_encountered);
-        self.asm.mov(rax, io_error_encountered as u64)?;
+        type_eq::<unsafe extern "win64" fn(*mut State) -> bool>(ffi::io_error_encountered);
+        self.asm.mov(rax, ffi::io_error_encountered as u64)?;
         self.asm.call(rax)?;
 
         // Restore saved registers and deallocate stack space
@@ -763,9 +764,10 @@ impl Jit {
         // r8 contains the tape's end pointer
         self.asm.mov(self.tape_end_ptr(), r8)?;
 
-        // Push all non-volatile registers
+        // // Push all non-volatile registers
         // for &register in NONVOLATILE_REGISTERS {
-        //     self.push(register)?;
+        //     let slot = self.push(register)?;
+        //     self.non_volatile_registers.push((register, slot));
         // }
 
         Ok(())
@@ -777,7 +779,9 @@ impl Jit {
         self.set_label(self.epilogue);
 
         let stack_size = self.regalloc.free_stack();
-        self.asm.add(rsp, stack_size as i32)?;
+        if stack_size != 0 {
+            self.asm.add(rsp, stack_size as i32)?;
+        }
 
         // Return from the function
         self.asm.ret()?;
@@ -800,13 +804,15 @@ impl Jit {
         rsp + 24 + self.regalloc.virtual_rsp()
     }
 
-    /// Push a register's value to the stack
-    fn push(&mut self, register: AsmRegister64) -> AsmResult<StackSlot> {
-        let slot = self.regalloc.push(&mut self.asm, register)?;
-        self.spill_register(register, slot);
+    // /// Push a register's value to the stack
+    // fn push(&mut self, register: AsmRegister64) -> AsmResult<StackSlot> {
+    //     let slot = StackSlot::new(self.regalloc.virtual_rsp(), 8);
 
-        Ok(slot)
-    }
+    //     self.asm.push(register)?;
+    //     self.regalloc.stack.virtual_rsp += 8;
+
+    //     Ok(slot)
+    // }
 
     fn allocate_register(&mut self) -> AsmResult<AsmRegister64> {
         let (register, spilled) = self.regalloc.allocate(&mut self.asm, true)?;
@@ -851,6 +857,9 @@ impl Jit {
     }
 
     fn infinite_loop(&mut self) -> AsmResult<()> {
+        // Add a nop to avoid having multiple labels for an instruction
+        self.asm.nop()?;
+
         let label = self.asm.create_label();
         self.set_label(label);
         self.asm.jmp(label)?;
@@ -866,7 +875,6 @@ impl Jit {
 
         let registers: Vec<_> = self.regalloc.used_volatile_registers().collect();
         for register in registers {
-            dbg!(register);
             let slot = self.regalloc.push(&mut self.asm, register)?;
             slots.push((register, slot));
 
@@ -946,345 +954,4 @@ impl Jit {
     }
 }
 
-struct State<'a> {
-    stdin: StdinLock<'a>,
-    stdout: StdoutLock<'a>,
-}
-
-impl<'a> State<'a> {
-    fn new(stdin: StdinLock<'a>, stdout: StdoutLock<'a>) -> Self {
-        Self { stdin, stdout }
-    }
-}
-
-struct Resolver;
-
-impl SymbolResolver for Resolver {
-    #[allow(clippy::fn_to_numeric_cast)]
-    fn symbol(
-        &mut self,
-        _instruction: &X86Instruction,
-        _operand: u32,
-        _instruction_operand: Option<u32>,
-        address: u64,
-        _address_size: u32,
-    ) -> Option<SymbolResult<'_>> {
-        if address == io_error_encountered as u64 {
-            Some(SymbolResult::with_str(address, "io_error_encountered"))
-        } else if address == input as u64 {
-            Some(SymbolResult::with_str(address, "input"))
-        } else if address == output as u64 {
-            Some(SymbolResult::with_str(address, "output"))
-        } else {
-            None
-        }
-    }
-}
-
-macro_rules! log_registers {
-    () => {
-        let (
-            mut rcx_val,
-            mut rdx_val,
-            mut r8_val,
-            mut r9_val,
-            mut rax_val,
-            mut rsp_val,
-        ): (u64, u64, u64, u64, u64, u64);
-
-        asm!(
-            "mov {0}, rax",
-            "mov {1}, rcx",
-            "mov {2}, rdx",
-            "mov {3}, r8",
-            "mov {4}, r9",
-            "mov {5}, rsp",
-            out(reg) rax_val,
-            out(reg) rcx_val,
-            out(reg) rdx_val,
-            out(reg) r8_val,
-            out(reg) r9_val,
-            out(reg) rsp_val,
-            options(pure, nostack, readonly),
-        );
-
-        println!(
-            "[{}:{}:{}]: rax = {}, rcx = {}, rdx = {}, r8 = {}, r9 = {}, rsp = {}",
-            file!(),
-            line!(),
-            column!(),
-            rax_val,
-            rcx_val,
-            rdx_val,
-            r8_val,
-            r9_val,
-            rsp_val,
-        );
-    };
-}
-
-unsafe extern "win64" fn io_error_encountered(state: *mut State) -> bool {
-    // log_registers!();
-    // println!("state = {}", state as usize);
-
-    let state = &mut *state;
-
-    let io_failure_panicked = panic::catch_unwind(AssertUnwindSafe(|| {
-        const IO_FAILURE_MESSAGE: &[u8] = b"encountered an io failure during execution";
-
-        let write_failed = match state.stdout.write_all(IO_FAILURE_MESSAGE) {
-            Ok(()) => false,
-            Err(err) => {
-                tracing::error!("failed to write to stdout during io failure: {:?}", err);
-                true
-            }
-        };
-
-        let flush_failed = match state.stdout.flush() {
-            Ok(()) => false,
-            Err(err) => {
-                tracing::error!("failed to flush stdout during io failure: {:?}", err);
-                true
-            }
-        };
-
-        write_failed || flush_failed
-    }));
-
-    match io_failure_panicked {
-        Ok(result) => result,
-        Err(err) => {
-            tracing::error!("ip failure panicked: {:?}", err);
-            true
-        }
-    }
-}
-
-/// Returns a `u16` where the first byte is the input value and the second
-/// byte is a 1 upon IO failure and a 0 upon success
-unsafe extern "win64" fn input(state: *mut State) -> u16 {
-    // log_registers!();
-    // println!("state = {}", state as usize);
-
-    let state = &mut *state;
-    let mut value = 0;
-
-    let input_panicked = panic::catch_unwind(AssertUnwindSafe(|| {
-        // Flush stdout
-        let flush_failed = match state.stdout.flush() {
-            Ok(()) => false,
-            Err(err) => {
-                tracing::error!("failed to flush stdout while getting byte: {:?}", err);
-                true
-            }
-        };
-
-        // Read one byte from stdin
-        let read_failed = match state.stdin.read_exact(slice::from_mut(&mut value)) {
-            Ok(()) => false,
-            Err(err) => {
-                tracing::error!("getting byte from stdin failed: {:?}", err);
-                true
-            }
-        };
-
-        read_failed || flush_failed
-    }));
-
-    let failed = match input_panicked {
-        Ok(result) => result,
-        Err(err) => {
-            tracing::error!("getting byte from stdin panicked: {:?}", err);
-            true
-        }
-    };
-
-    // println!("value = {}, failed = {}", value, failed);
-    u16::from_be_bytes([value, failed as u8])
-}
-
-unsafe extern "win64" fn output(state: *mut State, byte: u64) -> bool {
-    // log_registers!();
-    // println!("state = {}, byte = {}", state as usize, byte);
-
-    let byte = byte as u8;
-
-    let state = &mut *state;
-    let output_panicked = panic::catch_unwind(AssertUnwindSafe(|| {
-        let write_result = if byte.is_ascii() {
-            state.stdout.write_all(&[byte])
-        } else {
-            let escape = ascii::escape_default(byte);
-            write!(&mut state.stdout, "{}", escape)
-        };
-
-        let _ = writeln!(&mut state.stdout, "output: {:#X}", byte);
-        let _ = state.stdout.flush();
-
-        match write_result {
-            Ok(()) => false,
-            Err(err) => {
-                tracing::error!("writing byte to stdout failed: {:?}", err);
-                true
-            }
-        }
-    }));
-
-    match output_panicked {
-        Ok(result) => result,
-        Err(err) => {
-            tracing::error!("writing byte to stdout panicked: {:?}", err);
-            true
-        }
-    }
-}
-
 fn type_eq<T>(_: T) {}
-
-struct CodeBuffer {
-    buffer: NonNull<[u8]>,
-}
-
-impl CodeBuffer {
-    pub fn new(length: usize) -> Option<Self> {
-        tracing::debug!("allocating a code buffer of {} bytes", length);
-
-        if length == 0 {
-            tracing::error!("tried to allocate code buffer of zero bytes");
-            return None;
-        }
-
-        // Safety: VirtualAlloc allocates the requested memory initialized with zeroes
-        let ptr = unsafe {
-            VirtualAlloc(
-                ptr::null_mut(),
-                length,
-                MEM_COMMIT | MEM_RESERVE,
-                PAGE_READWRITE,
-            )
-        };
-        let ptr = NonNull::new(ptr.cast())?;
-        let buffer = NonNull::slice_from_raw_parts(ptr, length);
-
-        Some(Self { buffer })
-    }
-
-    pub fn len(&self) -> usize {
-        self.buffer.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn as_slice(&self) -> &[u8] {
-        unsafe { self.buffer.as_ref() }
-    }
-
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { self.buffer.as_mut() }
-    }
-
-    pub fn as_ptr(&self) -> *const u8 {
-        self.buffer.as_ptr() as *const u8
-    }
-
-    pub fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.buffer.as_mut_ptr() as *mut u8
-    }
-
-    pub fn executable(mut self) -> Option<Executable<Self>> {
-        unsafe {
-            // Give the page execute permissions
-            let mut old_protection = 0;
-            let protection_result = VirtualProtect(
-                self.as_mut_ptr().cast(),
-                self.len(),
-                PAGE_EXECUTE,
-                &mut old_protection,
-            );
-
-            if protection_result == 0 {
-                let error_code = GetLastError();
-                tracing::error!(
-                    "failed to give code buffer PAGE_EXECUTE protection, error {}",
-                    error_code,
-                );
-
-                return None;
-            }
-
-            // Get a pseudo handle to the current process
-            let handle = GetCurrentProcess();
-
-            // Flush the instruction cache
-            let flush_result = FlushInstructionCache(handle, self.as_mut_ptr().cast(), self.len());
-
-            // Closing the handle of the current process is a noop, but we do it anyways for correctness
-            let close_handle_result = CloseHandle(handle);
-
-            if flush_result == 0 {
-                let error_code = GetLastError();
-                tracing::error!("failed to flush instruction cache, error {}", error_code,);
-
-                return None;
-            } else if close_handle_result == 0 {
-                let error_code = GetLastError();
-                tracing::error!(
-                    "failed to close handle to the current process, error {}",
-                    error_code,
-                );
-
-                return None;
-            }
-        }
-
-        Some(Executable::new(self))
-    }
-}
-
-impl Deref for CodeBuffer {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
-}
-
-impl DerefMut for CodeBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_mut_slice()
-    }
-}
-
-impl Drop for CodeBuffer {
-    fn drop(&mut self) {
-        let free_result = unsafe { VirtualFree(self.as_mut_ptr().cast(), 0, MEM_RELEASE) };
-
-        if free_result == 0 {
-            tracing::error!(
-                "failed to deallocate {} bytes at {:p} from jit",
-                self.len(),
-                self.as_mut_ptr(),
-            );
-        }
-    }
-}
-
-#[repr(transparent)]
-pub struct Executable<T>(T);
-
-impl<T> Executable<T> {
-    fn new(inner: T) -> Self {
-        Self(inner)
-    }
-}
-
-impl Executable<CodeBuffer> {
-    pub unsafe fn call(&self, state: *mut State, start: *mut u8, end: *mut u8) -> u8 {
-        let func: unsafe extern "win64" fn(*mut State, *mut u8, *const u8) -> u8 =
-            transmute(self.0.as_ptr());
-
-        func(state, start, end)
-    }
-}

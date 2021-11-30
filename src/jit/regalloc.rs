@@ -2,7 +2,8 @@ use crate::{jit::AsmResult, utils::AssertNone};
 use iced_x86::code_asm::{registers::*, AsmRegister64, CodeAssembler};
 use std::{cmp::Reverse, collections::VecDeque, fmt::Debug};
 
-const NONVOLATILE_REGISTERS: &[AsmRegister64] = &[rbx, rbp, rdi, rsi, rsp, r12, r13, r14, r15];
+pub(super) const NONVOLATILE_REGISTERS: &[AsmRegister64] =
+    &[rbx, rbp, rdi, rsi, rsp, r12, r13, r14, r15];
 
 const VOLATILE_REGISTERS: &[AsmRegister64] = &[rax, rcx, rdx, r8, r9, r10, r11];
 
@@ -115,7 +116,11 @@ impl Regalloc {
         self.stack.virtual_rsp = 0;
         self.stack.vacant_slots.clear();
 
-        tracing::debug!("freed entire stack with size of {}", stack_size);
+        tracing::debug!(
+            "freed entire stack with size of {}, vrsp: {} → 0",
+            stack_size,
+            stack_size,
+        );
 
         stack_size
     }
@@ -130,7 +135,7 @@ impl Regalloc {
             tracing::debug!(
                 "freed stack slot memory for slot {:?}, vrsp: {} → {}",
                 slot,
-                self.stack.virtual_rsp + slot.size,
+                self.stack.virtual_rsp - slot.size,
                 self.stack.virtual_rsp,
             );
         }
@@ -173,7 +178,13 @@ impl Regalloc {
             self.stack.pop(slot);
             asm.pop(register)?;
 
-            tracing::debug!("popped slot {:?} to register {:?}", slot, register);
+            tracing::debug!(
+                "popped slot {:?} to register {:?}, vrsp: {} → {}",
+                slot,
+                register,
+                self.virtual_rsp() + slot.size,
+                self.virtual_rsp(),
+            );
 
         // Otherwise move from the slot to the register
         } else {
@@ -208,7 +219,7 @@ impl Regalloc {
 #[derive(Debug, Clone)]
 pub(super) struct Stack {
     /// The "virtual" stack pointer
-    virtual_rsp: usize,
+    pub(super) virtual_rsp: usize,
     /// Vacant stack slots
     vacant_slots: Vec<StackSlot>,
     /// Is `true` if the vacant stack slots aren't sorted
@@ -326,7 +337,6 @@ impl Stack {
 
         let vacant_offset = 0;
         // TODO: Free contiguous vacant slots
-        dbg!(self.virtual_rsp, &self.vacant_slots);
 
         if vacant_offset == 0 {
             None
@@ -344,7 +354,7 @@ impl Stack {
             // of being able to deallocate higher stack slots
             let virtual_rsp = self.virtual_rsp;
             self.vacant_slots
-                .sort_unstable_by_key(|slot| Reverse(dbg!(virtual_rsp) - dbg!(slot.offset)));
+                .sort_unstable_by_key(|slot| Reverse(virtual_rsp - slot.offset));
 
             if cfg!(debug_assertions) {
                 // Ensure all slots are valid
@@ -358,7 +368,7 @@ impl Stack {
                     let slot2_ptr = self.slot_offset(slot2);
 
                     assert!(
-                        slot1_ptr > slot2_ptr && slot1_ptr + slot1.size > slot2_ptr + slot2.size
+                        slot1_ptr > slot2_ptr && slot1_ptr + slot1.size > slot2_ptr + slot2.size,
                     );
                 }
             }
@@ -372,6 +382,12 @@ pub struct StackSlot {
     offset: usize,
     /// The size of the stack slot
     size: usize,
+}
+
+impl StackSlot {
+    pub fn new(offset: usize, size: usize) -> Self {
+        Self { offset, size }
+    }
 }
 
 #[derive(Debug, Clone)]

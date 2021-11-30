@@ -551,12 +551,12 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
         graph
     };
 
-    // let ir = IrBuilder::new(false).translate(&graph);
-    // println!("{}", ir.pretty_print(PrettyConfig::minimal()));
-    // fs::write(
-    //     concat!(env!("CARGO_MANIFEST_DIR"), "/output.asm"),
-    //     Jit::new(cells).unwrap().assemble(&ir).unwrap(),
-    // )?;
+    let ir = IrBuilder::new(false).translate(&graph);
+    println!("{}", ir.pretty_print(PrettyConfig::minimal()));
+    fs::write(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/output.asm"),
+        Jit::new(cells).unwrap().assemble(&ir).unwrap(),
+    )?;
 
     {
         let mut graph = Rvsdg::new();

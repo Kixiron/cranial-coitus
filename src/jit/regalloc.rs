@@ -173,6 +173,12 @@ impl Regalloc {
     ) -> AsmResult<AsmRegister64> {
         let can_pop = self.stack.free(slot);
 
+        // We're popping a stack value into a register, so we need to allocate said register
+        self.registers
+            .allocate_specific_r64(register, true)
+            .1
+            .debug_unwrap_none();
+
         // If we can pop the slot, do it
         if can_pop {
             self.stack.pop(slot);
@@ -337,6 +343,7 @@ impl Stack {
 
         let vacant_offset = 0;
         // TODO: Free contiguous vacant slots
+        dbg!(&self.vacant_slots);
 
         if vacant_offset == 0 {
             None
@@ -540,7 +547,7 @@ impl Registers {
         self.r64_lru.remove(register);
         for (reg, occupied) in &mut self.r64 {
             if *reg == register {
-                debug_assert!(occupied.is_some());
+                // debug_assert!(occupied.is_some());
                 *occupied = None;
 
                 return;

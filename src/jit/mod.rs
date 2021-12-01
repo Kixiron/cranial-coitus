@@ -6,13 +6,13 @@ mod regalloc;
 
 use crate::{
     ir::{
-        Add, Assign, Block, Call, Const, Eq, Expr, Gamma, Instruction, Pretty, PrettyConfig, Store,
-        Theta, Value, VarId,
+        Add, Assign, Block, Call, Const, Eq, Expr, Gamma, Instruction, LifetimeEnd, Pretty,
+        PrettyConfig, Store, Theta, Value, VarId,
     },
     jit::{
         ffi::State,
         memory::CodeBuffer,
-        regalloc::{Regalloc, StackSlot, NONVOLATILE_REGISTERS},
+        regalloc::{Regalloc, StackSlot},
     },
     utils::{self, AssertNone},
 };
@@ -40,7 +40,6 @@ pub struct Jit {
     tape_len: usize,
     values: BTreeMap<VarId, Operand>,
     regalloc: Regalloc,
-    non_volatile_registers: Vec<(AsmRegister64, StackSlot)>,
     comments: BTreeMap<usize, Vec<String>>,
     named_labels: BTreeMap<usize, Cow<'static, str>>,
 }
@@ -66,7 +65,6 @@ impl Jit {
             tape_len,
             values: BTreeMap::new(),
             regalloc: Regalloc::new(),
-            non_volatile_registers: Vec::new(),
             comments: BTreeMap::new(),
             named_labels: BTreeMap::new(),
         })
@@ -160,36 +158,40 @@ impl Jit {
 
                 Ok(())
             }
+
             Instruction::Assign(assign) => self.assemble_assign(assign),
+
             Instruction::Theta(theta) => self.assemble_theta(theta),
+
             Instruction::Gamma(gamma) => self.assemble_gamma(gamma),
-            Instruction::Store(store) => {
-                self.add_comment(store.pretty_print(PrettyConfig::minimal()));
-                self.assemble_store(store)
-            }
-            Instruction::LifetimeEnd(lifetime) => {
-                self.add_comment(lifetime.pretty_print(PrettyConfig::minimal()));
 
-                // if let Some(&value) = self.values.get(&lifetime.var) {
-                //     match value {
-                //         // FIXME: Register deallocation
-                //         Operand::Register(register) => {} // self.deallocate_register(register),
-                //
-                //         Operand::Stack(slot) => {
-                //             self.values.remove(&lifetime.var).unwrap();
-                //             self.regalloc.free(&mut self.asm, slot)?;
-                //         }
-                //
-                //         // Don't need to do anything special to "deallocate" a constant
-                //         Operand::Const(_) => {
-                //             self.values.remove(&lifetime.var).unwrap();
-                //         }
-                //     }
-                // }
+            Instruction::Store(store) => self.assemble_store(store),
 
-                Ok(())
-            }
+            Instruction::LifetimeEnd(lifetime) => self.lifetime_end(lifetime),
         }
+    }
+
+    #[tracing::instrument(skip(self))]
+    fn lifetime_end(&mut self, lifetime: &LifetimeEnd) -> AsmResult<()> {
+        self.add_comment(lifetime.pretty_print(PrettyConfig::minimal()));
+
+        if let Some(&value) = self.values.get(&lifetime.var) {
+            match value {
+                // FIXME: Register deallocation
+                Operand::Register(register) => self.deallocate_register(register),
+
+                Operand::Stack(slot) => {
+                    self.regalloc.free(&mut self.asm, slot)?;
+                }
+
+                // Don't need to do anything special to "deallocate" a constant
+                Operand::Const(_) => {}
+            }
+
+            self.values.remove(&lifetime.var).unwrap();
+        }
+
+        Ok(())
     }
 
     fn assemble_call(&mut self, call: &Call) -> AsmResult<Option<AsmRegister64>> {
@@ -201,12 +203,15 @@ impl Jit {
     }
 
     fn assemble_gamma(&mut self, gamma: &Gamma) -> AsmResult<()> {
+        let gamma_cond = gamma.cond.pretty_print(PrettyConfig::minimal());
+        self.add_comment(format!("if {} {{ ... }} else {{ ... }}", gamma_cond));
+
         let after_gamma = self.create_label();
 
         match self.get_value(gamma.cond) {
-            Operand::Register(register) => self.asm.cmp(register, 0)?,
-            Operand::Const(constant) => self.asm.mov(al, constant.as_bool().unwrap() as i32)?,
-            Operand::Stack(offset) => self.asm.cmp(self.stack_offset(offset), 0)?,
+            Operand::Register(register) => self.asm.cmp(register, 1)?,
+            Operand::Stack(offset) => self.asm.cmp(self.stack_offset(offset), 1)?,
+            Operand::Const(_) => todo!(),
         }
 
         // If the true branch is empty and the false isn't
@@ -215,6 +220,10 @@ impl Jit {
             self.asm.jz(after_gamma)?;
 
             // Build the false branch
+            self.add_comment(format!(
+                "[false branch] if {} {{ ... }} else {{ ... }}",
+                gamma_cond,
+            ));
             self.assemble_block(&gamma.false_branch)?;
 
         // If the true branch isn't empty and the false is
@@ -223,6 +232,10 @@ impl Jit {
             self.asm.jnz(after_gamma)?;
 
             // Build the true branch
+            self.add_comment(format!(
+                "[true branch] if {} {{ ... }} else {{ ... }}",
+                gamma_cond,
+            ));
             self.assemble_block(&gamma.true_branch)?;
 
         // If both branches are full (TODO: if both branches are empty?)
@@ -232,20 +245,35 @@ impl Jit {
             self.asm.jnz(false_branch)?;
 
             // Build the true branch
+            self.add_comment(format!(
+                "[true branch] if {} {{ ... }} else {{ ... }}",
+                gamma_cond,
+            ));
             self.assemble_block(&gamma.true_branch)?;
             // After we execute the true branch we jump to the code after the gamma
             self.asm.jmp(after_gamma)?;
 
             // Build the false branch
+            self.add_comment(format!(
+                "[false branch] if {} {{ ... }} else {{ ... }}",
+                gamma_cond,
+            ));
             self.set_label(false_branch);
             self.assemble_block(&gamma.false_branch)?;
         }
+
+        self.add_comment(format!("[end] if {} {{ ... }} else {{ ... }}", gamma_cond));
 
         self.set_label(after_gamma);
         Ok(())
     }
 
     fn assemble_theta(&mut self, theta: &Theta) -> AsmResult<()> {
+        self.add_comment(format!(
+            "do {{ ... }} while {{ {} }}",
+            theta.cond.unwrap().pretty_print(PrettyConfig::minimal()),
+        ));
+
         // A fix to keep us from making instructions with multiple labels
         self.asm.nop()?;
 
@@ -256,18 +284,28 @@ impl Jit {
         // Build the theta's body
         self.assemble_block(&theta.body)?;
 
+        self.add_comment(format!(
+            "[condition] do {{ ... }} while {{ {} }}",
+            theta.cond.unwrap().pretty_print(PrettyConfig::minimal()),
+        ));
+
         // Get the theta's condition
         let condition = self.get_value(theta.cond.unwrap());
         match condition {
-            Operand::Register(register) => self.asm.cmp(register, 0)?,
-            Operand::Const(constant) => self.asm.cmp(al, constant.as_bool().unwrap() as i32)?,
-            Operand::Stack(offset) => self.asm.cmp(self.stack_offset(offset), 0i32)?,
+            Operand::Register(register) => self.asm.cmp(register, 1)?,
+            Operand::Stack(offset) => self.asm.cmp(self.stack_offset(offset), 1)?,
+            Operand::Const(_) => todo!(),
         }
 
         self.regalloc.stack.free_vacant_slots();
 
         // If the condition is true, jump to the beginning of the theta's body
         self.asm.jz(theta_head)?;
+
+        self.add_comment(format!(
+            "[end] do {{ ... }} while {{ {} }}",
+            theta.cond.unwrap().pretty_print(PrettyConfig::minimal()),
+        ));
 
         Ok(())
     }
@@ -298,25 +336,25 @@ impl Jit {
         // 7th byte is the input value (if the function succeeded) and the 8th byte is the status
         // code, 1 for error and 0 for success
 
-        // Save rax to rcx
-        self.asm.mov(rcx, rax)?;
+        // Allocate the register that'll hold the value gotten from the input
+        let input_reg = self.allocate_register()?;
+
+        // Save rax to the input register
+        self.asm.mov(input_reg, rax)?;
 
         // Take only the lowest bit of rcx in order to get the success code
-        self.asm.and(rcx, 0x0000_0000_0000_0001)?;
+        self.asm.and(rax, 0x0000_0000_0000_0001)?;
 
         // Check if an IO error occurred
-        self.asm.cmp(rcx, 0)?;
+        self.asm.cmp(rax, 0)?;
 
         // If so, jump to the io error label and exit
         self.asm.jnz(self.io_failure)?;
 
         // Shift right by one byte in order to keep only the input value
-        self.asm.shr(rax, 8)?;
+        self.asm.shr(input_reg, 8)?;
 
-        // Otherwise rax holds the input value
-        let input_reg = self.allocate_register()?;
-        self.asm.mov(input_reg, rax)?;
-
+        // input_reg holds the input value
         Ok(input_reg)
     }
 
@@ -404,8 +442,10 @@ impl Jit {
                     }
                 }
 
-                // Perform a logical not on it
-                self.asm.not(dest)?;
+                // Perform a *logical* not on it
+                // FIXME: This will break for stuff that needs actual bitwise not
+                //        instead of just logical not
+                self.asm.xor(dest, 1)?;
 
                 self.values
                     .insert(assign.var, Operand::Register(dest))
@@ -485,30 +525,32 @@ impl Jit {
 
             Expr::Value(value) => {
                 match *value {
-                    Value::Var(var) => match *self.values.get(&var).unwrap() {
-                        Operand::Register(register) => {
-                            let dest = self.allocate_register()?;
-                            self.asm.mov(dest, register)?;
+                    Value::Var(var) => {
+                        match *self.values.get(&var).unwrap() {
+                            Operand::Register(register) => {
+                                let dest = self.allocate_register()?;
+                                self.asm.mov(dest, register)?;
 
-                            self.values.insert(assign.var, Operand::Register(dest));
-                            // .debug_unwrap_none();
+                                self.values.insert(assign.var, Operand::Register(dest));
+                                // .debug_unwrap_none();
+                            }
+
+                            Operand::Const(constant) => {
+                                self.values
+                                    .insert(assign.var, Operand::Const(constant))
+                                    .debug_unwrap_none();
+                            }
+
+                            Operand::Stack(offset) => {
+                                let dest = self.allocate_register()?;
+                                self.asm.mov(dest, self.stack_offset(offset))?;
+
+                                self.values
+                                    .insert(assign.var, Operand::Register(dest))
+                                    .debug_unwrap_none();
+                            }
                         }
-
-                        Operand::Const(constant) => {
-                            self.values
-                                .insert(assign.var, Operand::Const(constant))
-                                .debug_unwrap_none();
-                        }
-
-                        Operand::Stack(offset) => {
-                            let dest = self.allocate_register()?;
-                            self.asm.mov(dest, self.stack_offset(offset))?;
-
-                            self.values
-                                .insert(assign.var, Operand::Register(dest))
-                                .debug_unwrap_none();
-                        }
-                    },
+                    }
 
                     Value::Const(constant) => {
                         self.values
@@ -525,6 +567,8 @@ impl Jit {
     }
 
     fn assemble_store(&mut self, store: &Store) -> AsmResult<()> {
+        self.add_comment(store.pretty_print(PrettyConfig::minimal()));
+
         // Get the start pointer from the stack
         self.asm.mov(rax, self.tape_start_ptr())?;
 
@@ -673,10 +717,15 @@ impl Jit {
     fn assemble_eq(&mut self, eq: &Eq) -> AsmResult<AsmRegister64> {
         let dest = self.allocate_register()?;
 
-        // FIXME: There's opportunities for register reuse here as well
+        // Zero out the destination register
+        self.asm.xor(dest, dest)?;
+
         match (self.get_value(eq.lhs), self.get_value(eq.rhs)) {
             (Operand::Register(lhs), Operand::Register(rhs)) => {
                 self.asm.cmp(lhs, rhs)?;
+
+                // Set al to 1 if the operands are equal
+                self.asm.sete(al)?;
 
                 // Move the comparison result from al into the allocated
                 // register with a zero sign extension
@@ -686,14 +735,19 @@ impl Jit {
             (Operand::Register(lhs), Operand::Const(rhs)) => {
                 self.asm.cmp(lhs, rhs.convert_to_i32().unwrap())?;
 
+                // Set al to 1 if the operands are equal
+                self.asm.sete(al)?;
+
                 // Move the comparison result from al into the allocated
                 // register with a zero sign extension
                 self.asm.movzx(dest, al)?;
             }
 
             (Operand::Const(lhs), Operand::Register(rhs)) => {
-                self.asm.mov(dest, lhs.convert_to_i32().unwrap() as i64)?;
-                self.asm.cmp(dest, rhs)?;
+                self.asm.cmp(rhs, lhs.convert_to_i32().unwrap())?;
+
+                // Set al to 1 if the operands are equal
+                self.asm.sete(al)?;
 
                 // Move the comparison result from al into the allocated
                 // register with a zero sign extension
@@ -807,10 +861,10 @@ impl Jit {
     // /// Push a register's value to the stack
     // fn push(&mut self, register: AsmRegister64) -> AsmResult<StackSlot> {
     //     let slot = StackSlot::new(self.regalloc.virtual_rsp(), 8);
-
+    //
     //     self.asm.push(register)?;
     //     self.regalloc.stack.virtual_rsp += 8;
-
+    //
     //     Ok(slot)
     // }
 

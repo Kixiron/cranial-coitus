@@ -1,8 +1,8 @@
 use crate::{
     graph::{self, InputParam, InputPort, Node, NodeExt, NodeId, OutputParam, OutputPort, Rvsdg},
     ir::{
-        lifetime, Add, Assign, AssignTag, Block, Call, Const, EffectId, Eq, Expr, Gamma,
-        Instruction, Load, Mul, Neg, Not, Store, Theta, Value, VarId, Variance,
+        lifetime, Add, Assign, Block, Call, Const, EffectId, Eq, Gamma, Instruction, Load, Mul,
+        Neg, Not, Store, Theta, Value, VarId, Variance,
     },
     utils::AssertNone,
 };

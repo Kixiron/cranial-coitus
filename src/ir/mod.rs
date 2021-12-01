@@ -13,9 +13,7 @@ use std::{
     collections::BTreeMap,
     fmt::{self, Debug, Display, Write},
     ops::{self, Deref, DerefMut},
-    slice,
-    time::Instant,
-    vec,
+    slice, vec,
 };
 
 const INDENT_WIDTH: usize = 4;
@@ -116,7 +114,7 @@ impl<'a> IntoIterator for &'a Block {
     type IntoIter = slice::Iter<'a, Instruction>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.instructions.as_slice().into_iter()
+        self.instructions.as_slice().iter()
     }
 }
 
@@ -125,7 +123,7 @@ impl<'a> IntoIterator for &'a mut Block {
     type IntoIter = slice::IterMut<'a, Instruction>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.instructions.as_mut_slice().into_iter()
+        self.instructions.as_mut_slice().iter_mut()
     }
 }
 
@@ -1299,6 +1297,14 @@ impl Value {
     /// [`Missing`]: Value::Missing
     pub const fn is_missing(&self) -> bool {
         matches!(self, Self::Missing)
+    }
+
+    pub const fn as_var(&self) -> Option<VarId> {
+        if let Self::Var(var) = *self {
+            Some(var)
+        } else {
+            None
+        }
     }
 }
 

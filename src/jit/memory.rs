@@ -2,9 +2,10 @@ use crate::jit::ffi::State;
 use anyhow::Result;
 use std::{
     io::Error,
-    mem::{align_of, transmute},
+    mem::transmute,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
+    slice,
 };
 use winapi::um::{
     handleapi::CloseHandle,
@@ -13,9 +14,16 @@ use winapi::um::{
     winnt::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE, PAGE_READWRITE},
 };
 
-#[repr(transparent)]
+/// The OS's memory page size, currently set to a blanket of 4kb
+// https://devblogs.microsoft.com/oldnewthing/20210510-00/?p=105200
+const PAGE_SIZE: usize = 1024 * 4;
+
 pub(super) struct CodeBuffer {
-    buffer: NonNull<[u8]>,
+    buffer: NonNull<u8>,
+    /// The length of the buffer's valid and executable area
+    length: usize,
+    /// The total capacity of the buffer, aligned to memory pages
+    capacity: usize,
 }
 
 impl CodeBuffer {
@@ -25,46 +33,57 @@ impl CodeBuffer {
             anyhow::bail!("tried to allocate a code buffer of 0 bytes");
         }
 
-        let length = length + (length % align_of::<u64>());
-        tracing::debug!("allocating a code buffer of {} bytes", length);
+        let padding = length % PAGE_SIZE;
+        let capacity = length + padding;
+        tracing::debug!(
+            "allocating a code buffer with a length of {} bytes and capacity of {} bytes \
+            (added {} bytes of padding to align to {} bytes)",
+            length,
+            capacity,
+            padding,
+            PAGE_SIZE,
+        );
 
         // Safety: VirtualAlloc allocates the requested memory initialized with zeroes
         let ptr = unsafe {
             VirtualAlloc(
                 ptr::null_mut(),
-                length,
+                capacity,
                 MEM_COMMIT | MEM_RESERVE,
                 PAGE_READWRITE,
             )
         };
 
-        let ptr = if let Some(ptr) = NonNull::new(ptr.cast()) {
-            ptr
-        } else {
+        let buffer = NonNull::new(ptr.cast()).ok_or_else(|| {
             let error = Error::last_os_error();
             tracing::error!(
                 "call to VirtualAlloc() for {} bytes failed: {}",
-                length,
+                capacity,
                 error,
             );
 
-            let error =
-                anyhow::anyhow!(error).context("failed to allocate code buffer's backing memory");
-            return Err(error);
-        };
+            anyhow::anyhow!(error).context("failed to allocate code buffer's backing memory")
+        })?;
 
-        let buffer = NonNull::slice_from_raw_parts(ptr, length);
         tracing::debug!(
             "allocated code buffer of {} bytes at {:p}",
-            length,
+            capacity,
             buffer.as_ptr(),
         );
 
-        Ok(Self { buffer })
+        Ok(Self {
+            buffer,
+            length,
+            capacity,
+        })
     }
 
     pub fn len(&self) -> usize {
-        self.buffer.len()
+        self.length
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     #[allow(dead_code)]
@@ -73,19 +92,19 @@ impl CodeBuffer {
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        unsafe { self.buffer.as_ref() }
+        unsafe { slice::from_raw_parts(self.buffer.as_ptr(), self.len()) }
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { self.buffer.as_mut() }
+        unsafe { slice::from_raw_parts_mut(self.buffer.as_ptr(), self.len()) }
     }
 
-    pub fn as_ptr(&self) -> *const u8 {
+    pub const fn as_ptr(&self) -> *const u8 {
         self.buffer.as_ptr() as *const u8
     }
 
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.buffer.as_mut_ptr() as *mut u8
+        self.buffer.as_ptr()
     }
 
     pub fn executable(mut self) -> Result<Executable<Self>> {
@@ -177,8 +196,8 @@ impl Drop for CodeBuffer {
         if free_result == 0 {
             tracing::error!(
                 "failed to deallocate {} bytes at {:p} from jit",
-                self.len(),
-                self.as_mut_ptr(),
+                self.capacity(),
+                self.as_ptr(),
             );
         }
     }

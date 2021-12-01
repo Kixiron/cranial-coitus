@@ -4,9 +4,6 @@
     "scopeName": "source.cir",
     "patterns": [
         {
-            "include": "#statements"
-        },
-        {
             "include": "#comments"
         },
         {
@@ -62,7 +59,7 @@
                 {
                     "comment": "instruction keywords.cir",
                     "name": "keyword.operator",
-                    "match": "\\b(add|sub|store|load|neg|not|eq)\\b"
+                    "match": "\\b(add|sub|mul|div|store|load|neg|not|eq|call|lifetime_end)\\b"
                 },
                 {
                     "comment": "literal and param types",

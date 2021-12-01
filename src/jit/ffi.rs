@@ -64,7 +64,7 @@ macro_rules! log_registers {
 /// byte is a 1 upon IO failure and a 0 upon success
 pub(super) unsafe extern "win64" fn input(state: *mut State) -> u16 {
     log_registers!();
-    // println!("state = {}", state as usize);
+    println!("state = {}", state as usize);
 
     let state = &mut *state;
     let mut value = 0;
@@ -99,13 +99,13 @@ pub(super) unsafe extern "win64" fn input(state: *mut State) -> u16 {
         }
     };
 
-    // println!("value = {}, failed = {}", value, failed);
+    println!("value = {}, failed = {}", value, failed);
     u16::from_be_bytes([value, failed as u8])
 }
 
 pub(super) unsafe extern "win64" fn output(state: *mut State, byte: u64) -> bool {
     log_registers!();
-    // println!("state = {}, byte = {}", state as usize, byte);
+    println!("state = {}, byte = {}", state as usize, byte);
 
     let byte = byte as u8;
 

@@ -52,67 +52,67 @@ fn analyze_instruction(
             }
         }
 
-        Instruction::Assign(Assign { var, value, .. }) => {
-            last_usage.insert(*var, idx);
+        &mut Instruction::Assign(Assign { var, ref value, .. }) => {
+            last_usage.insert(var, idx);
 
-            match value {
+            match *value {
                 Expr::Eq(Eq { lhs, rhs }) => {
-                    if let Value::Var(var) = *lhs {
+                    if let Value::Var(var) = lhs {
                         last_usage.insert(var, idx);
                     }
 
-                    if let Value::Var(var) = *rhs {
+                    if let Value::Var(var) = rhs {
                         last_usage.insert(var, idx);
                     }
                 }
 
                 Expr::Add(Add { lhs, rhs }) => {
-                    if let Value::Var(var) = *lhs {
+                    if let Value::Var(var) = lhs {
                         last_usage.insert(var, idx);
                     }
 
-                    if let Value::Var(var) = *rhs {
+                    if let Value::Var(var) = rhs {
                         last_usage.insert(var, idx);
                     }
                 }
 
                 Expr::Mul(Mul { lhs, rhs }) => {
-                    if let Value::Var(var) = *lhs {
+                    if let Value::Var(var) = lhs {
                         last_usage.insert(var, idx);
                     }
 
-                    if let Value::Var(var) = *rhs {
+                    if let Value::Var(var) = rhs {
                         last_usage.insert(var, idx);
                     }
                 }
 
-                &mut Expr::Not(Not { value }) => {
+                Expr::Not(Not { value }) => {
                     if let Value::Var(var) = value {
                         last_usage.insert(var, idx);
                     }
                 }
 
-                &mut Expr::Neg(Neg { value }) => {
+                Expr::Neg(Neg { value }) => {
                     if let Value::Var(var) = value {
                         last_usage.insert(var, idx);
                     }
                 }
 
-                &mut Expr::Load(Load { ptr, .. }) => {
+                Expr::Load(Load { ptr, .. }) => {
                     if let Value::Var(var) = ptr {
                         last_usage.insert(var, idx);
                     }
                 }
 
-                Expr::Call(Call { args, .. }) => {
-                    for &mut arg in args {
+                Expr::Call(Call { ref args, .. }) => {
+                    for &arg in args {
                         if let Value::Var(var) = arg {
                             last_usage.insert(var, idx);
                         }
                     }
                 }
 
-                &mut Expr::Value(value) => {
+                Expr::Value(value) => {
                     if let Value::Var(var) = value {
                         last_usage.insert(var, idx);
                     }
@@ -127,17 +127,23 @@ fn analyze_instruction(
             cond,
             ..
         }) => {
-            for &var in inputs.keys().chain(outputs.keys()) {
+            // Collect all the keys we need to preserve
+            let mut saved_keys = BTreeSet::new();
+            if let Some(Value::Var(cond)) = *cond {
+                saved_keys.insert(cond);
+            }
+            saved_keys.extend(outputs.values().filter_map(Value::as_var));
+
+            for var in inputs
+                .values()
+                .filter_map(Value::as_var)
+                .chain(outputs.keys().copied())
+            {
                 last_usage.insert(var, idx);
+                saved_keys.insert(var);
             }
 
-            analyze_block(body, |var| {
-                outputs.contains_key(&var)
-                    || inputs.contains_key(&var)
-                    || outputs.values().any(|value| *value == Value::Var(var))
-                    || inputs.values().any(|value| *value == Value::Var(var))
-                    || Some(Value::Var(var)) == *cond
-            });
+            analyze_block(body, |var| saved_keys.contains(&var));
         }
 
         Instruction::Gamma(Gamma {
@@ -152,36 +158,38 @@ fn analyze_instruction(
                 last_usage.insert(var, idx);
             }
 
-            for &var in true_outputs.keys().chain(false_outputs.keys()) {
-                last_usage.insert(var, idx);
-            }
+            last_usage.extend(
+                true_outputs
+                    .keys()
+                    .chain(false_outputs.keys())
+                    .copied()
+                    .map(|var| (var, idx)),
+            );
 
-            let mut inputs = BTreeSet::new();
-            for inst in true_branch.iter().chain(false_branch.iter()) {
-                if let Instruction::Assign(Assign {
-                    var,
-                    tag: AssignTag::InputParam(_),
-                    ..
-                }) = *inst
-                {
-                    last_usage.insert(var, idx);
-                    inputs.insert(var);
-                }
-            }
+            let input_vars = true_branch
+                .iter()
+                .chain(false_branch.iter())
+                .filter_map(|inst| {
+                    if let Instruction::Assign(Assign {
+                        tag: AssignTag::InputParam(_),
+                        // TODO: Do we need to analyze sub-expressions?
+                        value: Expr::Value(Value::Var(var)),
+                        ..
+                    }) = inst
+                    {
+                        Some(*var)
+                    } else {
+                        None
+                    }
+                });
+            last_usage.extend(input_vars.clone().map(|var| (var, idx)));
 
-            analyze_block(true_branch, |var| {
-                true_outputs.contains_key(&var)
-                    || inputs.contains(&var)
-                    || true_outputs.values().any(|value| *value == Value::Var(var))
-            });
+            let mut saved_keys = BTreeSet::new();
+            saved_keys.extend(true_outputs.keys().chain(false_outputs.keys()).copied());
+            saved_keys.extend(input_vars);
 
-            analyze_block(false_branch, |var| {
-                false_outputs.contains_key(&var)
-                    || inputs.contains(&var)
-                    || false_outputs
-                        .values()
-                        .any(|value| *value == Value::Var(var))
-            });
+            analyze_block(true_branch, |var| saved_keys.contains(&var));
+            analyze_block(false_branch, |var| saved_keys.contains(&var));
         }
 
         &mut Instruction::Store(Store { ptr, value, .. }) => {

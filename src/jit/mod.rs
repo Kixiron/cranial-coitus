@@ -477,38 +477,46 @@ impl Jit {
                 Ok(())
             }
 
+            // TODO: `mov reg, [reg]` is legal, we can skip clobbering rax in some scenarios
             Expr::Load(load) => {
-                let destination = self.allocate_register()?;
-
-                // Get the start pointer from the stack
-                self.asm.mov(rax, self.tape_start_ptr())?;
+                let dest = self.allocate_register()?;
 
                 // Offset the tape pointer
                 match self.get_value(load.ptr) {
-                    // FIXME: Subtraction??
-                    Operand::Register(register) => self.asm.add(rax, register)?,
-                    // FIXME: Subtraction??
-                    Operand::Stack(offset) => self.asm.add(rax, self.stack_offset(offset))?,
+                    Operand::Register(register) => {
+                        // Get the start pointer from the stack
+                        self.asm.mov(dest, self.tape_start_ptr())?;
+
+                        // FIXME: Subtraction??
+                        self.asm.add(dest, register)?;
+
+                        // Dereference the pointer and store its value in the destination register
+                        self.asm.mov(dest, byte_ptr(dest))?;
+                    }
+
+                    Operand::Stack(offset) => {
+                        // Get the start pointer from the stack
+                        self.asm.mov(dest, self.tape_start_ptr())?;
+
+                        // FIXME: Subtraction??
+                        self.asm.add(dest, self.stack_offset(offset))?;
+
+                        // Dereference the pointer and store its value in the destination register
+                        self.asm.mov(dest, byte_ptr(dest))?;
+                    }
 
                     Operand::Const(constant) => {
                         let offset = constant.convert_to_i32().unwrap();
 
-                        if offset != 0 {
-                            // FIXME: Get the actual tape pointer's register
-                            if offset.is_negative() {
-                                self.asm.sub(rax, offset.abs())?;
-                            } else {
-                                self.asm.add(rax, offset)?;
-                            }
-                        }
+                        // Get the start pointer from the stack, add the offset to
+                        // it and load the value to the destination register
+                        self.asm
+                            .mov(dest, byte_ptr(self.tape_start_ptr() + offset))?;
                     }
                 }
 
-                // Dereference the pointer and store its value in the destination register
-                self.asm.mov(destination, byte_ptr(rax))?;
-
                 self.values
-                    .insert(assign.var, Operand::Register(destination))
+                    .insert(assign.var, Operand::Register(dest))
                     .debug_unwrap_none();
 
                 Ok(())
@@ -566,6 +574,7 @@ impl Jit {
         }
     }
 
+    // TODO: `mov [reg], reg` is legal, we can skip clobbering rax in some scenarios
     fn assemble_store(&mut self, store: &Store) -> AsmResult<()> {
         self.add_comment(store.pretty_print(PrettyConfig::minimal()));
 
@@ -716,9 +725,6 @@ impl Jit {
     //        just keep them in al 99% of the time
     fn assemble_eq(&mut self, eq: &Eq) -> AsmResult<AsmRegister64> {
         let dest = self.allocate_register()?;
-
-        // Zero out the destination register
-        self.asm.xor(dest, dest)?;
 
         match (self.get_value(eq.lhs), self.get_value(eq.rhs)) {
             (Operand::Register(lhs), Operand::Register(rhs)) => {

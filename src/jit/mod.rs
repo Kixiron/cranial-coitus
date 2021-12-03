@@ -14,14 +14,15 @@ use crate::{
         memory::CodeBuffer,
         regalloc::{Regalloc, StackSlot},
     },
-    utils::{self, AssertNone},
+    utils::AssertNone,
 };
 use iced_x86::code_asm::{CodeAssembler, *};
 use std::{
     borrow::Cow,
     collections::BTreeMap,
-    io,
+    io::{self, Write},
     panic::{self, AssertUnwindSafe},
+    time::Instant,
 };
 
 type AsmResult<T> = Result<T, IcedError>;
@@ -42,6 +43,8 @@ pub struct Jit {
     regalloc: Regalloc,
     comments: BTreeMap<usize, Vec<String>>,
     named_labels: BTreeMap<usize, Cow<'static, str>>,
+    inputs: BTreeMap<VarId, Operand>,
+    output_feedbacks: Vec<BTreeMap<VarId, VarId>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,6 +70,8 @@ impl Jit {
             regalloc: Regalloc::new(),
             comments: BTreeMap::new(),
             named_labels: BTreeMap::new(),
+            inputs: BTreeMap::new(),
+            output_feedbacks: Vec::new(),
         })
     }
 
@@ -102,14 +107,6 @@ impl Jit {
             code_buffer
         };
 
-        let assembly = self.disassemble();
-        println!("{}", assembly);
-        std::fs::write(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/output.asm"),
-            &assembly,
-        )
-        .unwrap();
-
         {
             let code_buffer = code_buffer.executable().unwrap();
 
@@ -118,28 +115,30 @@ impl Jit {
 
             let (stdin, stdout) = (io::stdin(), io::stdout());
             let mut state = State::new(stdin.lock(), stdout.lock());
+            state.stdout.flush().unwrap();
 
+            let jit_start = Instant::now();
             let jit_return = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
                 let start = tape.as_mut_ptr();
                 let end = start.add(tape_len);
 
-                println!(
-                    "state = {}, start = {}, end = {}",
-                    &state as *const _ as usize, start as usize, end as usize,
-                );
-
-                log_registers!();
-                let value = code_buffer.call(&mut state, start, end);
-                log_registers!();
-
-                value
+                code_buffer.call(&mut state, start, end);
             }));
+            let elapsed = jit_start.elapsed();
 
-            println!("\njitted function returned {:?}", jit_return);
-            println!("tape: {:?}", utils::debug_collapse(&tape));
+            writeln!(&mut state.stdout).unwrap();
+            state.stdout.flush().unwrap();
+            drop(state);
+
+            tracing::debug!(
+                "jitted function returned {:?} in {:#?}",
+                jit_return,
+                elapsed,
+            );
+            // println!("tape: {:?}", utils::debug_collapse(&tape));
         }
 
-        Ok(assembly)
+        Ok(self.disassemble())
     }
 
     fn assemble_block(&mut self, block: &[Instruction]) -> AsmResult<()> {
@@ -155,25 +154,20 @@ impl Jit {
             Instruction::Call(call) => {
                 self.add_comment(call.pretty_print(PrettyConfig::minimal()));
                 self.assemble_call(call)?.debug_unwrap_none();
-
                 Ok(())
             }
 
             Instruction::Assign(assign) => self.assemble_assign(assign),
-
             Instruction::Theta(theta) => self.assemble_theta(theta),
-
             Instruction::Gamma(gamma) => self.assemble_gamma(gamma),
-
             Instruction::Store(store) => self.assemble_store(store),
-
             Instruction::LifetimeEnd(lifetime) => self.lifetime_end(lifetime),
         }
     }
 
     #[tracing::instrument(skip(self))]
     fn lifetime_end(&mut self, lifetime: &LifetimeEnd) -> AsmResult<()> {
-        self.add_comment(lifetime.pretty_print(PrettyConfig::minimal()));
+        // self.add_comment(lifetime.pretty_print(PrettyConfig::minimal()));
 
         if let Some(&value) = self.values.get(&lifetime.var) {
             match value {
@@ -202,6 +196,7 @@ impl Jit {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     fn assemble_gamma(&mut self, gamma: &Gamma) -> AsmResult<()> {
         let gamma_cond = gamma.cond.pretty_print(PrettyConfig::minimal());
         self.add_comment(format!("if {} {{ ... }} else {{ ... }}", gamma_cond));
@@ -268,18 +263,21 @@ impl Jit {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     fn assemble_theta(&mut self, theta: &Theta) -> AsmResult<()> {
-        self.add_comment(format!(
-            "do {{ ... }} while {{ {} }}",
-            theta.cond.unwrap().pretty_print(PrettyConfig::minimal()),
-        ));
-
         // A fix to keep us from making instructions with multiple labels
         self.asm.nop()?;
 
         // Create a label for the head of the theta's body
         let theta_head = self.create_label();
         self.set_label(theta_head);
+
+        self.add_comment(format!(
+            "do {{ ... }} while {{ {} }}",
+            theta.cond.unwrap().pretty_print(PrettyConfig::minimal()),
+        ));
+
+        self.output_feedbacks.push(theta.output_feedback.clone());
 
         // Build the theta's body
         self.assemble_block(&theta.body)?;
@@ -292,15 +290,30 @@ impl Jit {
         // Get the theta's condition
         let condition = self.get_value(theta.cond.unwrap());
         match condition {
-            Operand::Register(register) => self.asm.cmp(register, 1)?,
-            Operand::Stack(offset) => self.asm.cmp(self.stack_offset(offset), 1)?,
+            Operand::Register(register) => {
+                self.asm.cmp(register, 1).unwrap();
+                self.deallocate_register(register);
+            }
+            Operand::Stack(offset) => {
+                // TODO: Use al + byte_ptr
+                self.asm.mov(rax, self.stack_offset(offset))?;
+                self.asm.and(rax, 1)?;
+                self.regalloc.free(&mut self.asm, offset)?;
+                self.asm.cmp(rax, 1)?;
+            }
             Operand::Const(_) => todo!(),
         }
+        match theta.cond.unwrap() {
+            Value::Var(var) => self.values.remove(&var).debug_unwrap(),
+            Value::Const(_) | Value::Missing => {}
+        }
 
-        self.regalloc.stack.free_vacant_slots();
+        // self.regalloc.stack.free_vacant_slots();
 
         // If the condition is true, jump to the beginning of the theta's body
-        self.asm.jz(theta_head)?;
+        self.asm.je(theta_head)?;
+
+        self.output_feedbacks.pop().debug_unwrap();
 
         self.add_comment(format!(
             "[end] do {{ ... }} while {{ {} }}",
@@ -342,11 +355,8 @@ impl Jit {
         // Save rax to the input register
         self.asm.mov(input_reg, rax)?;
 
-        // Take only the lowest bit of rcx in order to get the success code
-        self.asm.and(rax, 0x0000_0000_0000_0001)?;
-
         // Check if an IO error occurred
-        self.asm.cmp(rax, 0)?;
+        self.asm.cmp(low_register(rax), 0)?;
 
         // If so, jump to the io error label and exit
         self.asm.jnz(self.io_failure)?;
@@ -398,183 +408,241 @@ impl Jit {
         self.after_win64_call(stack_padding, slots)?;
 
         // Check if an IO error occurred
-        self.asm.cmp(rax, 0)?;
+        self.asm.cmp(low_register(rax), 0)?;
         // If so, jump to the io error label and exit
         self.asm.jnz(self.io_failure)?;
 
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     fn assemble_assign(&mut self, assign: &Assign) -> AsmResult<()> {
         self.add_comment(assign.pretty_print(PrettyConfig::minimal()));
 
-        match &assign.value {
-            Expr::Eq(eq) => {
-                let register = self.assemble_eq(eq)?;
-                self.values
-                    .insert(assign.var, Operand::Register(register))
-                    .debug_unwrap_none();
+        // Handle input params
+        if assign.is_input_param() {
+            let dest = self.allocate_register()?;
 
-                Ok(())
+            let value = match assign.value {
+                Expr::Value(value) => self.get_value(value),
+                _ => unreachable!(),
+            };
+            match value {
+                Operand::Register(reg) => self.asm.mov(dest, reg)?,
+                Operand::Const(value) => {
+                    self.asm.mov(dest, value.convert_to_i32().unwrap() as i64)?;
+                }
+                Operand::Stack(slot) => self.asm.mov(dest, byte_ptr(self.stack_offset(slot)))?,
             }
 
-            Expr::Add(add) => {
-                let register = self.assemble_add(add)?;
-                self.values
-                    .insert(assign.var, Operand::Register(register))
-                    .debug_unwrap_none();
+            self.inputs.insert(assign.var, value).debug_unwrap_none();
+            self.values
+                .insert(assign.var, Operand::Register(dest))
+                .debug_unwrap_none();
 
-                Ok(())
+        // Handle output params
+        // FIXME: Will cause issues for loops with non-feedback outputs
+        } else if assign.is_output_param() {
+            let value = match assign.value {
+                Expr::Value(value) => value,
+                _ => unreachable!(),
+            };
+            let value = self.get_value(value);
+
+            let output_reg = self.allocate_register()?;
+
+            if let Some(&input) = self
+                .output_feedbacks
+                .last()
+                .and_then(|feedback| feedback.get(&assign.var))
+            {
+                match *self.inputs.get(&input).unwrap() {
+                    Operand::Register(feedback) => match value {
+                        Operand::Register(reg) => self.asm.mov(feedback, reg)?,
+                        Operand::Const(value) => self
+                            .asm
+                            .mov(feedback, value.convert_to_i32().unwrap() as i64)?,
+                        Operand::Stack(slot) => self.asm.mov(feedback, self.stack_offset(slot))?,
+                    },
+                    Operand::Stack(_) => todo!(),
+                    Operand::Const(_) => todo!(),
+                }
             }
 
-            Expr::Mul(_) => Ok(()),
+            match value {
+                Operand::Register(reg) => self.asm.mov(output_reg, reg)?,
+                Operand::Const(value) => self
+                    .asm
+                    .mov(output_reg, value.convert_to_i32().unwrap() as i64)?,
+                Operand::Stack(slot) => self.asm.mov(output_reg, self.stack_offset(slot))?,
+            }
 
-            Expr::Not(not) => {
-                let dest = self.allocate_register()?;
+            self.values
+                .insert(assign.var, Operand::Register(output_reg));
 
-                // Get the input value
-                match self.get_value(not.value) {
-                    Operand::Register(register) => self.asm.mov(dest, register)?,
-                    Operand::Stack(offset) => self.asm.mov(dest, self.stack_offset(offset))?,
-                    Operand::Const(constant) => {
-                        let value = constant.convert_to_i32().unwrap();
-                        self.asm.mov(dest, value as i64)?;
-                    }
+        // Handle normal assignments
+        } else {
+            match &assign.value {
+                Expr::Eq(eq) => {
+                    let register = self.assemble_eq(eq)?;
+                    self.values
+                        .insert(assign.var, Operand::Register(register))
+                        .debug_unwrap_none();
                 }
 
-                // Perform a *logical* not on it
-                // FIXME: This will break for stuff that needs actual bitwise not
-                //        instead of just logical not
-                self.asm.xor(dest, 1)?;
-
-                self.values
-                    .insert(assign.var, Operand::Register(dest))
-                    .debug_unwrap_none();
-
-                Ok(())
-            }
-
-            Expr::Neg(neg) => {
-                let dest = self.allocate_register()?;
-
-                // Get the input value
-                match self.get_value(neg.value) {
-                    Operand::Register(register) => self.asm.mov(dest, register)?,
-                    Operand::Stack(offset) => self.asm.mov(dest, self.stack_offset(offset))?,
-                    Operand::Const(constant) => {
-                        let value = constant.convert_to_i32().unwrap();
-                        self.asm.mov(dest, value as i64)?;
-                    }
+                Expr::Add(add) => {
+                    let register = self.assemble_add(add)?;
+                    self.values
+                        .insert(assign.var, Operand::Register(register))
+                        .debug_unwrap_none();
                 }
 
-                // Perform twos compliant negation on it
-                self.asm.neg(dest)?;
+                Expr::Mul(_) => {}
 
-                self.values
-                    .insert(assign.var, Operand::Register(dest))
-                    .debug_unwrap_none();
+                Expr::Not(not) => {
+                    let dest = self.allocate_register()?;
 
-                Ok(())
-            }
-
-            // TODO: `mov reg, [reg]` is legal, we can skip clobbering rax in some scenarios
-            Expr::Load(load) => {
-                let dest = self.allocate_register()?;
-
-                // Offset the tape pointer
-                match self.get_value(load.ptr) {
-                    Operand::Register(register) => {
-                        // Get the start pointer from the stack
-                        self.asm.mov(dest, self.tape_start_ptr())?;
-
-                        // FIXME: Subtraction??
-                        self.asm.add(dest, register)?;
-
-                        // Dereference the pointer and store its value in the destination register
-                        self.asm.mov(dest, byte_ptr(dest))?;
-                    }
-
-                    Operand::Stack(offset) => {
-                        // Get the start pointer from the stack
-                        self.asm.mov(dest, self.tape_start_ptr())?;
-
-                        // FIXME: Subtraction??
-                        self.asm.add(dest, self.stack_offset(offset))?;
-
-                        // Dereference the pointer and store its value in the destination register
-                        self.asm.mov(dest, byte_ptr(dest))?;
-                    }
-
-                    Operand::Const(constant) => {
-                        let offset = constant.convert_to_i32().unwrap();
-
-                        // Get the start pointer from the stack, add the offset to
-                        // it and load the value to the destination register
-                        self.asm
-                            .mov(dest, byte_ptr(self.tape_start_ptr() + offset))?;
-                    }
-                }
-
-                self.values
-                    .insert(assign.var, Operand::Register(dest))
-                    .debug_unwrap_none();
-
-                Ok(())
-            }
-
-            Expr::Call(call) => {
-                let input_reg = self.assemble_call(call)?.unwrap();
-                self.values
-                    .insert(assign.var, Operand::Register(input_reg))
-                    .debug_unwrap_none();
-
-                Ok(())
-            }
-
-            Expr::Value(value) => {
-                match *value {
-                    Value::Var(var) => {
-                        match *self.values.get(&var).unwrap() {
-                            Operand::Register(register) => {
-                                let dest = self.allocate_register()?;
-                                self.asm.mov(dest, register)?;
-
-                                self.values.insert(assign.var, Operand::Register(dest));
-                                // .debug_unwrap_none();
-                            }
-
-                            Operand::Const(constant) => {
-                                self.values
-                                    .insert(assign.var, Operand::Const(constant))
-                                    .debug_unwrap_none();
-                            }
-
-                            Operand::Stack(offset) => {
-                                let dest = self.allocate_register()?;
-                                self.asm.mov(dest, self.stack_offset(offset))?;
-
-                                self.values
-                                    .insert(assign.var, Operand::Register(dest))
-                                    .debug_unwrap_none();
-                            }
+                    // Get the input value
+                    match self.get_value(not.value) {
+                        Operand::Register(register) => self.asm.mov(dest, register)?,
+                        Operand::Stack(offset) => self.asm.mov(dest, self.stack_offset(offset))?,
+                        Operand::Const(constant) => {
+                            let value = constant.convert_to_i32().unwrap();
+                            self.asm.mov(dest, value as i64)?;
                         }
                     }
 
-                    Value::Const(constant) => {
-                        self.values
-                            .insert(assign.var, Operand::Const(constant))
-                            .debug_unwrap_none();
-                    }
+                    // Perform a *logical* not on it
+                    // FIXME: This will break for stuff that needs actual bitwise not
+                    //        instead of just logical not
+                    self.asm.xor(dest, 1)?;
 
-                    Value::Missing => todo!(),
+                    self.values
+                        .insert(assign.var, Operand::Register(dest))
+                        .debug_unwrap_none();
                 }
 
-                Ok(())
+                Expr::Neg(neg) => {
+                    let dest = self.allocate_register()?;
+
+                    // Get the input value
+                    match self.get_value(neg.value) {
+                        Operand::Register(register) => self.asm.mov(dest, register)?,
+                        Operand::Stack(offset) => self.asm.mov(dest, self.stack_offset(offset))?,
+                        Operand::Const(constant) => {
+                            let value = constant.convert_to_i32().unwrap();
+                            self.asm.mov(dest, value as i64)?;
+                        }
+                    }
+
+                    // Perform twos compliant negation on it
+                    self.asm.neg(dest)?;
+
+                    self.values
+                        .insert(assign.var, Operand::Register(dest))
+                        .debug_unwrap_none();
+                }
+
+                // TODO: `mov reg, [reg]` is legal, we can skip clobbering rax in some scenarios
+                Expr::Load(load) => {
+                    let dest = self.allocate_register()?;
+
+                    // Offset the tape pointer
+                    match self.get_value(load.ptr) {
+                        Operand::Register(register) => {
+                            // Get the start pointer from the stack
+                            self.asm.mov(dest, self.tape_start_ptr())?;
+
+                            // FIXME: Subtraction??
+                            self.asm.add(dest, register)?;
+
+                            // Dereference the pointer and store its value in the destination register
+                            self.asm.mov(al, byte_ptr(dest))?;
+                            self.asm.movzx(dest, al)?;
+                        }
+
+                        Operand::Stack(offset) => {
+                            // Get the start pointer from the stack
+                            self.asm.mov(dest, self.tape_start_ptr())?;
+
+                            // FIXME: Subtraction??
+                            self.asm.add(dest, self.stack_offset(offset))?;
+
+                            // Dereference the pointer and store its value in the destination register
+                            self.asm.mov(al, byte_ptr(dest))?;
+                            self.asm.movzx(dest, al)?;
+                        }
+
+                        Operand::Const(constant) => {
+                            let offset = constant.convert_to_i32().unwrap();
+
+                            // Get the start pointer from the stack, add the offset to
+                            // it and load the value to the destination register
+                            self.asm.mov(rax, self.tape_start_ptr())?;
+                            self.asm.add(rax, offset)?;
+                            self.asm.mov(cl, byte_ptr(rax))?;
+                            self.asm.movzx(dest, cl)?;
+                        }
+                    }
+
+                    self.values
+                        .insert(assign.var, Operand::Register(dest))
+                        .debug_unwrap_none();
+                }
+
+                Expr::Call(call) => {
+                    let input_reg = self.assemble_call(call)?.unwrap();
+                    self.values
+                        .insert(assign.var, Operand::Register(input_reg))
+                        .debug_unwrap_none();
+                }
+
+                Expr::Value(value) => {
+                    match *value {
+                        Value::Var(var) => {
+                            match *self.values.get(&var).unwrap() {
+                                Operand::Register(register) => {
+                                    let dest = self.allocate_register()?;
+                                    self.asm.mov(dest, register)?;
+
+                                    self.values.insert(assign.var, Operand::Register(dest));
+                                    // .debug_unwrap_none();
+                                }
+
+                                Operand::Const(constant) => {
+                                    self.values
+                                        .insert(assign.var, Operand::Const(constant))
+                                        .debug_unwrap_none();
+                                }
+
+                                Operand::Stack(offset) => {
+                                    let dest = self.allocate_register()?;
+                                    self.asm.mov(dest, self.stack_offset(offset))?;
+
+                                    self.values
+                                        .insert(assign.var, Operand::Register(dest))
+                                        .debug_unwrap_none();
+                                }
+                            }
+                        }
+
+                        Value::Const(constant) => {
+                            self.values
+                                .insert(assign.var, Operand::Const(constant))
+                                .debug_unwrap_none();
+                        }
+
+                        Value::Missing => todo!(),
+                    }
+                }
             }
         }
+
+        Ok(())
     }
 
     // TODO: `mov [reg], reg` is legal, we can skip clobbering rax in some scenarios
+    #[tracing::instrument(skip(self))]
     fn assemble_store(&mut self, store: &Store) -> AsmResult<()> {
         self.add_comment(store.pretty_print(PrettyConfig::minimal()));
 
@@ -604,20 +672,17 @@ impl Jit {
 
         // Store the given value to the given pointer
         match self.get_value(store.value) {
-            Operand::Register(register) => self.asm.mov(byte_ptr(rax), register)?,
+            Operand::Register(register) => self.asm.mov(byte_ptr(rax), low_register(register))?,
 
             Operand::Stack(offset) => {
-                let temp = self.allocate_register()?;
-
-                self.asm.mov(temp, self.stack_offset(offset))?;
-                self.asm.mov(byte_ptr(rax), temp)?;
-
-                self.deallocate_register(temp);
+                self.asm.mov(rcx, self.stack_offset(offset))?;
+                self.asm.mov(byte_ptr(rax), cl)?;
             }
 
-            Operand::Const(value) => self
-                .asm
-                .mov(byte_ptr(rax), value.convert_to_u8().unwrap() as i32)?,
+            Operand::Const(value) => {
+                self.asm.mov(rcx, value.convert_to_u8().unwrap() as i64)?;
+                self.asm.mov(byte_ptr(rax), cl)?;
+            }
         }
 
         Ok(())
@@ -717,10 +782,6 @@ impl Jit {
         }
     }
 
-    fn stack_offset(&self, slot: StackSlot) -> AsmMemoryOperand {
-        rsp + self.regalloc.slot_offset(slot)
-    }
-
     // FIXME: It's inefficient to always store comparisons in registers when we could
     //        just keep them in al 99% of the time
     fn assemble_eq(&mut self, eq: &Eq) -> AsmResult<AsmRegister64> {
@@ -775,12 +836,11 @@ impl Jit {
         Ok(dest)
     }
 
+    #[track_caller]
     fn get_value(&mut self, value: Value) -> Operand {
         match value {
             Value::Var(var) => *self.values.get(&var).unwrap(),
-
             Value::Const(constant) => Operand::Const(constant),
-
             Value::Missing => todo!(),
         }
     }
@@ -789,6 +849,8 @@ impl Jit {
     #[allow(clippy::fn_to_numeric_cast)]
     fn build_io_failure(&mut self) -> AsmResult<()> {
         self.set_label(self.io_failure);
+
+        self.add_comment("handle IO errors");
 
         // Move the state pointer into the rcx register
         self.asm.mov(rcx, self.state_ptr())?;
@@ -864,6 +926,10 @@ impl Jit {
         rsp + 24 + self.regalloc.virtual_rsp()
     }
 
+    fn stack_offset(&self, slot: StackSlot) -> AsmMemoryOperand {
+        rsp + self.regalloc.slot_offset(slot)
+    }
+
     // /// Push a register's value to the stack
     // fn push(&mut self, register: AsmRegister64) -> AsmResult<StackSlot> {
     //     let slot = StackSlot::new(self.regalloc.virtual_rsp(), 8);
@@ -876,6 +942,19 @@ impl Jit {
 
     fn allocate_register(&mut self) -> AsmResult<AsmRegister64> {
         let (register, spilled) = self.regalloc.allocate(&mut self.asm, true)?;
+
+        // Spill the spilled register to the stack
+        if let Some(spilled) = spilled {
+            self.spill_register(register, spilled);
+        }
+
+        Ok(register)
+    }
+
+    fn allocate_specific(&mut self, register: AsmRegister64) -> AsmResult<AsmRegister64> {
+        let (register, spilled) = self
+            .regalloc
+            .allocate_specific(&mut self.asm, register, true)?;
 
         // Spill the spilled register to the stack
         if let Some(spilled) = spilled {
@@ -1015,3 +1094,26 @@ impl Jit {
 }
 
 fn type_eq<T>(_: T) {}
+
+#[allow(non_upper_case_globals)]
+fn low_register(register: AsmRegister64) -> AsmRegister8 {
+    match register {
+        rax => al,
+        rbx => bl,
+        rcx => cl,
+        rdx => dl,
+        rsp => spl,
+        rbp => bpl,
+        rsi => sil,
+        rdi => dil,
+        r8 => r8b,
+        r9 => r9b,
+        r10 => r10b,
+        r11 => r11b,
+        r12 => r12b,
+        r13 => r13b,
+        r14 => r14b,
+        r15 => r15b,
+        _ => unreachable!(),
+    }
+}

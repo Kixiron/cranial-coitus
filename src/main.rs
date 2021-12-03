@@ -552,12 +552,10 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
     };
 
     let ir = IrBuilder::new(false).translate(&graph);
-    println!("{}", ir.pretty_print(PrettyConfig::minimal()));
     fs::write(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/output.asm"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/unoptimized_output.asm"),
         Jit::new(cells).unwrap().assemble(&ir).unwrap(),
     )?;
-    return Ok(());
 
     // {
     //     let mut graph = Rvsdg::new();
@@ -602,6 +600,11 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
 
     let mut program = IrBuilder::new(args.inline_constants).translate(&graph);
     let elapsed = start_time.elapsed();
+
+    fs::write(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/optimized_output.asm"),
+        Jit::new(cells).unwrap().assemble(&program).unwrap(),
+    )?;
 
     let output_stats = graph.stats();
     let difference = input_stats.difference(output_stats);

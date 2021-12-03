@@ -9,7 +9,7 @@ const IO_FAILURE_MESSAGE: &[u8] = b"encountered an io failure during execution";
 
 pub(super) struct State<'a> {
     stdin: StdinLock<'a>,
-    stdout: StdoutLock<'a>,
+    pub(super) stdout: StdoutLock<'a>,
 }
 
 impl<'a> State<'a> {
@@ -18,6 +18,7 @@ impl<'a> State<'a> {
     }
 }
 
+#[allow(unused_macros)]
 macro_rules! log_registers {
     () => {
         let (
@@ -63,8 +64,8 @@ macro_rules! log_registers {
 /// Returns a `u16` where the first byte is the input value and the second
 /// byte is a 1 upon IO failure and a 0 upon success
 pub(super) unsafe extern "win64" fn input(state: *mut State) -> u16 {
-    log_registers!();
-    println!("state = {}", state as usize);
+    // log_registers!();
+    // println!("state = {}", state as usize);
 
     let state = &mut *state;
     let mut value = 0;
@@ -99,13 +100,13 @@ pub(super) unsafe extern "win64" fn input(state: *mut State) -> u16 {
         }
     };
 
-    println!("value = {}, failed = {}", value, failed);
+    // writeln!(&mut state.stdout, "value = {}, failed = {}", value, failed).unwrap();
     u16::from_be_bytes([value, failed as u8])
 }
 
 pub(super) unsafe extern "win64" fn output(state: *mut State, byte: u64) -> bool {
-    log_registers!();
-    println!("state = {}, byte = {}", state as usize, byte);
+    // log_registers!();
+    // println!("state = {}, byte = {}", state as usize, byte);
 
     let byte = byte as u8;
 
@@ -137,8 +138,8 @@ pub(super) unsafe extern "win64" fn output(state: *mut State, byte: u64) -> bool
 }
 
 pub(super) unsafe extern "win64" fn io_error_encountered(state: *mut State) -> bool {
-    log_registers!();
-    println!("state = {}", state as usize);
+    // log_registers!();
+    // println!("state = {}", state as usize);
 
     let state = &mut *state;
 

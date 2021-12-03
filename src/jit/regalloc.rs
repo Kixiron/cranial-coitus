@@ -130,12 +130,12 @@ impl Regalloc {
 
         if can_pop {
             self.stack.pop(slot);
-            asm.add(rax, slot.size as i32)?;
+            asm.add(rsp, slot.size as i32)?;
 
             tracing::debug!(
                 "freed stack slot memory for slot {:?}, vrsp: {} → {}",
                 slot,
-                self.stack.virtual_rsp - slot.size,
+                self.stack.virtual_rsp + slot.size,
                 self.stack.virtual_rsp,
             );
         }

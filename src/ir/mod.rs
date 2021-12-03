@@ -300,7 +300,7 @@ impl Pretty for LifetimeEnd {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Theta {
     pub node: NodeId,
     pub body: Vec<Instruction>,
@@ -443,7 +443,26 @@ impl Pretty for Theta {
     }
 }
 
-#[derive(Debug, Clone)]
+impl Debug for Theta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let alternative = f.alternate();
+
+        f.debug_struct("Theta")
+            .field("node", &self.node)
+            .field("body", if alternative { &self.body } else { &Omitted })
+            .field("cond", &self.cond)
+            .field("output_effect", &self.output_effect)
+            .field("input_effect", &self.input_effect)
+            // TODO: Could probably do better formatting for inputs & outputs
+            .field("inputs", &self.inputs)
+            .field("outputs", &self.outputs)
+            .field("output_feedback", &self.output_feedback)
+            .finish_non_exhaustive()
+    }
+}
+
+// FIXME: Inputs
+#[derive(Clone)]
 pub struct Gamma {
     pub node: NodeId,
     pub cond: Value,
@@ -614,6 +633,39 @@ impl Pretty for Gamma {
     }
 }
 
+impl Debug for Gamma {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let alternative = f.alternate();
+
+        f.debug_struct("Gamma")
+            .field("node", &self.node)
+            .field("cond", &self.cond)
+            .field(
+                "true_branch",
+                if alternative {
+                    &self.true_branch
+                } else {
+                    &Omitted
+                },
+            )
+            // TODO: Could probably do better formatting for inputs & outputs
+            .field("true_outputs", &self.true_outputs)
+            .field(
+                "false_branch",
+                if alternative {
+                    &self.false_branch
+                } else {
+                    &Omitted
+                },
+            )
+            // TODO: Could probably do better formatting for inputs & outputs
+            .field("false_outputs", &self.false_outputs)
+            .field("effect", &self.effect)
+            .field("prev_effect", &self.prev_effect)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Call {
     pub node: NodeId,
@@ -710,6 +762,14 @@ impl Assign {
             tag: AssignTag::OutputParam,
             invocations: 0,
         }
+    }
+
+    pub fn is_input_param(&self) -> bool {
+        self.tag.is_input_param()
+    }
+
+    pub fn is_output_param(&self) -> bool {
+        self.tag.is_output_param()
     }
 }
 
@@ -1585,5 +1645,13 @@ impl Display for EffectId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_char('e')?;
         Display::fmt(&self.0, f)
+    }
+}
+
+struct Omitted;
+
+impl Debug for Omitted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("...")
     }
 }

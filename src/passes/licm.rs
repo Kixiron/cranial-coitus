@@ -342,7 +342,7 @@ impl Pass for Licm {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _value: i32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _value: u32) {
         if self.within_theta {
             self.invariant_exprs.insert(int.value());
         }

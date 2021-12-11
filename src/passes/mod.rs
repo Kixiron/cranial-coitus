@@ -7,6 +7,7 @@ mod dce;
 mod duplicate_cell;
 mod eliminate_const_gamma;
 mod expr_dedup;
+mod fold_arithmetic;
 mod licm;
 mod mem2reg;
 mod shift;
@@ -25,6 +26,7 @@ pub use dce::Dce;
 pub use duplicate_cell::DuplicateCell;
 pub use eliminate_const_gamma::ElimConstGamma;
 pub use expr_dedup::ExprDedup;
+pub use fold_arithmetic::FoldArithmetic;
 pub use licm::Licm;
 pub use mem2reg::Mem2Reg;
 pub use shift::ShiftCell;
@@ -36,7 +38,7 @@ pub use zero_loop::ZeroLoop;
 use crate::{
     graph::{
         Add, Bool, End, Eq, Gamma, Input, InputParam, Int, Load, Mul, Neg, Node, NodeExt, NodeId,
-        Not, Output, OutputParam, Rvsdg, Start, Store, Theta,
+        Not, Output, OutputParam, Rvsdg, Start, Store, Sub, Theta,
     },
     utils::{HashMap, HashSet},
 };
@@ -46,6 +48,7 @@ pub fn default_passes(cells: usize) -> Vec<Box<dyn Pass>> {
     bvec![
         UnobservedStore::new(),
         ConstFolding::new(),
+        FoldArithmetic::new(),
         AssociativeOps::new(),
         ZeroLoop::new(),
         Mem2Reg::new(cells),
@@ -237,6 +240,7 @@ pub trait Pass {
                 Node::Int(int, value) => self.visit_int(graph, int, value),
                 Node::Bool(bool, value) => self.visit_bool(graph, bool, value),
                 Node::Add(add) => self.visit_add(graph, add),
+                Node::Sub(sub) => self.visit_sub(graph, sub),
                 Node::Mul(mul) => self.visit_mul(graph, mul),
                 Node::Load(load) => self.visit_load(graph, load),
                 Node::Store(store) => self.visit_store(graph, store),
@@ -257,9 +261,10 @@ pub trait Pass {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, _int: Int, _value: i32) {}
+    fn visit_int(&mut self, _graph: &mut Rvsdg, _int: Int, _value: u32) {}
     fn visit_bool(&mut self, _graph: &mut Rvsdg, _bool: Bool, _value: bool) {}
     fn visit_add(&mut self, _graph: &mut Rvsdg, _add: Add) {}
+    fn visit_sub(&mut self, _graph: &mut Rvsdg, _sub: Sub) {}
     fn visit_mul(&mut self, _graph: &mut Rvsdg, _mul: Mul) {}
     fn visit_load(&mut self, _graph: &mut Rvsdg, _load: Load) {}
     fn visit_store(&mut self, _graph: &mut Rvsdg, _store: Store) {}

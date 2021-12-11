@@ -17,12 +17,7 @@ pub struct Add {
 }
 
 impl Add {
-    pub(in crate::graph) const fn new(
-        node: NodeId,
-        lhs: InputPort,
-        rhs: InputPort,
-        value: OutputPort,
-    ) -> Self {
+    pub const fn new(node: NodeId, lhs: InputPort, rhs: InputPort, value: OutputPort) -> Self {
         Self {
             node,
             lhs,
@@ -47,6 +42,91 @@ impl Add {
 }
 
 impl NodeExt for Add {
+    fn node(&self) -> NodeId {
+        self.node
+    }
+
+    fn input_desc(&self) -> EdgeDescriptor {
+        EdgeDescriptor::from_values(2)
+    }
+
+    fn all_input_ports(&self) -> InputPorts {
+        tiny_vec![self.lhs, self.rhs]
+    }
+
+    fn all_input_port_kinds(&self) -> InputPortKinds {
+        tiny_vec! {
+            [_; 4] =>
+                (self.lhs, EdgeKind::Value),
+                (self.rhs, EdgeKind::Value),
+        }
+    }
+
+    fn update_input(&mut self, from: InputPort, to: InputPort) {
+        if self.lhs == from {
+            self.lhs = to;
+        }
+
+        if self.rhs == from {
+            self.rhs = to;
+        }
+    }
+
+    fn output_desc(&self) -> EdgeDescriptor {
+        EdgeDescriptor::from_values(1)
+    }
+
+    fn all_output_ports(&self) -> OutputPorts {
+        tiny_vec![self.value]
+    }
+
+    fn all_output_port_kinds(&self) -> OutputPortKinds {
+        tiny_vec! {
+            [_; 4] => (self.value, EdgeKind::Value),
+        }
+    }
+
+    fn update_output(&mut self, from: OutputPort, to: OutputPort) {
+        if self.value == from {
+            self.value = to;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sub {
+    node: NodeId,
+    lhs: InputPort,
+    rhs: InputPort,
+    value: OutputPort,
+}
+
+impl Sub {
+    pub const fn new(node: NodeId, lhs: InputPort, rhs: InputPort, value: OutputPort) -> Self {
+        Self {
+            node,
+            lhs,
+            rhs,
+            value,
+        }
+    }
+
+    /// Get the sub's left hand side
+    pub const fn lhs(&self) -> InputPort {
+        self.lhs
+    }
+
+    /// Get the sub's right hand side
+    pub const fn rhs(&self) -> InputPort {
+        self.rhs
+    }
+
+    pub const fn value(&self) -> OutputPort {
+        self.value
+    }
+}
+
+impl NodeExt for Sub {
     fn node(&self) -> NodeId {
         self.node
     }

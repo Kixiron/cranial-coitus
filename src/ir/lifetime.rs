@@ -1,6 +1,6 @@
 use crate::ir::{
     Add, Assign, AssignTag, Call, Eq, Expr, Gamma, Instruction, LifetimeEnd, Load, Mul, Neg, Not,
-    Store, Theta, Value, VarId,
+    Store, Sub, Theta, Value, VarId,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -52,69 +52,86 @@ fn analyze_instruction(
             }
         }
 
-        &mut Instruction::Assign(Assign { var, ref value, .. }) => {
+        &mut Instruction::Assign(Assign {
+            var,
+            ref value,
+            tag,
+            ..
+        }) => {
             last_usage.insert(var, idx);
 
-            match *value {
-                Expr::Eq(Eq { lhs, rhs }) => {
-                    if let Value::Var(var) = lhs {
-                        last_usage.insert(var, idx);
-                    }
+            if !tag.is_input_param() {
+                match *value {
+                    Expr::Eq(Eq { lhs, rhs }) => {
+                        if let Value::Var(var) = lhs {
+                            last_usage.insert(var, idx);
+                        }
 
-                    if let Value::Var(var) = rhs {
-                        last_usage.insert(var, idx);
-                    }
-                }
-
-                Expr::Add(Add { lhs, rhs }) => {
-                    if let Value::Var(var) = lhs {
-                        last_usage.insert(var, idx);
-                    }
-
-                    if let Value::Var(var) = rhs {
-                        last_usage.insert(var, idx);
-                    }
-                }
-
-                Expr::Mul(Mul { lhs, rhs }) => {
-                    if let Value::Var(var) = lhs {
-                        last_usage.insert(var, idx);
-                    }
-
-                    if let Value::Var(var) = rhs {
-                        last_usage.insert(var, idx);
-                    }
-                }
-
-                Expr::Not(Not { value }) => {
-                    if let Value::Var(var) = value {
-                        last_usage.insert(var, idx);
-                    }
-                }
-
-                Expr::Neg(Neg { value }) => {
-                    if let Value::Var(var) = value {
-                        last_usage.insert(var, idx);
-                    }
-                }
-
-                Expr::Load(Load { ptr, .. }) => {
-                    if let Value::Var(var) = ptr {
-                        last_usage.insert(var, idx);
-                    }
-                }
-
-                Expr::Call(Call { ref args, .. }) => {
-                    for &arg in args {
-                        if let Value::Var(var) = arg {
+                        if let Value::Var(var) = rhs {
                             last_usage.insert(var, idx);
                         }
                     }
-                }
 
-                Expr::Value(value) => {
-                    if let Value::Var(var) = value {
-                        last_usage.insert(var, idx);
+                    Expr::Add(Add { lhs, rhs }) => {
+                        if let Value::Var(var) = lhs {
+                            last_usage.insert(var, idx);
+                        }
+
+                        if let Value::Var(var) = rhs {
+                            last_usage.insert(var, idx);
+                        }
+                    }
+
+                    Expr::Sub(Sub { lhs, rhs }) => {
+                        if let Value::Var(var) = lhs {
+                            last_usage.insert(var, idx);
+                        }
+
+                        if let Value::Var(var) = rhs {
+                            last_usage.insert(var, idx);
+                        }
+                    }
+
+                    Expr::Mul(Mul { lhs, rhs }) => {
+                        if let Value::Var(var) = lhs {
+                            last_usage.insert(var, idx);
+                        }
+
+                        if let Value::Var(var) = rhs {
+                            last_usage.insert(var, idx);
+                        }
+                    }
+
+                    Expr::Not(Not { value }) => {
+                        if let Value::Var(var) = value {
+                            last_usage.insert(var, idx);
+                        }
+                    }
+
+                    Expr::Neg(Neg { value }) => {
+                        if let Value::Var(var) = value {
+                            last_usage.insert(var, idx);
+                        }
+                    }
+
+                    Expr::Load(Load { ptr, .. }) => {
+                        if let Value::Var(var) = ptr {
+                            last_usage.insert(var, idx);
+                        }
+                    }
+
+                    Expr::Call(Call { ref args, .. }) => {
+                        for &arg in args {
+                            if let Value::Var(var) = arg {
+                                last_usage.insert(var, idx);
+                            }
+                        }
+                    }
+
+                    Expr::Value(value) => {
+                        if let Value::Var(var) = value {
+                            last_usage.insert(var, idx);
+                        }
                     }
                 }
             }

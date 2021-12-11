@@ -1,7 +1,7 @@
 use crate::{
     ir::{
         Add, Assign, AssignTag, Block, Call, Const, Eq, Expr, Gamma, Instruction, Load, Mul, Neg,
-        Not, Store, Theta, Value, VarId, Variance,
+        Not, Store, Sub, Theta, Value, VarId, Variance,
     },
     utils::{self, AssertNone},
 };
@@ -102,7 +102,9 @@ where
                 Instruction::Store(store) => {
                     tracing::info!("hit step limit within store {}", store.effect);
                 }
-                Instruction::LifetimeEnd(_) => unreachable!(),
+
+                // We don't want to error out on a lifetime end
+                Instruction::LifetimeEnd(_) => return Ok(()),
             }
 
             Err(EvaluationError::StepLimitReached)
@@ -128,6 +130,7 @@ where
         match expr {
             Expr::Eq(eq) => self.eq(eq),
             Expr::Add(add) => self.add(add),
+            Expr::Sub(sub) => self.sub(sub),
             Expr::Mul(mul) => self.mul(mul),
             Expr::Not(not) => self.not(not),
             Expr::Neg(neg) => self.neg(neg),
@@ -401,6 +404,11 @@ where
         Ok(lhs + rhs)
     }
 
+    fn sub(&self, sub: &Sub) -> Result<Const> {
+        let (lhs, rhs) = (self.get_const(&sub.lhs)?, self.get_const(&sub.rhs)?);
+        Ok(lhs - rhs)
+    }
+
     fn mul(&self, mul: &Mul) -> Result<Const> {
         let (lhs, rhs) = (self.get_const(&mul.lhs)?, self.get_const(&mul.rhs)?);
         Ok(lhs * rhs)
@@ -435,7 +443,7 @@ where
     fn get_ptr(&self, value: &Value) -> Result<usize> {
         let ptr = self
             .get_const(value)?
-            .convert_to_i32()
+            .convert_to_u32()
             .expect("expected an i32-convertible constant") as usize;
 
         // We have to wrap the pointer into the tape's address space

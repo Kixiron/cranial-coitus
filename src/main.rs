@@ -511,6 +511,11 @@ fn debug(
         output_program.pretty_print(PrettyConfig::instrumented(optimized_stats.instructions));
     fs::write(dump_dir.join("annotated_output.cir"), annotated_program).unwrap();
 
+    fs::write(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/optimized_output.asm"),
+        Jit::new(cells).unwrap().assemble(&output_program).unwrap(),
+    )?;
+
     Ok(())
 }
 

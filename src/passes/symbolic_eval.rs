@@ -151,7 +151,7 @@ impl SymbolicEval {
                         .get(&VarId::new(source))
                         .unwrap();
 
-                    let int = graph.int(value.convert_to_i32().unwrap());
+                    let int = graph.int(value.convert_to_u32().unwrap());
                     self.constants.add(output, value);
                     graph.rewire_dependents(output, int.value());
 
@@ -172,22 +172,22 @@ impl SymbolicEval {
                     if let (Some(old), Some(new)) = (old, new) {
                         if old != new {
                             let ptr = *created_values
-                                .entry(cell as i32)
-                                .or_insert_with(|| graph.int(cell as i32).value());
+                                .entry(cell as u32)
+                                .or_insert_with(|| graph.int(cell as u32).value());
                             let value = *created_values
-                                .entry(new as i32)
-                                .or_insert_with(|| graph.int(new as i32).value());
+                                .entry(new as u32)
+                                .or_insert_with(|| graph.int(new as u32).value());
 
                             let store = graph.store(ptr, value, last_effect);
                             last_effect = store.output_effect();
                         }
                     } else if let Some(value) = new {
                         let ptr = *created_values
-                            .entry(cell as i32)
-                            .or_insert_with(|| graph.int(cell as i32).value());
+                            .entry(cell as u32)
+                            .or_insert_with(|| graph.int(cell as u32).value());
                         let value = *created_values
-                            .entry(value as i32)
-                            .or_insert_with(|| graph.int(value as i32).value());
+                            .entry(value as u32)
+                            .or_insert_with(|| graph.int(value as u32).value());
 
                         let store = graph.store(ptr, value, last_effect);
                         last_effect = store.output_effect();
@@ -237,15 +237,15 @@ impl Pass for SymbolicEval {
         self.constants.add(bool.value(), value);
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
         self.constants.add(int.value(), value);
     }
 
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
         let ptr = self
             .constants
-            .i32(graph.input_source(store.ptr()))
-            .map(|ptr| ptr.rem_euclid(self.tape.len() as i32) as usize);
+            .u32(graph.input_source(store.ptr()))
+            .map(|ptr| ptr.rem_euclid(self.tape.len() as u32) as usize);
 
         if let Some(ptr) = ptr {
             self.tape[ptr] = self.constants.u8(graph.input_source(store.value()));
@@ -257,8 +257,8 @@ impl Pass for SymbolicEval {
     fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
         let ptr = self
             .constants
-            .i32(graph.input_source(load.ptr()))
-            .map(|ptr| ptr.rem_euclid(self.tape.len() as i32) as usize);
+            .u32(graph.input_source(load.ptr()))
+            .map(|ptr| ptr.rem_euclid(self.tape.len() as u32) as usize);
 
         if let Some(value) = ptr.and_then(|ptr| self.tape[ptr]) {
             // let int = graph.int(value as i32);

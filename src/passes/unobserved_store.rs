@@ -82,7 +82,7 @@ impl Pass for UnobservedStore {
     // ```
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
         let store_ptr = graph.input_source(store.ptr());
-        let store_ptr_value = self.constants.i32(store_ptr);
+        let store_ptr_value = self.constants.u32(store_ptr);
 
         let mut last_effect = store.output_effect();
         while let Some((consumer, _, kind)) = graph.get_output(last_effect) {
@@ -104,7 +104,7 @@ impl Pass for UnobservedStore {
                 .and_then(|load| {
                     Some((
                         load.output_effect(),
-                        self.constants.i32(graph.input_source(load.ptr()))?,
+                        self.constants.u32(graph.input_source(load.ptr()))?,
                     ))
                 })
                 .zip(store_ptr_value)
@@ -118,7 +118,7 @@ impl Pass for UnobservedStore {
                 .and_then(|consumer| {
                     Some((
                         consumer.output_effect(),
-                        self.constants.i32(graph.input_source(consumer.ptr()))?,
+                        self.constants.u32(graph.input_source(consumer.ptr()))?,
                     ))
                 })
                 .zip(store_ptr_value)
@@ -217,7 +217,7 @@ impl Pass for UnobservedStore {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
         self.constants.add(int.value(), value);
     }
 

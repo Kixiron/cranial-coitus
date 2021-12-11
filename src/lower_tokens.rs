@@ -9,16 +9,12 @@ pub fn lower_tokens(
     mut effect: OutputPort,
     tokens: &[Token],
 ) -> (OutputPort, OutputPort) {
-    let (zero, one, neg_one) = (
-        graph.int(0).value(),
-        graph.int(1).value(),
-        graph.int(-1).value(),
-    );
+    let (zero, one) = (graph.int(0).value(), graph.int(1).value());
 
     for token in tokens {
         match token {
             Token::IncPtr => ptr = graph.add(ptr, one).value(),
-            Token::DecPtr => ptr = graph.add(ptr, neg_one).value(),
+            Token::DecPtr => ptr = graph.sub(ptr, one).value(),
 
             Token::Inc => {
                 // Load the pointed-to cell's current value
@@ -38,7 +34,7 @@ pub fn lower_tokens(
                 effect = load.output_effect();
 
                 // Decrement the loaded cell's value
-                let dec = graph.add(load.output_value(), neg_one).value();
+                let dec = graph.sub(load.output_value(), one).value();
 
                 // Store the decremented value into the pointed-to cell
                 let store = graph.store(ptr, dec, effect);

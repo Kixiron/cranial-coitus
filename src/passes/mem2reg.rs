@@ -89,14 +89,14 @@ impl Pass for Mem2Reg {
         let ptr = ptr
             .as_int()
             .map(|(_, ptr)| ptr)
-            .or_else(|| self.values.get(&source).and_then(Place::convert_to_i32));
+            .or_else(|| self.values.get(&source).and_then(Place::convert_to_u32));
 
         if let Some(offset) = ptr {
-            let offset = offset.rem_euclid(self.tape.len() as i32) as usize;
+            let offset = offset.rem_euclid(self.tape.len() as u32) as usize;
 
             let mut done = false;
             if let Place::Const(value) = &self.tape[offset] {
-                if let Some(value) = value.convert_to_i32() {
+                if let Some(value) = value.convert_to_u32() {
                     tracing::debug!(
                         "replacing load from {} with value {:#04X}: {:?}",
                         offset,
@@ -142,16 +142,16 @@ impl Pass for Mem2Reg {
         let ptr = ptr
             .as_int()
             .map(|(_, ptr)| ptr)
-            .or_else(|| self.values.get(&source).and_then(Place::convert_to_i32));
+            .or_else(|| self.values.get(&source).and_then(Place::convert_to_u32));
 
         if let Some(offset) = ptr {
-            let offset = offset.rem_euclid(self.tape.len() as i32) as usize;
+            let offset = offset.rem_euclid(self.tape.len() as u32) as usize;
 
             let (stored_value, output_port, _) = graph.get_input(store.value());
             let stored_value = stored_value.as_int().map(|(_, value)| value).or_else(|| {
                 self.values
                     .get(&output_port)
-                    .and_then(Place::convert_to_i32)
+                    .and_then(Place::convert_to_u32)
             });
 
             if let Some(value) = stored_value {
@@ -166,7 +166,7 @@ impl Pass for Mem2Reg {
                     tracing::debug!("redirected {:?} to a constant of {}", store, value);
 
                     let int = graph.int(value);
-                    self.values.insert(int.value(), (value as i32).into());
+                    self.values.insert(int.value(), value.into());
 
                     graph.remove_input_edges(store.value());
                     graph.add_value_edge(int.value(), store.value());
@@ -176,7 +176,7 @@ impl Pass for Mem2Reg {
                 }
             }
 
-            match (self.tape[offset].convert_to_i32(), stored_value) {
+            match (self.tape[offset].convert_to_u32(), stored_value) {
                 (Some(old), Some(new)) if old == new => {
                     tracing::debug!("removing identical store {:?}", store);
 
@@ -264,7 +264,7 @@ impl Pass for Mem2Reg {
         debug_assert!(replaced.is_none() || replaced == Some(value.into()));
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
         let replaced = self.values.insert(int.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(value.into()));
     }
@@ -448,9 +448,9 @@ enum Place {
 }
 
 impl Place {
-    pub fn convert_to_i32(&self) -> Option<i32> {
+    pub fn convert_to_u32(&self) -> Option<u32> {
         if let Self::Const(constant) = self {
-            constant.as_i32()
+            constant.as_u32()
         } else {
             None
         }
@@ -464,8 +464,8 @@ impl Place {
     }
 }
 
-impl From<i32> for Place {
-    fn from(int: i32) -> Self {
+impl From<u32> for Place {
+    fn from(int: u32) -> Self {
         Self::Const(Const::Int(int))
     }
 }

@@ -7,6 +7,7 @@ use crate::{
 
 /// Deduplicates constants within the graph, reusing them as much as possible
 pub struct ExprDedup {
+    // TODO: Use ConstantStore
     constants: HashMap<OutputPort, Const>,
     // union_find: UnionFind,
     changed: bool,
@@ -126,11 +127,11 @@ impl Pass for ExprDedup {
         };
     }
 
-    fn visit_int(&mut self, graph: &mut Rvsdg, int: Int, value: i32) {
+    fn visit_int(&mut self, graph: &mut Rvsdg, int: Int, value: u32) {
         if let Some((&const_id, _)) = self
             .constants
             .iter()
-            .find(|&(_, known)| known.as_i32().map_or(false, |known| known == value))
+            .find(|&(_, known)| known.as_u32().map_or(false, |known| known == value))
         {
             let existing_const = graph.get_node(graph.port_parent(const_id));
             let (const_id, const_value) = existing_const.as_int().map_or_else(

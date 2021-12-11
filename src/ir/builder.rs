@@ -2,7 +2,7 @@ use crate::{
     graph::{self, InputParam, InputPort, Node, NodeExt, NodeId, OutputParam, OutputPort, Rvsdg},
     ir::{
         lifetime, Add, Assign, Block, Call, Const, EffectId, Eq, Gamma, Instruction, Load, Mul,
-        Neg, Not, Store, Theta, Value, VarId, Variance,
+        Neg, Not, Store, Sub, Theta, Value, VarId, Variance,
     },
     utils::AssertNone,
 };
@@ -160,6 +160,24 @@ impl IrBuilder {
 
                 self.values
                     .insert(add.value(), var.into())
+                    .debug_unwrap_none();
+            }
+
+            Node::Sub(sub) => {
+                let var = VarId::new(sub.value());
+
+                let lhs = input_values
+                    .get(&sub.lhs())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
+                let rhs = input_values
+                    .get(&sub.rhs())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
+                self.inst(Assign::new(var, Sub::new(lhs, rhs)));
+
+                self.values
+                    .insert(sub.value(), var.into())
                     .debug_unwrap_none();
             }
 

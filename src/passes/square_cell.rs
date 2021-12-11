@@ -1,7 +1,7 @@
 use crate::{
     graph::{
         Add, End, Eq, Gamma, InputParam, InputPort, Int, Load, NodeExt, NodeId, Not, OutputPort,
-        Rvsdg, Start, Store, Theta,
+        Rvsdg, Start, Store, Sub, Theta,
     },
     ir::Const,
     passes::Pass,
@@ -102,6 +102,7 @@ use std::collections::BTreeMap;
 #[derive(Debug)]
 pub struct SquareCell {
     changed: bool,
+    // TODO: USe ConstantStore
     values: BTreeMap<OutputPort, Const>,
     squares_removed: usize,
 }
@@ -216,14 +217,14 @@ impl SquareCell {
             return None;
         }
 
-        // `temp0_minus_one := add temp0_val, int -1`
-        let temp0_minus_one = graph.cast_input_source::<Add>(temp0_store.value())?;
+        // `temp0_minus_one := sub temp0_val, int 1`
+        let temp0_minus_one = graph.cast_input_source::<Sub>(temp0_store.value())?;
         if !ports_match(
             graph,
             values,
             (temp0_minus_one.lhs(), temp0_minus_one.rhs()),
             temp0_load.output_value(),
-            -1,
+            1,
         ) {
             return None;
         }
@@ -292,7 +293,7 @@ impl SquareCell {
         if graph.input_source(zero_temp1.ptr()) != temp1_ptr
             || values
                 .get(&graph.input_source(zero_temp1.value()))
-                .and_then(Const::convert_to_i32)
+                .and_then(Const::convert_to_u32)
                 != Some(0)
         {
             return None;
@@ -437,14 +438,14 @@ impl SquareCell {
             return None;
         }
 
-        // `temp0_minus_one := add temp0_val, int -1`
-        let temp0_minus_one = graph.cast_input_source::<Add>(temp0_store.value())?;
+        // `temp0_minus_one := sub temp0_val, int 1`
+        let temp0_minus_one = graph.cast_input_source::<Sub>(temp0_store.value())?;
         if !ports_match(
             graph,
             values,
             (temp0_minus_one.lhs(), temp0_minus_one.rhs()),
             temp0_load.output_value(),
-            -1,
+            1,
         ) {
             return None;
         }
@@ -473,13 +474,13 @@ fn ports_match(
     values: &BTreeMap<OutputPort, Const>,
     (lhs, rhs): (InputPort, InputPort),
     value: OutputPort,
-    literal: i32,
+    literal: u32,
 ) -> bool {
     let (lhs_src, rhs_src) = (graph.input_source(lhs), graph.input_source(rhs));
 
     let (lhs_val, rhs_val) = (
-        values.get(&lhs_src).and_then(Const::convert_to_i32),
-        values.get(&rhs_src).and_then(Const::convert_to_i32),
+        values.get(&lhs_src).and_then(Const::convert_to_u32),
+        values.get(&rhs_src).and_then(Const::convert_to_u32),
     );
 
     (lhs_src == value && rhs_val == Some(literal)) || (lhs_val == Some(literal) && rhs_src == value)
@@ -516,7 +517,7 @@ impl Pass for SquareCell {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
         let replaced = self.values.insert(int.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
     }
@@ -630,7 +631,7 @@ impl Pass for SquareCell {
                             outmost_theta_visitor
                                 .values
                                 .get(&output)
-                                .and_then(Const::convert_to_i32)
+                                .and_then(Const::convert_to_u32)
                                 .map(|int| graph.int(int).value())
                                 .or_else(|| {
                                     outmost_theta
@@ -645,7 +646,7 @@ impl Pass for SquareCell {
                                         .and_then(|output| {
                                             self.values
                                                 .get(&output)
-                                                .and_then(Const::convert_to_i32)
+                                                .and_then(Const::convert_to_u32)
                                                 .map(|int| graph.int(int).value())
                                                 .or_else(|| {
                                                     gamma

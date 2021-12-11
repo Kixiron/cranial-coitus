@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Add, Bool, EdgeKind, End, Gamma, InputPort, Int, Load, Node, NodeExt, Not, OutputPort,
-        Rvsdg, Start, Store, Theta,
+        Add, Bool, EdgeKind, End, Eq, Gamma, InputPort, Int, Load, Node, NodeExt, Not, OutputPort,
+        Rvsdg, Start, Store, Sub, Theta,
     },
     passes::{utils::ConstantStore, Pass},
     utils::HashMap,
@@ -34,11 +34,11 @@ impl ZeroLoop {
     ///
     /// ```
     /// do {
-    ///   _cell_value = load _cell_ptr
-    ///   _plus_one = add _cell, int 1
-    ///   store _cell_ptr, _plus_one
-    ///   _is_zero = eq _plus_one, int 0
-    ///   _not_zero = not _is_zero
+    ///   cell_value = load cell_ptr
+    ///   plus_one = add cell, int 1
+    ///   store _cell_ptr, plus_one
+    ///   is_zero = eq plus_one, int 0
+    ///   not_zero = not is_zero
     /// } while { _not_zero }
     /// ```
     ///
@@ -46,25 +46,25 @@ impl ZeroLoop {
     ///
     /// ```
     /// do {
-    ///   _cell_value = load _cell_ptr
-    ///   _plus_one = add _cell_value, int -1
-    ///   store _cell_ptr, _plus_one
-    ///   _is_zero = eq _plus_one, int 0
-    ///   _not_zero = not _is_zero
-    /// } while { _not_zero }
+    ///   cell_value = load cell_ptr
+    ///   minus_one = sub cell_value, int 1
+    ///   store cell_ptr, minus_one
+    ///   is_zero = eq minus_one, int 0
+    ///   not_zero = not is_zero
+    /// } while { not_zero }
     /// ```
     ///
     /// In both of these cases we can replace the entire loop with a simple
     /// zero store
     ///
     /// ```
-    /// store _cell_ptr, int 0
+    /// store cell_ptr, int 0
     /// ```
     fn is_zero_loop(
         &self,
         theta: &Theta,
         body_values: &ConstantStore,
-    ) -> Option<Result<i32, InputPort>> {
+    ) -> Option<Result<u32, InputPort>> {
         let graph = theta.body();
 
         // The theta's start node
@@ -76,7 +76,7 @@ impl ZeroLoop {
         let (target_node, source, _) = graph.get_input(load.ptr());
 
         // We can zero out constant addresses or a dynamically generated ones
-        let target_ptr = match body_values.i32(source) {
+        let target_ptr = match body_values.u32(source) {
             Some(ptr) => Ok(ptr),
             None => {
                 // FIXME: We're pretty strict right now and only take inputs as "dynamic addresses",
@@ -92,58 +92,93 @@ impl ZeroLoop {
             }
         };
 
-        // Get the add node
-        let add = graph.cast_output_dest::<Add>(load.output_value())?;
+        // TODO: Refactor
+        let value = if let Some(add) = graph.cast_output_dest::<Add>(load.output_value()) {
+            let (lhs, rhs) = (graph.input_source(add.lhs()), graph.input_source(add.rhs()));
 
-        let [lhs, rhs] = [graph.get_input(add.lhs()), graph.get_input(add.rhs())];
+            // Make sure that one of the add's operands is the loaded cell and the other is 1 or -1
+            if lhs == load.output_value() {
+                let value = body_values.u32(rhs)?;
 
-        // Make sure that one of the add's operands is the loaded cell and the other is 1 or -1
-        if lhs.1 == load.output_value() {
-            let value = body_values.i32(rhs.1)?;
+                // Any odd integer will eventually converge to zero
+                if value.rem_euclid(2) == 0 {
+                    // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
+                    //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
+                    //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
+                    //       loop and we can remove it entirely for nothing, not even a store
+                    return None;
+                }
+            } else if rhs == load.output_value() {
+                let value = body_values.u32(lhs)?;
 
-            // Any odd integer will eventually converge to zero
-            if value.rem_euclid(2) == 0 {
-                // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
-                //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
-                //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
-                //       loop and we can remove it entirely for nothing, not even a store
+                // Any odd integer will eventually converge to zero
+                if value.rem_euclid(2) == 0 {
+                    // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
+                    //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
+                    //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
+                    //       loop and we can remove it entirely for nothing, not even a store
+                    return None;
+                }
+            } else {
                 return None;
             }
-        } else if rhs.1 == load.output_value() {
-            let value = body_values.i32(lhs.1)?;
 
-            // Any odd integer will eventually converge to zero
-            if value.rem_euclid(2) == 0 {
-                // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
-                //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
-                //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
-                //       loop and we can remove it entirely for nothing, not even a store
+            add.value()
+        } else if let Some(sub) = graph.cast_output_dest::<Sub>(load.output_value()) {
+            let (lhs, rhs) = (graph.input_source(sub.lhs()), graph.input_source(sub.rhs()));
+
+            // Make sure that one of the add's operands is the loaded cell and the other is 1 or -1
+            if lhs == load.output_value() {
+                let value = body_values.u32(rhs)?;
+
+                // Any odd integer will eventually converge to zero
+                if value.rem_euclid(2) == 0 {
+                    // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
+                    //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
+                    //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
+                    //       loop and we can remove it entirely for nothing, not even a store
+                    return None;
+                }
+            } else if rhs == load.output_value() {
+                let value = body_values.u32(lhs)?;
+
+                // Any odd integer will eventually converge to zero
+                if value.rem_euclid(2) == 0 {
+                    // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
+                    //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
+                    //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
+                    //       loop and we can remove it entirely for nothing, not even a store
+                    return None;
+                }
+            } else {
                 return None;
             }
+
+            sub.value()
         } else {
             return None;
-        }
+        };
 
         let store = graph.cast_output_dest::<Store>(load.output_effect())?;
-        if graph.input_source(store.value()) != add.value() {
+        if graph.input_source(store.value()) != value {
             return None;
         }
 
         let eq = graph
-            .get_outputs(add.value())
+            .get_outputs(value)
             .find_map(|(node, ..)| node.as_eq())?;
 
-        let [lhs, rhs] = [graph.get_input(eq.lhs()), graph.get_input(eq.rhs())];
+        let (lhs, rhs) = (graph.input_source(eq.lhs()), graph.input_source(eq.rhs()));
 
         // Make sure that one of the eq's operands is the added val and the other is 0
-        if lhs.1 == add.value() {
-            let value = body_values.i32(rhs.1)?;
+        if lhs == value {
+            let value = body_values.u32(rhs)?;
 
             if value != 0 {
                 return None;
             }
-        } else if rhs.1 == add.value() {
-            let value = body_values.i32(lhs.1)?;
+        } else if rhs == value {
+            let value = body_values.u32(lhs)?;
 
             if value != 0 {
                 return None;
@@ -154,7 +189,7 @@ impl ZeroLoop {
 
         let not = graph.cast_output_dest::<Not>(eq.value())?;
 
-        // Make sure the `(value + 1) != 0` expression is the theta's condition
+        // Make sure the `(value ± 1) != 0` expression is the theta's condition
         if graph.output_dest_id(not.value())? != theta.condition().node() {
             return None;
         }
@@ -168,25 +203,25 @@ impl ZeroLoop {
     /// transform it into an unconditional zero store
     ///
     /// ```
-    /// store _ptr, int 0
+    /// store ptr, int 0
     /// ```
     fn is_zero_gamma_store(
         &self,
         graph: &Rvsdg,
         false_values: &ConstantStore,
         gamma: &Gamma,
-    ) -> Option<Result<i32, OutputPort>> {
+    ) -> Option<Result<u32, OutputPort>> {
         self.gamma_store_motif_1(graph, false_values, gamma)
             .or_else(|| self.gamma_store_motif_2(graph, false_values, gamma))
     }
 
     /// ```
-    /// _value = load _ptr
-    /// _eq = eq _value, int 0
-    /// if _eq {
+    /// value = load ptr
+    /// value_is_zero = eq value, int 0
+    /// if value_is_zero {
     ///
     /// } else {
-    ///   store _ptr, int 0
+    ///   store ptr, int 0
     /// }
     /// ```
     #[allow(clippy::logic_bug)]
@@ -195,8 +230,8 @@ impl ZeroLoop {
         graph: &Rvsdg,
         false_values: &ConstantStore,
         gamma: &Gamma,
-    ) -> Option<Result<i32, OutputPort>> {
-        // _eq = eq _value, int 0
+    ) -> Option<Result<u32, OutputPort>> {
+        // value_is_zero = eq value, int 0
         let eq_zero = graph.get_input(gamma.condition()).0.as_eq()?;
         let [lhs, rhs] = [
             graph.get_input(eq_zero.lhs()),
@@ -204,11 +239,11 @@ impl ZeroLoop {
         ];
 
         let (lhs_zero, rhs_zero) = (
-            self.values.i32(lhs.1) == Some(0),
-            self.values.i32(rhs.1) == Some(0),
+            self.values.u32(lhs.1) == Some(0),
+            self.values.u32(rhs.1) == Some(0),
         );
 
-        // If the eq doesn't fit the pattern of `_eq = eq _value, int 0` this isn't a candidate
+        // If the eq doesn't fit the pattern of `value_is_zero = eq value, int 0` this isn't a candidate
         let value = if lhs_zero && rhs_zero || !lhs_zero && rhs_zero {
             lhs.0
         } else if lhs_zero && !rhs_zero {
@@ -219,7 +254,7 @@ impl ZeroLoop {
         .as_load()?;
 
         let source = graph.input_source(value.ptr());
-        let target_ptr = self.values.i32(source).ok_or(source);
+        let target_ptr = self.values.u32(source).ok_or(source);
 
         let start_effect = gamma
             .true_branch()
@@ -245,7 +280,7 @@ impl ZeroLoop {
             .cast_output_dest::<Store>(start.effect())?;
 
         // If the stored value isn't zero this isn't a candidate
-        if false_values.i32(gamma.false_branch().input_source(store.value())) != Some(0) {
+        if false_values.u32(gamma.false_branch().input_source(store.value())) != Some(0) {
             return None;
         }
 
@@ -259,12 +294,12 @@ impl ZeroLoop {
     }
 
     /// ```
-    /// _eq = eq _value, int 0
-    /// store _ptr, _value
-    /// if _eq {
+    /// value_is_zero = eq value, int 0
+    /// store ptr, value
+    /// if value_is_zero {
     ///
     /// } else {
-    ///   store _ptr, int 0
+    ///   store ptr, int 0
     /// }
     /// ```
     #[allow(clippy::logic_bug)]
@@ -273,20 +308,20 @@ impl ZeroLoop {
         graph: &Rvsdg,
         false_values: &ConstantStore,
         gamma: &Gamma,
-    ) -> Option<Result<i32, OutputPort>> {
-        // _eq = eq _value, int 0
-        let eq_zero = graph.get_input(gamma.condition()).0.as_eq()?;
+    ) -> Option<Result<u32, OutputPort>> {
+        // value_is_zero = eq value, int 0
+        let eq_zero = graph.cast_input_source::<Eq>(gamma.condition())?;
         let [lhs, rhs] = [
             graph.get_input(eq_zero.lhs()),
             graph.get_input(eq_zero.rhs()),
         ];
 
         let (lhs_zero, rhs_zero) = (
-            self.values.i32(lhs.1) == Some(0),
-            self.values.i32(rhs.1) == Some(0),
+            self.values.u32(lhs.1) == Some(0),
+            self.values.u32(rhs.1) == Some(0),
         );
 
-        // If the eq doesn't fit the pattern of `_eq = eq _value, int 0` this isn't a candidate
+        // If the eq doesn't fit the pattern of `value_is_zero = eq value, int 0` this isn't a candidate
         let value = if lhs_zero && rhs_zero || !lhs_zero && rhs_zero {
             lhs.1
         } else if lhs_zero && !rhs_zero {
@@ -296,13 +331,13 @@ impl ZeroLoop {
         };
 
         // store _ptr, _value
-        let store = graph.try_input(gamma.effect_in())?.0.as_store()?;
+        let store = graph.cast_input_source::<Store>(gamma.effect_in())?;
         if graph.input_source(store.value()) != value {
             return None;
         }
 
         let source = graph.input_source(store.ptr());
-        let target_ptr = self.values.i32(source).ok_or(source);
+        let target_ptr = self.values.u32(source).ok_or(source);
 
         let start_effect = gamma
             .true_branch()
@@ -328,7 +363,7 @@ impl ZeroLoop {
             .cast_output_dest::<Store>(start.effect())?;
 
         // If the stored value isn't zero this isn't a candidate
-        if false_values.i32(gamma.false_branch().input_source(store.value())) != Some(0) {
+        if false_values.u32(gamma.false_branch().input_source(store.value())) != Some(0) {
             return None;
         }
 
@@ -367,7 +402,7 @@ impl Pass for ZeroLoop {
         self.values.add(bool.value(), value);
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
         self.values.add(int.value(), value);
     }
 

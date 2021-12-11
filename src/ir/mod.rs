@@ -1,13 +1,17 @@
 mod builder;
 mod lifetime;
+mod parse;
+mod pretty_print;
 
 pub use builder::IrBuilder;
+pub use pretty_print::{Pretty, PrettyConfig};
 
 use crate::{
     graph::{NodeId, OutputPort, Port},
     utils::percent_total,
 };
 use pretty::{Arena, DocAllocator, DocBuilder};
+use pretty_print::{COMMENT_ALIGNMENT_OFFSET, INDENT_WIDTH};
 use std::{
     borrow::Cow,
     collections::BTreeMap,
@@ -15,58 +19,6 @@ use std::{
     ops::{self, Deref, DerefMut},
     slice, vec,
 };
-
-const INDENT_WIDTH: usize = 4;
-const COMMENT_ALIGNMENT_OFFSET: usize = 25;
-
-#[derive(Debug, Clone, Copy)]
-pub struct PrettyConfig {
-    pub display_effects: bool,
-    pub display_invocations: bool,
-    pub total_instructions: Option<usize>,
-}
-
-impl PrettyConfig {
-    pub const fn instrumented(instructions: usize) -> Self {
-        Self {
-            display_effects: true,
-            display_invocations: true,
-            total_instructions: Some(instructions),
-        }
-    }
-
-    pub fn minimal() -> Self {
-        Self {
-            display_effects: false,
-            display_invocations: false,
-            total_instructions: None,
-        }
-    }
-}
-
-pub trait Pretty {
-    fn pretty_print(&self, config: PrettyConfig) -> String {
-        // let start_time = Instant::now();
-
-        let arena = Arena::<()>::new();
-        let pretty = self.pretty(&arena, config).1.pretty(80).to_string();
-
-        // let elapsed = start_time.elapsed();
-        // tracing::debug!(
-        //     target: "timings",
-        //     "took {:#?} to pretty print ir",
-        //     elapsed,
-        // );
-
-        pretty
-    }
-
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D, config: PrettyConfig) -> DocBuilder<'a, D, A>
-    where
-        D: DocAllocator<'a, A>,
-        D::Doc: Clone,
-        A: Clone;
-}
 
 #[derive(Debug, Clone)]
 pub struct Block {
@@ -968,6 +920,7 @@ pub enum Variance {
 pub enum Expr {
     Eq(Eq),
     Add(Add),
+    Sub(Sub),
     Mul(Mul),
     Not(Not),
     Neg(Neg),
@@ -1002,6 +955,7 @@ impl Pretty for Expr {
         match self {
             Self::Eq(eq) => eq.pretty(allocator, config),
             Self::Add(add) => add.pretty(allocator, config),
+            Self::Sub(sub) => sub.pretty(allocator, config),
             Self::Mul(mul) => mul.pretty(allocator, config),
             Self::Not(not) => not.pretty(allocator, config),
             Self::Neg(neg) => neg.pretty(allocator, config),
@@ -1045,6 +999,12 @@ impl From<Eq> for Expr {
 impl From<Add> for Expr {
     fn from(add: Add) -> Self {
         Self::Add(add)
+    }
+}
+
+impl From<Sub> for Expr {
+    fn from(sub: Sub) -> Self {
+        Self::Sub(sub)
     }
 }
 
@@ -1100,6 +1060,42 @@ impl Pretty for Add {
     {
         allocator
             .text("add")
+            .append(allocator.space())
+            .append(self.lhs.pretty(allocator, config))
+            .append(allocator.text(","))
+            .append(allocator.space())
+            .append(self.rhs.pretty(allocator, config))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Sub {
+    pub lhs: Value,
+    pub rhs: Value,
+}
+
+impl Sub {
+    pub fn new<L, R>(lhs: L, rhs: R) -> Self
+    where
+        L: Into<Value>,
+        R: Into<Value>,
+    {
+        Self {
+            lhs: lhs.into(),
+            rhs: rhs.into(),
+        }
+    }
+}
+
+impl Pretty for Sub {
+    fn pretty<'a, D, A>(&'a self, allocator: &'a D, config: PrettyConfig) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+    {
+        allocator
+            .text("sub")
             .append(allocator.space())
             .append(self.lhs.pretty(allocator, config))
             .append(allocator.text(","))
@@ -1397,27 +1393,27 @@ impl From<Const> for Value {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Const {
-    Int(i32),
+    Int(u32),
     U8(u8),
     Bool(bool),
 }
 
 impl Const {
     pub fn equal_values(&self, other: &Self) -> bool {
-        self.convert_to_i32().unwrap() == other.convert_to_i32().unwrap()
+        self.convert_to_u32().unwrap() == other.convert_to_u32().unwrap()
     }
 
-    pub fn convert_to_i32(&self) -> Option<i32> {
+    pub fn convert_to_u32(&self) -> Option<u32> {
         match *self {
             Self::Int(int) => Some(int),
-            Self::U8(byte) => Some(byte as i32),
-            Self::Bool(bool) => Some(bool as i32),
+            Self::U8(byte) => Some(byte as u32),
+            Self::Bool(bool) => Some(bool as u32),
         }
     }
 
     pub fn convert_to_u8(&self) -> Option<u8> {
         match *self {
-            Self::Int(int) => Some(int.rem_euclid(u8::MAX as i32 + 1) as u8),
+            Self::Int(int) => Some(int.rem_euclid(u8::MAX as u32 + 1) as u8),
             Self::U8(byte) => Some(byte),
             Self::Bool(bool) => Some(bool as u8),
         }
@@ -1425,7 +1421,7 @@ impl Const {
 
     pub fn convert_to_u16(&self) -> Option<u16> {
         match *self {
-            Self::Int(int) => Some(int.rem_euclid(u16::MAX as i32 + 1) as u16),
+            Self::Int(int) => Some(int.rem_euclid(u16::MAX as u32 + 1) as u16),
             Self::U8(byte) => Some(byte as u16),
             Self::Bool(bool) => Some(bool as u16),
         }
@@ -1439,7 +1435,7 @@ impl Const {
         }
     }
 
-    pub fn as_i32(&self) -> Option<i32> {
+    pub fn as_u32(&self) -> Option<u32> {
         if let Self::Int(int) = *self {
             Some(int)
         } else {
@@ -1473,8 +1469,8 @@ impl ops::Neg for Const {
 
     fn neg(self) -> Self::Output {
         match self {
-            Self::Int(int) => Self::Int(-int),
-            Self::U8(byte) => Self::Int(-(byte as i32)),
+            Self::Int(int) => Self::Int(int.wrapping_neg()),
+            Self::U8(byte) => Self::U8(byte.wrapping_neg()),
             Self::Bool(_) => panic!("cannot negate bool"),
         }
     }
@@ -1494,8 +1490,12 @@ impl ops::Add for Const {
     fn add(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
             (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs + rhs),
-            (Self::Int(lhs), Self::U8(rhs)) => Self::Int(lhs + rhs as i32),
-            (Self::U8(lhs), Self::Int(rhs)) => Self::Int(lhs as i32 + rhs),
+            (Self::Int(lhs), Self::U8(rhs)) => {
+                Self::U8((lhs.rem_euclid(u8::MAX as u32 + 1) as u8).wrapping_add(rhs))
+            }
+            (Self::U8(lhs), Self::Int(rhs)) => {
+                Self::U8(lhs.wrapping_add(rhs.rem_euclid(u8::MAX as u32 + 1) as u8))
+            }
             (Self::U8(lhs), Self::U8(rhs)) => Self::U8(lhs.wrapping_add(rhs)),
             (Self::Bool(_), _) | (_, Self::Bool(_)) => panic!("can't add booleans"),
         }
@@ -1510,14 +1510,44 @@ impl ops::Add for &Const {
     }
 }
 
+impl ops::Sub for Const {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs - rhs),
+            (Self::Int(lhs), Self::U8(rhs)) => {
+                Self::U8((lhs.rem_euclid(u8::MAX as u32 + 1) as u8).wrapping_sub(rhs))
+            }
+            (Self::U8(lhs), Self::Int(rhs)) => {
+                Self::U8(lhs.wrapping_sub(rhs.rem_euclid(u8::MAX as u32 + 1) as u8))
+            }
+            (Self::U8(lhs), Self::U8(rhs)) => Self::U8(lhs.wrapping_sub(rhs)),
+            (Self::Bool(_), _) | (_, Self::Bool(_)) => panic!("can't subtract booleans"),
+        }
+    }
+}
+
+impl ops::Sub for &Const {
+    type Output = Const;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        *self - *rhs
+    }
+}
+
 impl ops::Mul for Const {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
             (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs * rhs),
-            (Self::Int(lhs), Self::U8(rhs)) => Self::Int(lhs * rhs as i32),
-            (Self::U8(lhs), Self::Int(rhs)) => Self::Int(lhs as i32 * rhs),
+            (Self::Int(lhs), Self::U8(rhs)) => {
+                Self::U8((lhs.rem_euclid(u8::MAX as u32 + 1) as u8).wrapping_mul(rhs))
+            }
+            (Self::U8(lhs), Self::Int(rhs)) => {
+                Self::U8(lhs.wrapping_mul(rhs.rem_euclid(u8::MAX as u32 + 1) as u8))
+            }
             (Self::U8(lhs), Self::U8(rhs)) => Self::U8(lhs.wrapping_mul(rhs)),
             (Self::Bool(_), _) | (_, Self::Bool(_)) => panic!("can't multiply booleans"),
         }
@@ -1548,8 +1578,8 @@ impl Pretty for Const {
     }
 }
 
-impl From<i32> for Const {
-    fn from(int: i32) -> Self {
+impl From<u32> for Const {
+    fn from(int: u32) -> Self {
         Self::Int(int)
     }
 }

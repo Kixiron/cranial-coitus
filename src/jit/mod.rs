@@ -1,13 +1,14 @@
 #[macro_use]
 mod ffi;
 mod disassemble;
+mod ilp;
 mod memory;
 mod regalloc;
 
 use crate::{
     ir::{
-        Add, Assign, Block, Call, Const, Eq, Expr, Gamma, Instruction, LifetimeEnd, Pretty,
-        PrettyConfig, Store, Theta, Value, VarId,
+        Add, Assign, AssignTag, Block, Call, Const, Eq, Expr, Gamma, Instruction, LifetimeEnd,
+        Load, Pretty, PrettyConfig, Store, Sub, Theta, Value, VarId, Variance,
     },
     jit::{
         ffi::State,
@@ -107,6 +108,12 @@ impl Jit {
             code_buffer
         };
 
+        std::fs::write(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/output.asm"),
+            self.disassemble(),
+        )
+        .unwrap();
+
         {
             let code_buffer = code_buffer.executable().unwrap();
 
@@ -122,7 +129,8 @@ impl Jit {
                 let start = tape.as_mut_ptr();
                 let end = start.add(tape_len);
 
-                code_buffer.call(&mut state, start, end);
+                // code_buffer.call(&mut state, start, end)
+                0
             }));
             let elapsed = jit_start.elapsed();
 
@@ -171,13 +179,8 @@ impl Jit {
 
         if let Some(&value) = self.values.get(&lifetime.var) {
             match value {
-                // FIXME: Register deallocation
                 Operand::Register(register) => self.deallocate_register(register),
-
-                Operand::Stack(slot) => {
-                    self.regalloc.free(&mut self.asm, slot)?;
-                }
-
+                Operand::Stack(slot) => self.regalloc.free(&mut self.asm, slot)?,
                 // Don't need to do anything special to "deallocate" a constant
                 Operand::Const(_) => {}
             }
@@ -324,6 +327,7 @@ impl Jit {
     }
 
     /// Invoke the input function to get a single byte from stdin
+    #[tracing::instrument(skip(self))]
     #[allow(clippy::fn_to_numeric_cast)]
     fn call_input(&mut self, call: &Call) -> AsmResult<AsmRegister64> {
         debug_assert_eq!(call.function, "input");
@@ -369,6 +373,7 @@ impl Jit {
     }
 
     /// Invoke the output function to print a single byte to stdout
+    #[tracing::instrument(skip(self))]
     #[allow(clippy::fn_to_numeric_cast)]
     fn call_output(&mut self, call: &Call) -> AsmResult<()> {
         debug_assert_eq!(call.function, "output");
@@ -420,7 +425,7 @@ impl Jit {
         self.add_comment(assign.pretty_print(PrettyConfig::minimal()));
 
         // Handle input params
-        if assign.is_input_param() {
+        if matches!(assign.tag, AssignTag::InputParam(Variance::Variant { .. })) {
             let dest = self.allocate_register()?;
 
             let value = match assign.value {
@@ -430,12 +435,14 @@ impl Jit {
             match value {
                 Operand::Register(reg) => self.asm.mov(dest, reg)?,
                 Operand::Const(value) => {
-                    self.asm.mov(dest, value.convert_to_i32().unwrap() as i64)?;
+                    self.asm.mov(dest, value.convert_to_u32().unwrap() as i64)?;
                 }
                 Operand::Stack(slot) => self.asm.mov(dest, byte_ptr(self.stack_offset(slot)))?,
             }
 
-            self.inputs.insert(assign.var, value).debug_unwrap_none();
+            self.inputs
+                .insert(assign.var, Operand::Register(dest))
+                .debug_unwrap_none();
             self.values
                 .insert(assign.var, Operand::Register(dest))
                 .debug_unwrap_none();
@@ -461,11 +468,10 @@ impl Jit {
                         Operand::Register(reg) => self.asm.mov(feedback, reg)?,
                         Operand::Const(value) => self
                             .asm
-                            .mov(feedback, value.convert_to_i32().unwrap() as i64)?,
+                            .mov(feedback, value.convert_to_u32().unwrap() as i64)?,
                         Operand::Stack(slot) => self.asm.mov(feedback, self.stack_offset(slot))?,
                     },
-                    Operand::Stack(_) => todo!(),
-                    Operand::Const(_) => todo!(),
+                    Operand::Stack(_) | Operand::Const(_) => unreachable!(),
                 }
             }
 
@@ -473,7 +479,7 @@ impl Jit {
                 Operand::Register(reg) => self.asm.mov(output_reg, reg)?,
                 Operand::Const(value) => self
                     .asm
-                    .mov(output_reg, value.convert_to_i32().unwrap() as i64)?,
+                    .mov(output_reg, value.convert_to_u32().unwrap() as i64)?,
                 Operand::Stack(slot) => self.asm.mov(output_reg, self.stack_offset(slot))?,
             }
 
@@ -497,7 +503,14 @@ impl Jit {
                         .debug_unwrap_none();
                 }
 
-                Expr::Mul(_) => {}
+                Expr::Sub(sub) => {
+                    let register = self.assemble_sub(sub)?;
+                    self.values
+                        .insert(assign.var, Operand::Register(register))
+                        .debug_unwrap_none();
+                }
+
+                Expr::Mul(_) => todo!(),
 
                 Expr::Not(not) => {
                     let dest = self.allocate_register()?;
@@ -507,7 +520,7 @@ impl Jit {
                         Operand::Register(register) => self.asm.mov(dest, register)?,
                         Operand::Stack(offset) => self.asm.mov(dest, self.stack_offset(offset))?,
                         Operand::Const(constant) => {
-                            let value = constant.convert_to_i32().unwrap();
+                            let value = constant.convert_to_u32().unwrap();
                             self.asm.mov(dest, value as i64)?;
                         }
                     }
@@ -530,7 +543,7 @@ impl Jit {
                         Operand::Register(register) => self.asm.mov(dest, register)?,
                         Operand::Stack(offset) => self.asm.mov(dest, self.stack_offset(offset))?,
                         Operand::Const(constant) => {
-                            let value = constant.convert_to_i32().unwrap();
+                            let value = constant.convert_to_u32().unwrap();
                             self.asm.mov(dest, value as i64)?;
                         }
                     }
@@ -544,51 +557,7 @@ impl Jit {
                 }
 
                 // TODO: `mov reg, [reg]` is legal, we can skip clobbering rax in some scenarios
-                Expr::Load(load) => {
-                    let dest = self.allocate_register()?;
-
-                    // Offset the tape pointer
-                    match self.get_value(load.ptr) {
-                        Operand::Register(register) => {
-                            // Get the start pointer from the stack
-                            self.asm.mov(dest, self.tape_start_ptr())?;
-
-                            // FIXME: Subtraction??
-                            self.asm.add(dest, register)?;
-
-                            // Dereference the pointer and store its value in the destination register
-                            self.asm.mov(al, byte_ptr(dest))?;
-                            self.asm.movzx(dest, al)?;
-                        }
-
-                        Operand::Stack(offset) => {
-                            // Get the start pointer from the stack
-                            self.asm.mov(dest, self.tape_start_ptr())?;
-
-                            // FIXME: Subtraction??
-                            self.asm.add(dest, self.stack_offset(offset))?;
-
-                            // Dereference the pointer and store its value in the destination register
-                            self.asm.mov(al, byte_ptr(dest))?;
-                            self.asm.movzx(dest, al)?;
-                        }
-
-                        Operand::Const(constant) => {
-                            let offset = constant.convert_to_i32().unwrap();
-
-                            // Get the start pointer from the stack, add the offset to
-                            // it and load the value to the destination register
-                            self.asm.mov(rax, self.tape_start_ptr())?;
-                            self.asm.add(rax, offset)?;
-                            self.asm.mov(cl, byte_ptr(rax))?;
-                            self.asm.movzx(dest, cl)?;
-                        }
-                    }
-
-                    self.values
-                        .insert(assign.var, Operand::Register(dest))
-                        .debug_unwrap_none();
-                }
+                Expr::Load(load) => self.assemble_load(load, assign)?,
 
                 Expr::Call(call) => {
                     let input_reg = self.assemble_call(call)?.unwrap();
@@ -641,6 +610,59 @@ impl Jit {
         Ok(())
     }
 
+    fn assemble_load(&mut self, load: &Load, assign: &Assign) -> AsmResult<()> {
+        let dest = self.allocate_register()?;
+
+        match self.get_value(load.ptr) {
+            Operand::Register(register) => {
+                // Get the start pointer from the stack
+                self.asm.mov(dest, self.tape_start_ptr())?;
+
+                // FIXME: Subtraction??
+                self.asm.add(dest, register)?;
+
+                // Dereference the pointer and store its value in the destination register
+                self.asm.mov(al, byte_ptr(dest))?;
+                self.asm.movzx(dest, al)?;
+            }
+
+            Operand::Stack(offset) => {
+                // Get the start pointer from the stack
+                self.asm.mov(dest, self.tape_start_ptr())?;
+
+                // FIXME: Subtraction??
+                self.asm.add(dest, self.stack_offset(offset))?;
+
+                // Dereference the pointer and store its value in the destination register
+                self.asm.mov(al, byte_ptr(dest))?;
+                self.asm.movzx(dest, al)?;
+            }
+
+            Operand::Const(constant) => {
+                let offset = constant.convert_to_u32().unwrap();
+
+                // Zero out the target register
+                self.asm.xor(dest, dest)?;
+
+                // Get the start pointer from the stack, add the offset to
+                // it and load the value to the destination register
+                self.asm.mov(rax, self.tape_start_ptr())?;
+
+                if offset != 0 {
+                    self.asm.add(rax, offset as i32)?;
+                }
+
+                self.asm.mov(low_register(dest), byte_ptr(rax))?;
+            }
+        }
+
+        self.values
+            .insert(assign.var, Operand::Register(dest))
+            .debug_unwrap_none();
+
+        Ok(())
+    }
+
     // TODO: `mov [reg], reg` is legal, we can skip clobbering rax in some scenarios
     #[tracing::instrument(skip(self))]
     fn assemble_store(&mut self, store: &Store) -> AsmResult<()> {
@@ -658,14 +680,10 @@ impl Jit {
             Operand::Stack(offset) => self.asm.add(rax, self.stack_offset(offset))?,
 
             Operand::Const(constant) => {
-                let offset = constant.convert_to_i32().unwrap();
+                let offset = constant.convert_to_u32().unwrap();
 
                 if offset != 0 {
-                    if offset.is_negative() {
-                        self.asm.sub(rax, offset.abs())?;
-                    } else {
-                        self.asm.add(rax, offset)?;
-                    }
+                    self.asm.add(rax, offset as i32)?;
                 }
             }
         }
@@ -680,8 +698,11 @@ impl Jit {
             }
 
             Operand::Const(value) => {
-                self.asm.mov(rcx, value.convert_to_u8().unwrap() as i64)?;
-                self.asm.mov(byte_ptr(rax), cl)?;
+                let value = value.convert_to_u8().unwrap();
+
+                if value != 0 {
+                    self.asm.mov(byte_ptr(rax), value as i32)?;
+                }
             }
         }
 
@@ -702,24 +723,15 @@ impl Jit {
             }
 
             (Operand::Register(lhs), Operand::Const(rhs)) => {
-                let rhs = rhs.convert_to_i32().unwrap();
+                let rhs = rhs.convert_to_u32().unwrap();
 
                 let dest = self.allocate_register()?;
                 self.asm.mov(dest, lhs)?;
 
-                if rhs != 0 {
-                    match rhs {
-                        0 => unreachable!(),
-
-                        1 => self.asm.inc(dest)?,
-                        -1 => self.asm.dec(dest)?,
-
-                        // Positive numbers turn into an add
-                        rhs if rhs > 0 => self.asm.add(dest, rhs)?,
-
-                        // Negative numbers turn into subtraction
-                        rhs => self.asm.sub(dest, rhs.abs())?,
-                    }
+                match rhs {
+                    0 => {}
+                    1 => self.asm.inc(dest)?,
+                    rhs => self.asm.add(dest, rhs as i32)?,
                 }
 
                 Ok(dest)
@@ -727,21 +739,21 @@ impl Jit {
 
             (Operand::Const(lhs), Operand::Register(rhs)) => {
                 let dest = self.allocate_register()?;
-                let lhs = lhs.convert_to_i32().unwrap();
+                let lhs = lhs.convert_to_u32().unwrap();
 
                 if lhs == 0 {
                     self.asm.mov(dest, rhs)?;
                     Ok(dest)
                 } else {
-                    self.asm.mov(dest, lhs as i64)?;
-                    self.asm.add(dest, rhs)?;
+                    self.asm.mov(dest, rhs)?;
+                    self.asm.add(dest, lhs as i32)?;
 
                     Ok(dest)
                 }
             }
 
             (Operand::Const(lhs), Operand::Const(rhs)) => {
-                let (lhs, rhs) = (lhs.convert_to_i32().unwrap(), rhs.convert_to_i32().unwrap());
+                let (lhs, rhs) = (lhs.convert_to_u32().unwrap(), rhs.convert_to_u32().unwrap());
                 let sum = lhs + rhs;
 
                 let dest = self.allocate_register()?;
@@ -755,24 +767,90 @@ impl Jit {
             (Operand::Stack(_), Operand::Register(_)) => todo!(),
 
             (Operand::Stack(offset), Operand::Const(rhs)) => {
-                let rhs = rhs.convert_to_i32().unwrap();
+                let rhs = rhs.convert_to_u32().unwrap();
 
                 let dest = self.allocate_register()?;
                 self.asm.mov(dest, self.stack_offset(offset))?;
 
-                if rhs != 0 {
-                    match rhs {
-                        0 => unreachable!(),
+                match rhs {
+                    0 => {}
+                    1 => self.asm.inc(dest)?,
+                    rhs => self.asm.add(dest, rhs as i32)?,
+                }
 
-                        1 => self.asm.inc(dest)?,
-                        -1 => self.asm.dec(dest)?,
+                Ok(dest)
+            }
 
-                        // Positive numbers turn into an add
-                        rhs if rhs > 0 => self.asm.add(dest, rhs)?,
+            (Operand::Stack(_), Operand::Stack(_)) => todo!(),
+        }
+    }
 
-                        // Negative numbers turn into subtraction
-                        rhs => self.asm.sub(dest, rhs.abs())?,
-                    }
+    fn assemble_sub(&mut self, sub: &Sub) -> AsmResult<AsmRegister64> {
+        // FIXME: These could actually be optimized a lot with register reuse
+        match (self.get_value(sub.lhs), self.get_value(sub.rhs)) {
+            (Operand::Register(lhs), Operand::Register(rhs)) => {
+                let dest = self.allocate_register()?;
+
+                self.asm.mov(dest, lhs)?;
+                self.asm.sub(dest, rhs)?;
+
+                Ok(dest)
+            }
+
+            (Operand::Register(lhs), Operand::Const(rhs)) => {
+                let rhs = rhs.convert_to_u32().unwrap();
+
+                let dest = self.allocate_register()?;
+                self.asm.mov(dest, lhs)?;
+
+                match rhs {
+                    0 => {}
+                    1 => self.asm.dec(dest)?,
+                    rhs => self.asm.sub(dest, rhs as i32)?,
+                }
+
+                Ok(dest)
+            }
+
+            (Operand::Const(lhs), Operand::Register(rhs)) => {
+                let dest = self.allocate_register()?;
+                let lhs = lhs.convert_to_u32().unwrap();
+
+                if lhs == 0 {
+                    self.asm.mov(dest, rhs)?;
+                    Ok(dest)
+                } else {
+                    self.asm.mov(dest, lhs as i64)?;
+                    self.asm.sub(dest, rhs)?;
+
+                    Ok(dest)
+                }
+            }
+
+            (Operand::Const(lhs), Operand::Const(rhs)) => {
+                let (lhs, rhs) = (lhs.convert_to_u32().unwrap(), rhs.convert_to_u32().unwrap());
+                let sum = lhs - rhs;
+
+                let dest = self.allocate_register()?;
+                self.asm.mov(dest, sum as i64)?;
+
+                Ok(dest)
+            }
+
+            (Operand::Register(_), Operand::Stack(_)) => todo!(),
+            (Operand::Const(_), Operand::Stack(_)) => todo!(),
+            (Operand::Stack(_), Operand::Register(_)) => todo!(),
+
+            (Operand::Stack(offset), Operand::Const(rhs)) => {
+                let rhs = rhs.convert_to_u32().unwrap();
+
+                let dest = self.allocate_register()?;
+                self.asm.mov(dest, self.stack_offset(offset))?;
+
+                match rhs {
+                    0 => {}
+                    1 => self.asm.dec(dest)?,
+                    rhs => self.asm.sub(dest, rhs as i32)?,
                 }
 
                 Ok(dest)
@@ -800,7 +878,7 @@ impl Jit {
             }
 
             (Operand::Register(lhs), Operand::Const(rhs)) => {
-                self.asm.cmp(lhs, rhs.convert_to_i32().unwrap())?;
+                self.asm.cmp(lhs, rhs.convert_to_u32().unwrap() as i32)?;
 
                 // Set al to 1 if the operands are equal
                 self.asm.sete(al)?;
@@ -811,7 +889,7 @@ impl Jit {
             }
 
             (Operand::Const(lhs), Operand::Register(rhs)) => {
-                self.asm.cmp(rhs, lhs.convert_to_i32().unwrap())?;
+                self.asm.cmp(rhs, lhs.convert_to_u32().unwrap() as i32)?;
 
                 // Set al to 1 if the operands are equal
                 self.asm.sete(al)?;
@@ -822,7 +900,7 @@ impl Jit {
             }
 
             (Operand::Const(lhs), Operand::Const(rhs)) => {
-                let are_equal = lhs.convert_to_i32().unwrap() == rhs.convert_to_i32().unwrap();
+                let are_equal = lhs.convert_to_u32().unwrap() == rhs.convert_to_u32().unwrap();
                 self.asm.mov(dest, are_equal as i64)?;
             }
 
@@ -839,9 +917,14 @@ impl Jit {
     #[track_caller]
     fn get_value(&mut self, value: Value) -> Operand {
         match value {
-            Value::Var(var) => *self.values.get(&var).unwrap(),
             Value::Const(constant) => Operand::Const(constant),
-            Value::Missing => todo!(),
+            Value::Var(var) => self.values.get(&var).copied().unwrap_or_else(|| {
+                panic!(
+                    "attempted to get the value of {:?}, but {} couldn't be found",
+                    value, var,
+                )
+            }),
+            Value::Missing => panic!("tried to jit a missing value"),
         }
     }
 

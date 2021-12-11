@@ -1,24 +1,24 @@
 use crate::{
     graph::{
         Add, Bool, EdgeKind, Eq, Gamma, InputParam, InputPort, Int, Mul, Neg, NodeExt, Not,
-        OutputPort, Rvsdg, Theta,
+        OutputPort, Rvsdg, Sub, Theta,
     },
     ir::Const,
-    passes::Pass,
+    passes::{utils::ConstantStore, Pass},
     utils::AssertNone,
 };
 use std::collections::BTreeMap;
 
 /// Evaluates constant operations within the program
 pub struct ConstFolding {
-    values: BTreeMap<OutputPort, Const>,
+    values: ConstantStore,
     changed: bool,
 }
 
 impl ConstFolding {
     pub fn new() -> Self {
         Self {
-            values: BTreeMap::new(),
+            values: ConstantStore::new(),
             changed: false,
         }
     }
@@ -27,9 +27,9 @@ impl ConstFolding {
         self.changed = true;
     }
 
-    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (OutputPort, Option<i32>) {
+    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (OutputPort, Option<u32>) {
         let source = graph.input_source(input);
-        let value = self.values.get(&source).and_then(Const::convert_to_i32);
+        let value = self.values.u32(source);
 
         (source, value)
     }
@@ -50,14 +50,12 @@ impl Pass for ConstFolding {
         self.changed = false;
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
-        let replaced = self.values.insert(int.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+        self.values.add(int.value(), value);
     }
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
-        let replaced = self.values.insert(bool.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Bool(value)));
+        self.values.add(bool.value(), value);
     }
 
     fn visit_add(&mut self, graph: &mut Rvsdg, add: Add) {
@@ -78,8 +76,8 @@ impl Pass for ConstFolding {
                 self.changed();
 
                 // Add the derived values to the known constants
-                self.values.insert(int.value(), sum.into());
-                self.values.insert(add.value(), sum.into());
+                self.values.add(int.value(), sum);
+                self.values.add(add.value(), sum);
             }
 
             // If either side of the add is zero, we can simplify it to the non-zero value
@@ -95,8 +93,8 @@ impl Pass for ConstFolding {
                 self.changed();
 
                 // Add the derived value for the add node to the known constants
-                if let Some(value) = self.values.get(&value).cloned() {
-                    self.values.insert(add.value(), value);
+                if let Some(value) = self.values.get(value) {
+                    self.values.add(add.value(), value);
                 }
             }
 
@@ -117,8 +115,93 @@ impl Pass for ConstFolding {
                 self.changed();
 
                 // Add the derived values to the known constants
-                self.values.insert(zero.value(), 0.into());
-                self.values.insert(add.value(), 0.into());
+                self.values.add(zero.value(), 0u32);
+                self.values.add(add.value(), 0u32);
+            }
+
+            _ => {}
+        }
+    }
+
+    fn visit_sub(&mut self, graph: &mut Rvsdg, sub: Sub) {
+        let inputs = [
+            self.operand(graph, sub.lhs()),
+            self.operand(graph, sub.rhs()),
+        ];
+
+        match inputs {
+            // If both sides of the sub are known, we can evaluate it directly
+            // `10 - 10 => 20`
+            [(_, Some(lhs)), (_, Some(rhs))] => {
+                let sum = lhs - rhs;
+                tracing::debug!(lhs, rhs, "evaluated sub {:?} to {}", sub, sum);
+
+                let int = graph.int(sum);
+                graph.rewire_dependents(sub.value(), int.value());
+                self.changed();
+
+                // Add the derived values to the known constants
+                self.values.add(int.value(), sum);
+                self.values.add(sub.value(), sum);
+            }
+
+            // If either side of the sub are zero, we can simplify it to the non-zero value
+            // `x - 0 => x`
+            [(_, Some(0)), (value, None)] => {
+                tracing::debug!(
+                    "removing an subtraction by zero {:?} into a direct value of {:?}",
+                    sub,
+                    value,
+                );
+
+                graph.rewire_dependents(sub.value(), value);
+                self.changed();
+
+                // Add the derived value for the sub node to the known constants
+                if let Some(value) = self.values.get(value) {
+                    self.values.add(sub.value(), value);
+                }
+            }
+
+            // `0 - x => -x`
+            [(value, None), (_, Some(0))] => {
+                tracing::debug!(
+                    "removing an subtraction by zero {:?} (0 - x) into a -{:?}",
+                    sub,
+                    value,
+                );
+
+                let neg = graph.neg(value);
+                graph.rewire_dependents(sub.value(), neg.value());
+
+                self.changed();
+
+                // Add the derived value for the sub node to the known constants
+                if let Some(value) = self.values.get(value) {
+                    self.values.add(sub.value(), -value);
+                    self.values.add(neg.value(), -value);
+                }
+            }
+
+            // If one side of the sub is the negative of the other, the sub simplifies into a zero
+            // `x - -x => 0`, `-x - x => 0`
+            [(lhs, _), (rhs, _)] | [(rhs, _), (lhs, _)]
+                if graph
+                    .cast_output_dest::<Neg>(rhs)
+                    .map_or(false, |neg| graph.input_source(neg.input()) == lhs) =>
+            {
+                tracing::debug!(
+                    ?sub,
+                    "removing an subtraction by negated value into a direct value of 0",
+                );
+
+                let zero = graph.int(0);
+                graph.rewire_dependents(sub.value(), zero.value());
+                self.changed();
+
+                // Add the derived values to the known constants
+                self.values.add(zero.value(), 0u32);
+                self.values.add(sub.value(), 0u32);
             }
 
             _ => {}
@@ -143,8 +226,8 @@ impl Pass for ConstFolding {
                 self.changed();
 
                 // Add the derived values to the known constants
-                self.values.insert(int.value(), product.into());
-                self.values.insert(mul.value(), product.into());
+                self.values.add(int.value(), product);
+                self.values.add(mul.value(), product);
             }
 
             // If either side of the multiply is zero, we can remove the multiply entirely for zero
@@ -160,7 +243,7 @@ impl Pass for ConstFolding {
                 self.changed();
 
                 // Add the derived value to the known constants
-                self.values.insert(mul.value(), 0.into());
+                self.values.add(mul.value(), 0u32);
             }
 
             // If either side of the multiply is one, we can remove the multiply entirely for the non-one value
@@ -176,8 +259,8 @@ impl Pass for ConstFolding {
                 self.changed();
 
                 // Add the derived value for the mul node to the known constants
-                if let Some(value) = self.values.get(&value).cloned() {
-                    self.values.insert(mul.value(), value);
+                if let Some(value) = self.values.get(value) {
+                    self.values.add(mul.value(), value);
                 }
             }
 
@@ -194,9 +277,8 @@ impl Pass for ConstFolding {
         // Note: We only propagate **invariant** inputs into the loop, propagating
         //       variant inputs requires dataflow information
         for (input, param) in theta.invariant_input_pairs() {
-            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
-                let replaced = visitor.values.insert(param.output(), constant);
-                debug_assert!(replaced.is_none());
+            if let Some(constant) = self.values.get(graph.input_source(input)) {
+                visitor.values.add(param.output(), constant);
             }
         }
 
@@ -225,9 +307,8 @@ impl Pass for ConstFolding {
             );
 
             let are_equal = graph.bool(lhs == rhs);
-            self.values
-                .insert(are_equal.value(), Const::Bool(lhs == rhs));
-            self.values.remove(&eq.value());
+            self.values.add(are_equal.value(), Const::Bool(lhs == rhs));
+            self.values.remove(eq.value());
 
             graph.rewire_dependents(eq.value(), are_equal.value());
 
@@ -243,8 +324,8 @@ impl Pass for ConstFolding {
             );
 
             let true_val = graph.bool(true);
-            self.values.insert(true_val.value(), Const::Bool(true));
-            self.values.remove(&eq.value());
+            self.values.add(true_val.value(), Const::Bool(true));
+            self.values.remove(eq.value());
 
             graph.rewire_dependents(eq.value(), true_val.value());
 
@@ -256,12 +337,12 @@ impl Pass for ConstFolding {
         let (_, output, edge) = graph.get_input(not.input());
         debug_assert_eq!(edge, EdgeKind::Value);
 
-        if let Some(value) = self.values.get(&output).and_then(Const::as_bool) {
+        if let Some(value) = self.values.bool(output) {
             tracing::debug!("constant folding 'not {}' to '{}'", value, !value);
 
             let inverted = graph.bool(!value);
-            self.values.insert(inverted.value(), Const::Bool(!value));
-            self.values.remove(&not.value());
+            self.values.add(inverted.value(), Const::Bool(!value));
+            self.values.remove(not.value());
 
             graph.rewire_dependents(not.value(), inverted.value());
 
@@ -273,16 +354,16 @@ impl Pass for ConstFolding {
         let (_, output, edge) = graph.get_input(neg.input());
         debug_assert_eq!(edge, EdgeKind::Value);
 
-        if let Some(value) = self.values.get(&output) {
+        if let Some(value) = self.values.get(output) {
             tracing::debug!("constant folding 'neg {}' to '{}'", value, !value);
 
             let inverted = match -value {
                 Const::Int(int) => graph.int(int).value(),
                 // FIXME: Do we need a byte node?
-                Const::U8(byte) => graph.int(byte as i32).value(),
+                Const::U8(byte) => graph.int(byte as u32).value(),
                 Const::Bool(bool) => graph.bool(bool).value(),
             };
-            self.values.remove(&neg.value());
+            self.values.remove(neg.value());
 
             graph.rewire_dependents(neg.value(), inverted);
 
@@ -301,18 +382,12 @@ impl Pass for ConstFolding {
         {
             let (_, output, _) = graph.get_input(input);
 
-            if let Some(constant) = self.values.get(&output).copied() {
+            if let Some(constant) = self.values.get(output) {
                 let true_param = gamma.true_branch().to_node::<InputParam>(truthy_param);
-                truthy_visitor
-                    .values
-                    .insert(true_param.output(), constant)
-                    .debug_unwrap_none();
+                truthy_visitor.values.add(true_param.output(), constant);
 
                 let false_param = gamma.false_branch().to_node::<InputParam>(falsy_param);
-                falsy_visitor
-                    .values
-                    .insert(false_param.output(), constant)
-                    .debug_unwrap_none();
+                falsy_visitor.values.add(false_param.output(), constant);
             }
         }
 
@@ -320,35 +395,29 @@ impl Pass for ConstFolding {
         changed |= falsy_visitor.visit_graph(gamma.false_mut());
 
         for (&port, &param) in gamma.outputs().iter().zip(gamma.output_params()) {
-            let true_output = gamma
-                .true_branch()
-                .get_input(
-                    gamma
-                        .true_branch()
-                        .get_node(param[0])
-                        .to_output_param()
-                        .input(),
-                )
-                .1;
+            let true_output = gamma.true_branch().input_source(
+                gamma
+                    .true_branch()
+                    .get_node(param[0])
+                    .to_output_param()
+                    .input(),
+            );
 
-            let false_output = gamma
-                .false_branch()
-                .get_input(
-                    gamma
-                        .false_branch()
-                        .get_node(param[1])
-                        .to_output_param()
-                        .input(),
-                )
-                .1;
+            let false_output = gamma.false_branch().input_source(
+                gamma
+                    .false_branch()
+                    .get_node(param[1])
+                    .to_output_param()
+                    .input(),
+            );
 
             if let (Some(truthy), Some(falsy)) = (
-                truthy_visitor.values.get(&true_output).cloned(),
-                falsy_visitor.values.get(&false_output).cloned(),
+                truthy_visitor.values.get(true_output),
+                falsy_visitor.values.get(false_output),
             ) {
                 if truthy == falsy {
                     tracing::trace!("propagating {:?} out of gamma node", truthy);
-                    self.values.insert(port, truthy);
+                    self.values.add(port, truthy);
                 } else {
                     tracing::debug!(
                         "failed to propagate value out of gamma node, branches disagree ({:?} vs. {:?})",
@@ -406,8 +475,8 @@ test_opts! {
     output = [245],
     |graph, effect| {
         let lhs = graph.int(10);
-        let rhs = graph.int(-20);
-        let sum = graph.add(lhs.value(), rhs.value());
+        let rhs = graph.int(20);
+        let sum = graph.sub(lhs.value(), rhs.value());
 
         graph.output(sum.value(), effect).output_effect()
     },

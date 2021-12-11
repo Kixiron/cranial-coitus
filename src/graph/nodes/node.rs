@@ -4,16 +4,17 @@ use crate::graph::{
         ops::Mul,
     },
     Add, Bool, EdgeDescriptor, End, Eq, Gamma, Input, InputParam, InputPort, Int, Load, Neg,
-    NodeExt, NodeId, Not, Output, OutputParam, OutputPort, Start, Store, Theta,
+    NodeExt, NodeId, Not, Output, OutputParam, OutputPort, Start, Store, Sub, Theta,
 };
 use tinyvec::TinyVec;
 
 // TODO: derive_more?
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
-    Int(Int, i32),
+    Int(Int, u32),
     Bool(Bool, bool),
     Add(Add),
+    Sub(Sub),
     Mul(Mul),
     Load(Load),
     Store(Store),
@@ -36,6 +37,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.node(),
             Self::Bool(bool, _) => bool.node(),
             Self::Add(add) => add.node(),
+            Self::Sub(sub) => sub.node(),
             Self::Mul(mul) => mul.node(),
             Self::Load(load) => load.node(),
             Self::Store(store) => store.node(),
@@ -58,6 +60,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.input_desc(),
             Self::Bool(bool, _) => bool.input_desc(),
             Self::Add(add) => add.input_desc(),
+            Self::Sub(sub) => sub.input_desc(),
             Self::Mul(mul) => mul.input_desc(),
             Self::Load(load) => load.input_desc(),
             Self::Store(store) => store.input_desc(),
@@ -80,6 +83,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.all_input_ports(),
             Self::Bool(bool, _) => bool.all_input_ports(),
             Self::Add(add) => add.all_input_ports(),
+            Self::Sub(sub) => sub.all_input_ports(),
             Self::Mul(mul) => mul.all_input_ports(),
             Self::Load(load) => load.all_input_ports(),
             Self::Store(store) => store.all_input_ports(),
@@ -102,6 +106,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.all_input_port_kinds(),
             Self::Bool(bool, _) => bool.all_input_port_kinds(),
             Self::Add(add) => add.all_input_port_kinds(),
+            Self::Sub(sub) => sub.all_input_port_kinds(),
             Self::Mul(mul) => mul.all_input_port_kinds(),
             Self::Load(load) => load.all_input_port_kinds(),
             Self::Store(store) => store.all_input_port_kinds(),
@@ -124,6 +129,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.update_input(from, to),
             Self::Bool(bool, _) => bool.update_input(from, to),
             Self::Add(add) => add.update_input(from, to),
+            Self::Sub(sub) => sub.update_input(from, to),
             Self::Mul(mul) => mul.update_input(from, to),
             Self::Load(load) => load.update_input(from, to),
             Self::Store(store) => store.update_input(from, to),
@@ -146,6 +152,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.output_desc(),
             Self::Bool(bool, _) => bool.output_desc(),
             Self::Add(add) => add.output_desc(),
+            Self::Sub(sub) => sub.output_desc(),
             Self::Mul(mul) => mul.output_desc(),
             Self::Load(load) => load.output_desc(),
             Self::Store(store) => store.output_desc(),
@@ -168,6 +175,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.all_output_ports(),
             Self::Bool(bool, _) => bool.all_output_ports(),
             Self::Add(add) => add.all_output_ports(),
+            Self::Sub(sub) => sub.all_output_ports(),
             Self::Mul(mul) => mul.all_output_ports(),
             Self::Load(load) => load.all_output_ports(),
             Self::Store(store) => store.all_output_ports(),
@@ -190,6 +198,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.all_output_port_kinds(),
             Self::Bool(bool, _) => bool.all_output_port_kinds(),
             Self::Add(add) => add.all_output_port_kinds(),
+            Self::Sub(sub) => sub.all_output_port_kinds(),
             Self::Mul(mul) => mul.all_output_port_kinds(),
             Self::Load(load) => load.all_output_port_kinds(),
             Self::Store(store) => store.all_output_port_kinds(),
@@ -212,6 +221,7 @@ impl NodeExt for Node {
             Self::Int(int, _) => int.update_output(from, to),
             Self::Bool(bool, _) => bool.update_output(from, to),
             Self::Add(add) => add.update_output(from, to),
+            Self::Sub(sub) => sub.update_output(from, to),
             Self::Mul(mul) => mul.update_output(from, to),
             Self::Load(load) => load.update_output(from, to),
             Self::Store(store) => store.update_output(from, to),
@@ -252,7 +262,7 @@ impl Node {
         matches!(self, Self::Gamma(..))
     }
 
-    pub const fn as_int(&self) -> Option<(Int, i32)> {
+    pub const fn as_int(&self) -> Option<(Int, u32)> {
         if let Self::Int(int, val) = *self {
             Some((int, val))
         } else {
@@ -306,7 +316,7 @@ impl Node {
 
     #[track_caller]
     #[allow(dead_code)]
-    pub fn to_int_value(&self) -> i32 {
+    pub fn to_int_value(&self) -> u32 {
         if let Self::Int(_, int) = *self {
             int
         } else {
@@ -451,6 +461,7 @@ macro_rules! node_variants {
 
 node_variants! {
     Add,
+    Sub,
     Mul,
     Load,
     Store,

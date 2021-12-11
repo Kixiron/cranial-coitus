@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Add, Bool, Eq, Int, OutputPort, Rvsdg},
+    graph::{Add, Bool, Eq, Int, Mul, OutputPort, Rvsdg},
     passes::Pass,
 };
 use std::collections::BTreeSet;
@@ -44,7 +44,7 @@ impl Pass for Canonicalize {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _value: i32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _value: u32) {
         self.constants.insert(int.value());
     }
 
@@ -70,6 +70,32 @@ impl Pass for Canonicalize {
 
             graph.add_value_edge(rhs_src, add.lhs());
             graph.add_value_edge(lhs_src, add.rhs());
+
+            self.canonicalizations += 1;
+            self.changed();
+        }
+    }
+
+    // Note: We can't canonicalize subtraction
+
+    fn visit_mul(&mut self, graph: &mut Rvsdg, mul: Mul) {
+        let (lhs_src, rhs_src) = (graph.input_source(mul.lhs()), graph.input_source(mul.rhs()));
+
+        if self.constants.contains(&lhs_src) && !self.constants.contains(&rhs_src) {
+            tracing::debug!(
+                ?mul,
+                ?lhs_src,
+                ?rhs_src,
+                "swapping mul inputs {} and {}",
+                mul.lhs(),
+                mul.rhs(),
+            );
+
+            graph.remove_input_edges(mul.lhs());
+            graph.remove_input_edges(mul.rhs());
+
+            graph.add_value_edge(rhs_src, mul.lhs());
+            graph.add_value_edge(lhs_src, mul.rhs());
 
             self.canonicalizations += 1;
             self.changed();

@@ -4,7 +4,7 @@ use crate::{
         Theta,
     },
     ir::Const,
-    passes::Pass,
+    passes::{utils::BinOp, Pass},
     utils::{AssertNone, HashMap, HashSet},
 };
 
@@ -12,6 +12,7 @@ use crate::{
 // TODO: Equality is also associative but it's unclear whether or not
 //       that situation can actually arise within brainfuck programs
 pub struct AssociativeOps {
+    // TODO: ConstantStore
     values: HashMap<OutputPort, Const>,
     to_be_removed: HashSet<NodeId>,
     changed: bool,
@@ -30,12 +31,12 @@ impl AssociativeOps {
         self.changed = true;
     }
 
-    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (InputPort, Option<i32>) {
+    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (InputPort, Option<u32>) {
         let (operand, output, _) = graph.get_input(input);
         let value = operand
             .as_int()
             .map(|(_, value)| value)
-            .or_else(|| self.values.get(&output).and_then(Const::convert_to_i32));
+            .or_else(|| self.values.get(&output).and_then(Const::convert_to_u32));
 
         (input, value)
     }
@@ -151,7 +152,7 @@ impl Pass for AssociativeOps {
         self.fold_associative_operation(graph, mul);
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
         let replaced = self.values.insert(int.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
     }
@@ -218,67 +219,6 @@ impl Pass for AssociativeOps {
 impl Default for AssociativeOps {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub trait BinOp {
-    fn name() -> &'static str;
-    fn symbol() -> &'static str;
-    fn combine(lhs: i32, rhs: i32) -> i32;
-    fn node(&self) -> NodeId;
-    fn lhs(&self) -> InputPort;
-    fn rhs(&self) -> InputPort;
-}
-
-impl BinOp for Add {
-    fn name() -> &'static str {
-        "add"
-    }
-
-    fn symbol() -> &'static str {
-        "+"
-    }
-
-    fn combine(lhs: i32, rhs: i32) -> i32 {
-        lhs + rhs
-    }
-
-    fn node(&self) -> NodeId {
-        NodeExt::node(self)
-    }
-
-    fn lhs(&self) -> InputPort {
-        Add::lhs(self)
-    }
-
-    fn rhs(&self) -> InputPort {
-        Add::rhs(self)
-    }
-}
-
-impl BinOp for Mul {
-    fn name() -> &'static str {
-        "mul"
-    }
-
-    fn symbol() -> &'static str {
-        "*"
-    }
-
-    fn combine(lhs: i32, rhs: i32) -> i32 {
-        lhs * rhs
-    }
-
-    fn node(&self) -> NodeId {
-        NodeExt::node(self)
-    }
-
-    fn lhs(&self) -> InputPort {
-        Mul::lhs(self)
-    }
-
-    fn rhs(&self) -> InputPort {
-        Mul::rhs(self)
     }
 }
 

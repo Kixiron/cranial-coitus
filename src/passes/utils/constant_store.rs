@@ -29,16 +29,24 @@ impl ConstantStore {
         debug_assert!(replaced == None || replaced == Some(constant));
     }
 
+    pub fn remove(&mut self, source: OutputPort) {
+        self.values.remove(&source);
+    }
+
     pub fn get(&self, source: OutputPort) -> Option<Const> {
         self.values.get(&source).copied()
     }
 
-    pub fn i32(&self, source: OutputPort) -> Option<i32> {
-        self.values.get(&source).and_then(Const::convert_to_i32)
+    pub fn u32(&self, source: OutputPort) -> Option<u32> {
+        self.values.get(&source).and_then(Const::convert_to_u32)
     }
 
     pub fn u8(&self, source: OutputPort) -> Option<u8> {
         self.values.get(&source).and_then(Const::convert_to_u8)
+    }
+
+    pub fn bool(&self, source: OutputPort) -> Option<bool> {
+        self.values.get(&source).and_then(Const::as_bool)
     }
 
     pub fn theta_invariant_inputs_into(

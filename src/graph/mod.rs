@@ -9,7 +9,7 @@ mod subgraph;
 pub use edge::{EdgeCount, EdgeDescriptor, EdgeKind};
 pub use nodes::{
     Add, Bool, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul, Neg, Node, NodeExt,
-    NodeId, Not, Output, OutputParam, Start, Store, Theta, ThetaData,
+    NodeId, Not, Output, OutputParam, Start, Store, Sub, Theta, ThetaData,
 };
 pub use ports::{InputPort, OutputPort, Port, PortData, PortId, PortKind};
 pub use subgraph::Subgraph;
@@ -542,6 +542,14 @@ impl Rvsdg {
     {
         self.get_output(source)
             .and_then(|(node, _, _)| node.try_into().ok())
+    }
+
+    pub fn cast_parent<P, T>(&self, port: P) -> Option<&T>
+    where
+        P: Port,
+        for<'a> &'a Node: TryInto<&'a T>,
+    {
+        self.cast_node(self.port_parent(port))
     }
 
     #[inline]

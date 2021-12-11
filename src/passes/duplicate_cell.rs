@@ -1,13 +1,16 @@
 use crate::{
-    graph::{Gamma, InputParam, InputPort, Int, Node, NodeExt, OutputPort, Rvsdg, Start, Theta},
+    graph::{
+        Add, Gamma, InputParam, InputPort, Int, Node, NodeExt, OutputPort, Rvsdg, Start, Sub, Theta,
+    },
     ir::Const,
-    passes::Pass,
+    passes::{utils::BinOp, Pass},
     utils::{AssertNone, HashMap},
 };
 use tinyvec::{tiny_vec, TinyVec};
 
 pub struct DuplicateCell {
     changed: bool,
+    // TODO: Use ConstantStore
     values: HashMap<OutputPort, Const>,
     duplicates_removed: usize,
 }
@@ -75,7 +78,7 @@ impl DuplicateCell {
             visitor
                 .values
                 .get(&output)
-                .and_then(Const::convert_to_i32)
+                .and_then(Const::convert_to_u32)
                 .map(|int| graph.int(int).value())
                 .or_else(|| {
                     theta
@@ -90,7 +93,7 @@ impl DuplicateCell {
                         .and_then(|output| {
                             self.values
                                 .get(&output)
-                                .and_then(Const::convert_to_i32)
+                                .and_then(Const::convert_to_u32)
                                 .map(|int| graph.int(int).value())
                                 .or_else(|| {
                                     gamma.inputs().iter().zip(gamma.input_params()).find_map(
@@ -262,7 +265,7 @@ impl DuplicateCell {
         // d1_inc := add d1_val, int 1
         // store d1_ptr, d1_inc
         // ```
-        let (d1_ptr, _, d1_effect) = self.load_add_store(graph, values, start.effect(), 1)?;
+        let (d1_ptr, _, d1_effect) = self.load_op_store::<Add>(graph, values, start.effect(), 1)?;
 
         // Get the load-add-store sequence of the second duplicate cell
         // ```
@@ -270,15 +273,16 @@ impl DuplicateCell {
         // d2_inc := add d2_val, int 1
         // store d1_ptr, d2_inc
         // ```
-        let (d2_ptr, _, d2_effect) = self.load_add_store(graph, values, d1_effect, 1)?;
+        let (d2_ptr, _, d2_effect) = self.load_op_store::<Add>(graph, values, d1_effect, 1)?;
 
-        // Get the load-add-store sequence of the source cell
+        // Get the load-sub-store sequence of the source cell
         // ```
         // src_val := load src_ptr
-        // src_dec := add src_val, int -1
+        // src_dec := sub src_val, int 1
         // store src_ptr, src_src_dec
         // ```
-        let (src_ptr, src_dec, src_effect) = self.load_add_store(graph, values, d2_effect, -1)?;
+        let (src_ptr, src_dec, src_effect) =
+            self.load_op_store::<Sub>(graph, values, d2_effect, 1)?;
 
         // Get the end node of the theta body
         let end = theta.end_node();
@@ -320,13 +324,17 @@ impl DuplicateCell {
     /// Matches a load-add-store motif, returns the `OutputPort` of the
     /// target pointer, the `OutputPort` of the add's value and the
     /// `OutputPort` of the last effect
-    fn load_add_store(
+    fn load_op_store<T>(
         &self,
         graph: &Rvsdg,
         values: &HashMap<OutputPort, Const>,
         last_effect: OutputPort,
-        add_value: i32,
-    ) -> Option<(OutputPort, OutputPort, OutputPort)> {
+        add_value: u32,
+    ) -> Option<(OutputPort, OutputPort, OutputPort)>
+    where
+        T: BinOp,
+        for<'a> &'a Node: TryInto<&'a T>,
+    {
         // Get the load
         // `val := load ptr`
         let load = graph.get_output(last_effect)?.0.as_load()?;
@@ -343,7 +351,7 @@ impl DuplicateCell {
 
         // Get the add
         // `val_add := add val, int 1`
-        let val_add = graph.get_input(store.value()).0.as_add()?;
+        let val_add = graph.cast_input_source::<T>(store.value())?;
 
         // Make sure that the add is in the proper form, one side should be
         // `add_value` and the other should be the loaded value
@@ -366,16 +374,16 @@ impl DuplicateCell {
         lhs: InputPort,
         rhs: InputPort,
         operand: OutputPort,
-        constant: i32,
+        constant: u32,
     ) -> Option<()> {
         let (lhs_operand, rhs_operand) = (graph.input_source(lhs), graph.input_source(rhs));
 
         if lhs_operand == operand {
-            if values.get(&rhs_operand)?.convert_to_i32()? != constant {
+            if values.get(&rhs_operand)?.convert_to_u32()? != constant {
                 return None;
             }
         } else if rhs_operand == operand {
-            if values.get(&lhs_operand)?.convert_to_i32()? != constant {
+            if values.get(&lhs_operand)?.convert_to_u32()? != constant {
                 return None;
             }
         } else {
@@ -406,7 +414,7 @@ impl Pass for DuplicateCell {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
         let replaced = self.values.insert(int.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
     }

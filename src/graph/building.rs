@@ -2,7 +2,7 @@ use crate::{
     graph::{
         nodes::{GammaStub, ThetaEffects, ThetaStub},
         Add, Bool, EdgeKind, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul, Neg,
-        Node, Not, Output, OutputParam, OutputPort, Rvsdg, Start, Store, Subgraph, Theta,
+        Node, Not, Output, OutputParam, OutputPort, Rvsdg, Start, Store, Sub, Subgraph, Theta,
         ThetaData,
     },
     utils::AssertNone,
@@ -43,7 +43,7 @@ impl Rvsdg {
         end
     }
 
-    pub fn int(&mut self, value: i32) -> Int {
+    pub fn int(&mut self, value: u32) -> Int {
         let int_id = self.next_node();
 
         let output = self.output_port(int_id, EdgeKind::Value);
@@ -90,6 +90,29 @@ impl Rvsdg {
             .debug_unwrap_none();
 
         add
+    }
+
+    #[track_caller]
+    pub fn sub(&mut self, lhs: OutputPort, rhs: OutputPort) -> Sub {
+        self.assert_value_port(lhs);
+        self.assert_value_port(rhs);
+
+        let sub_id = self.next_node();
+
+        let lhs_port = self.input_port(sub_id, EdgeKind::Value);
+        self.add_value_edge(lhs, lhs_port);
+
+        let rhs_port = self.input_port(sub_id, EdgeKind::Value);
+        self.add_value_edge(rhs, rhs_port);
+
+        let output = self.output_port(sub_id, EdgeKind::Value);
+
+        let sub = Sub::new(sub_id, lhs_port, rhs_port, output);
+        self.nodes
+            .insert(sub_id, Node::Sub(sub))
+            .debug_unwrap_none();
+
+        sub
     }
 
     #[track_caller]

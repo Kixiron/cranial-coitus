@@ -14,6 +14,7 @@ use std::fmt::{self, Debug, Display};
 pub struct Dataflow {
     changed: bool,
     facts: HashMap<OutputPort, Domain>,
+    // TODO: Use ConstantStore
     constants: HashMap<OutputPort, Const>,
     tape: Vec<(Domain, Option<Const>)>,
 }
@@ -74,7 +75,7 @@ impl Pass for Dataflow {
         self.constants.clear();
 
         for cell in &mut self.tape {
-            *cell = (Domain::exact_u8(0), Some(0.into()));
+            *cell = (Domain::exact_u8(0), Some(0u32.into()));
         }
     }
 
@@ -359,11 +360,11 @@ impl Pass for Dataflow {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
         self.facts
             .entry(int.value())
-            .and_modify(|facts| *facts = Domain::exact_i32(value))
-            .or_insert_with(|| Domain::exact_i32(value));
+            .and_modify(|facts| *facts = Domain::exact_u32(value))
+            .or_insert_with(|| Domain::exact_u32(value));
     }
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
@@ -426,13 +427,13 @@ impl Pass for Dataflow {
         if let Some(ptr) = self
             .constants
             .get(&graph.input_source(store.ptr()))
-            .and_then(Const::convert_to_i32)
+            .and_then(Const::convert_to_u32)
         {
             let value_src = graph.input_source(store.value());
             let value_facts = self.facts.get(&value_src).cloned();
             let value_consts = self.constants.get(&value_src).cloned();
 
-            let ptr = ptr.rem_euclid(self.tape.len() as i32) as usize;
+            let ptr = ptr.rem_euclid(self.tape.len() as u32) as usize;
             self.tape[ptr] = (
                 value_facts.unwrap_or_else(Domain::unbounded_u8),
                 value_consts,
@@ -451,9 +452,9 @@ impl Pass for Dataflow {
         if let Some(ptr) = self
             .constants
             .get(&graph.input_source(load.ptr()))
-            .and_then(Const::convert_to_i32)
+            .and_then(Const::convert_to_u32)
         {
-            let ptr = ptr.rem_euclid(self.tape.len() as i32) as usize;
+            let ptr = ptr.rem_euclid(self.tape.len() as u32) as usize;
             let (loaded_facts, consts) = self.tape[ptr].clone();
             facts = loaded_facts;
 
@@ -474,7 +475,7 @@ impl Pass for Dataflow {
 
 #[derive(Clone, PartialEq)]
 pub struct Domain {
-    values: Ranges<i32>,
+    values: Ranges<u32>,
 }
 
 impl Domain {
@@ -486,11 +487,11 @@ impl Domain {
 
     pub fn unbounded_u8() -> Self {
         Self {
-            values: Ranges::from(u8::MIN as i32..=u8::MAX as i32),
+            values: Ranges::from(u8::MIN as u32..=u8::MAX as u32),
         }
     }
 
-    pub fn exact_i32(value: i32) -> Self {
+    pub fn exact_u32(value: u32) -> Self {
         Self {
             values: Ranges::from(value..=value),
         }
@@ -498,7 +499,7 @@ impl Domain {
 
     pub fn exact_u8(value: u8) -> Self {
         Self {
-            values: Ranges::from(value as i32..=value as i32),
+            values: Ranges::from(value as u32..=value as u32),
         }
     }
 
@@ -508,7 +509,7 @@ impl Domain {
         }
     }
 
-    pub fn remove(&mut self, value: i32) {
+    pub fn remove(&mut self, value: u32) {
         self.values.remove(value);
     }
 
@@ -516,7 +517,7 @@ impl Domain {
         self.exact_value() == Some(0)
     }
 
-    pub fn exact_value(&self) -> Option<i32> {
+    pub fn exact_value(&self) -> Option<u32> {
         if self.values.len() == 1 {
             let range = self.values.as_slice()[0];
 

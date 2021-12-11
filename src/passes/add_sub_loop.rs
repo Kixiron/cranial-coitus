@@ -1,7 +1,7 @@
 use crate::{
     graph::{
         Add, End, Eq, Gamma, InputParam, Int, Load, Node, NodeExt, Not, OutputPort, Rvsdg, Store,
-        Theta,
+        Sub, Theta,
     },
     ir::Const,
     passes::Pass,
@@ -45,19 +45,19 @@ impl AddSubLoop {
     /// //       and/or use `psi` nodes to make the state disjoint
     /// do {
     ///   // Decrement the counter
-    ///   _counter_val := load _counter_ptr
-    ///   _dec_counter := add _counter_val, int -1
-    ///   store _counter_ptr, _counter_lhs
+    ///   counter_val := load counter_ptr
+    ///   dec_counter := sub counter_val, int 1
+    ///   store counter_ptr, counter_lhs
     ///
     ///   // Increment the accumulator
-    ///   _acc_val := load _acc_ptr
-    ///   _inc_acc := add _acc_val, int 1
-    ///   store _acc_ptr, _inc_acc
+    ///   acc_val := load acc_ptr
+    ///   inc_acc := add acc_val, int 1
+    ///   store acc_ptr, inc_acc
     ///
     ///   // Compare the counter's value to zero
-    ///   _counter_is_zero := eq _dec_counter, int 0
-    ///   _counter_not_zero := not _counter_is_zero
-    /// } while { _counter_not_zero }
+    ///   counter_is_zero := eq dec_counter, int 0
+    ///   counter_not_zero := not counter_is_zero
+    /// } while { counter_not_zero }
     /// ```
     ///
     /// Subtraction:
@@ -67,38 +67,37 @@ impl AddSubLoop {
     /// //       and/or use `psi` nodes to make the state disjoint
     /// do {
     ///   // Decrement the counter
-    ///   _counter_val := load _counter_ptr
-    ///   _dec_counter := add _counter_val, int -1
-    ///   store _counter_ptr, _counter_lhs
+    ///   counter_val := load counter_ptr
+    ///   dec_counter := sub counter_val, int 1
+    ///   store counter_ptr, counter_lhs
     ///
     ///   // Decrement the accumulator
-    ///   _acc_val := load _acc_ptr
-    ///   _inc_dec := add _acc_val, int -1
-    ///   store _acc_ptr, _inc_dec
+    ///   acc_val := load _acc_ptr
+    ///   dec_acc := sub acc_val, int 1
+    ///   store acc_ptr, dec_acc
     ///
     ///   // Compare the counter's value to zero
-    ///   _counter_is_zero := eq _dec_counter, int 0
-    ///   _counter_not_zero := not _counter_is_zero
-    /// } while { _counter_not_zero }
+    ///   counter_is_zero := eq dec_counter, int 0
+    ///   counter_not_zero := not counter_is_zero
+    /// } while { counter_not_zero }
     /// ```
     ///
     /// After conversion, these should be like this:
     /// ```
-    /// _counter_val := load _counter_ptr
-    /// _acc_val := load _acc_ptr
+    /// counter_val := load counter_ptr
+    /// acc_val := load acc_ptr
     ///
     /// // Sum
-    /// _sum := add _counter_val, _acc_val
+    /// sum := add counter_val, acc_val
     ///
     /// // Difference
-    /// _neg_acc = neg _counter_val
-    /// _diff := sub  _counter_val, _neg_acc
+    /// diff := sub counter_val, neg_acc
     ///
     /// // Store the sum or difference to the accumulator cell
-    /// store _acc_ptr, {_sum, _diff}
+    /// store acc_ptr, {sum, diff}
     ///
     /// // Zero out the counter cell
-    /// store _counter_ptr, 0
+    /// store counter_ptr, 0
     /// ```
     // FIXME: Technically we need to match 4 motifs: These two can be
     //        reversed to turn `[->+<]` (add) and `[-<->]` (sub) into
@@ -114,19 +113,19 @@ impl AddSubLoop {
         let is = |src, expected| {
             values
                 .get(&src)
-                .and_then(|val| val.convert_to_i32())
+                .and_then(|val| val.convert_to_u32())
                 .map_or(false, |val| val == expected)
         };
 
         let start = theta.start_node();
 
         // The initial load from the lhs ptr
-        // _counter_val := load _counter_ptr
+        // counter_val := load counter_ptr
         let load_counter = graph.cast_target::<Load>(start.effect())?;
         let counter_ptr = graph.input_source(load_counter.ptr());
 
         // Stores the sum/diff to the lhs ptr
-        // store _counter_ptr, _counter_lhs
+        // store counter_ptr, counter_lhs
         let store_dec_counter = graph.cast_target::<Store>(load_counter.output_effect())?;
 
         // If they store to different places this isn't a candidate
@@ -135,29 +134,29 @@ impl AddSubLoop {
         }
 
         // Decrements the lhs cell's value
-        // _dec_counter := add _counter_val, int -1
-        let dec_counter = graph.cast_source::<Add>(store_dec_counter.value())?;
+        // dec_counter := sub counter_val, int 1
+        let dec_counter = graph.cast_source::<Sub>(store_dec_counter.value())?;
 
-        let (add_lhs_src, add_rhs_src) = (
-            graph.get_input(dec_counter.lhs()).1,
-            graph.get_input(dec_counter.rhs()).1,
+        let (dec_lhs_src, add_rhs_src) = (
+            graph.input_source(dec_counter.lhs()),
+            graph.input_source(dec_counter.rhs()),
         );
-        let (add_lhs_neg_one, add_rhs_neg_one) = (is(add_lhs_src, -1), is(add_rhs_src, -1));
+        let (add_lhs_neg_one, add_rhs_neg_one) = (is(dec_lhs_src, 1), is(add_rhs_src, 1));
 
-        // If the add isn't `add _loaded_lhs, -1` this isn't a candidate
-        if !((add_lhs_src == load_counter.output_value() && add_rhs_neg_one)
+        // If the sub isn't `sub loaded_lhs, 1` this isn't a candidate
+        if !((dec_lhs_src == load_counter.output_value() && add_rhs_neg_one)
             || (add_lhs_neg_one && add_rhs_src == load_counter.output_value()))
         {
             return None;
         }
 
         // The load of the rhs
-        // _rhs_acc := load _acc_ptr
+        // rhs_acc := load acc_ptr
         let load_acc = graph.cast_target::<Load>(store_dec_counter.output_effect())?;
         let acc_ptr = graph.input_source(load_acc.ptr());
 
         // Stores the decremented or incremented value to the rhs cell
-        // store _acc_ptr, {_inc_acc, _dec_acc}
+        // store acc_ptr, {inc_acc, dec_acc}
         let store_inc_dec_acc = graph.cast_target::<Store>(load_acc.output_effect())?;
 
         // If the pointer isn't the rhs pointer, this isn't a candidate
@@ -169,30 +168,32 @@ impl AddSubLoop {
         let _end = graph.cast_target::<End>(store_inc_dec_acc.output_effect())?;
 
         // Either incrementing or decrementing the
-        // _inc_acc := add _acc_val, int 1
-        // _inc_dec := add _acc_val, int -1
-        let inc_dec_acc = graph.cast_source::<Add>(store_inc_dec_acc.value())?;
+        // inc_acc := add acc_val, int 1
+        // dec_acc := sub acc_val, int 1
+        let candidate = if let Some(add) = graph.cast_source::<Add>(store_inc_dec_acc.value()) {
+            let (lhs, rhs) = (graph.input_source(add.lhs()), graph.input_source(add.rhs()));
+            let (lhs_one, rhs_one) = (is(lhs, 1), is(rhs, 1));
 
-        let (add_lhs_src, add_rhs_src) = (
-            graph.get_input(inc_dec_acc.lhs()).1,
-            graph.get_input(inc_dec_acc.rhs()).1,
-        );
-        let (add_lhs_one, add_rhs_one) = (is(add_lhs_src, 1), is(add_rhs_src, 1));
-        let (add_lhs_neg_one, add_rhs_neg_one) = (is(add_lhs_src, -1), is(add_rhs_src, -1));
+            // inc_acc := add acc_val, int 1
+            if (lhs == load_acc.output_value() && rhs_one)
+                || (lhs_one && rhs == load_acc.output_value())
+            {
+                Candidate::Add
+            } else {
+                return None;
+            }
+        } else if let Some(sub) = graph.cast_source::<Sub>(store_inc_dec_acc.value()) {
+            let (lhs, rhs) = (graph.input_source(sub.lhs()), graph.input_source(sub.rhs()));
+            let (lhs_one, rhs_one) = (is(lhs, 1), is(rhs, 1));
 
-        // _inc_acc := add _acc_val, int 1
-        let candidate = if (add_lhs_src == load_acc.output_value() && add_rhs_one)
-            || (add_lhs_one && add_rhs_src == load_acc.output_value())
-        {
-            Candidate::Add
-
-        // _inc_dec := add _acc_val, int -1
-        } else if (add_lhs_src == load_acc.output_value() && add_rhs_neg_one)
-            || (add_lhs_neg_one && add_rhs_src == load_acc.output_value())
-        {
-            Candidate::Sub
-
-        // Otherwise this isn't a candidate
+            // dec_acc := sub acc_val, int 1
+            if (lhs == load_acc.output_value() && rhs_one)
+                || (lhs_one && rhs == load_acc.output_value())
+            {
+                Candidate::Sub
+            } else {
+                return None;
+            }
         } else {
             return None;
         };
@@ -200,12 +201,12 @@ impl AddSubLoop {
         // The output param that takes the theta's exit condition
         let cond_output = theta.condition();
 
-        // Invert the `_dec_counter == 0` to make it `_dec_counter != 0`
-        // _counter_not_zero := not _counter_is_zero
+        // Invert the `dec_counter == 0` to make it `dec_counter != 0`
+        // counter_not_zero := not counter_is_zero
         let cond_neg = graph.cast_source::<Not>(cond_output.input())?;
 
         // The check if the counter's decremented value is zero
-        // _counter_is_zero := eq _dec_counter, int 0
+        // counter_is_zero := eq dec_counter, int 0
         let cond_is_zero = graph.cast_source::<Eq>(cond_neg.input())?;
 
         let (eq_lhs_src, eq_rhs_src) = (
@@ -214,7 +215,7 @@ impl AddSubLoop {
         );
         let (eq_lhs_zero, eq_rhs_zero) = (is(eq_lhs_src, 0), is(eq_rhs_src, 0));
 
-        // If the eq isn't `eq _dec_counter, 0` this isn't a candidate
+        // If the eq isn't `eq dec_counter, 0` this isn't a candidate
         if !((eq_lhs_src == dec_counter.value() && eq_rhs_zero)
             || (eq_lhs_zero && eq_rhs_src == dec_counter.value()))
         {
@@ -247,7 +248,7 @@ impl Pass for AddSubLoop {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
         let replaced = self.values.insert(int.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
     }
@@ -357,14 +358,11 @@ impl Pass for AddSubLoop {
                         .value()
                 }
 
-                // Negate the accumulator value and then add the negated
-                // accumulator and counter values together
+                // Subtract the accumulator from the counter
                 Candidate::Sub => {
                     self.sub_loops_removed += 1;
-
-                    let neg_acc = graph.neg(acc_val.output_value());
                     graph
-                        .add(counter_val.output_value(), neg_acc.value())
+                        .sub(counter_val.output_value(), acc_val.output_value())
                         .value()
                 }
             };

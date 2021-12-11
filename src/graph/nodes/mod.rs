@@ -16,7 +16,7 @@ pub use memory::{Load, Store};
 pub use node::Node;
 pub use node_ext::NodeExt;
 pub use node_id::NodeId;
-pub use ops::{Add, Eq, Mul, Neg, Not};
+pub use ops::{Add, Eq, Mul, Neg, Not, Sub};
 pub use theta::{Theta, ThetaData, ThetaStub};
 pub use values::{Bool, Int};
 

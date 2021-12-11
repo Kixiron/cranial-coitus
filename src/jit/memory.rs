@@ -33,6 +33,7 @@ impl CodeBuffer {
             anyhow::bail!("tried to allocate a code buffer of 0 bytes");
         }
 
+        // FIXME: This isn't aligning things properly?
         let padding = length % PAGE_SIZE;
         let capacity = length + padding;
         tracing::debug!(

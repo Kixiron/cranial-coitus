@@ -1,6 +1,7 @@
 use crate::{
     graph::{
-        Bool, Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg, Start, Store, Theta,
+        Add, Bool, Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg, Start, Store,
+        Theta,
     },
     passes::{utils::ConstantStore, Pass},
     utils::HashMap,
@@ -68,7 +69,7 @@ impl ShiftCell {
         let mut get_gamma_input = |output| {
             visitor
                 .constants
-                .i32(output)
+                .u32(output)
                 .map(|int| graph.int(int).value())
                 .or_else(|| {
                     theta
@@ -82,7 +83,7 @@ impl ShiftCell {
                         })
                         .and_then(|output| {
                             self.constants
-                                .i32(output)
+                                .u32(output)
                                 .map(|int| graph.int(int).value())
                                 .or_else(|| {
                                     gamma.inputs().iter().zip(gamma.input_params()).find_map(
@@ -244,7 +245,7 @@ impl ShiftCell {
         );
 
         // Get the offset being applied by figuring out which side is the loaded value
-        let offset_one = values.i32(if lhs_operand == load_one.output_value() {
+        let offset_one = values.u32(if lhs_operand == load_one.output_value() {
             rhs_operand
         } else if rhs_operand == load_one.output_value() {
             lhs_operand
@@ -267,14 +268,14 @@ impl ShiftCell {
 
         // Get the stored value, will either be `src_dec := add v60, int -1` or
         // `dest_inc := add dest_val, int 1`
-        let add_two = graph.input_source_node(store_two.value()).as_add()?;
+        let add_two = graph.cast_input_source::<Add>(store_two.value())?;
         let (lhs_operand, rhs_operand) = (
             graph.input_source(add_two.lhs()),
             graph.input_source(add_two.rhs()),
         );
 
         // Get the offset being applied by figuring out which side is the loaded value
-        let offset_two = values.i32(if lhs_operand == load_two.output_value() {
+        let offset_two = values.u32(if lhs_operand == load_two.output_value() {
             rhs_operand
         } else if rhs_operand == load_two.output_value() {
             lhs_operand
@@ -284,7 +285,7 @@ impl ShiftCell {
 
         // Make sure that the second store is the last effect in the body
         let end = theta.end_node();
-        let store_two_effect_target = graph.get_output(store_two.output_effect())?.1;
+        let store_two_effect_target = graph.output_dest(store_two.output_effect()).next()?;
         if store_two_effect_target != end.input_effect() {
             return None;
         }
@@ -300,9 +301,10 @@ impl ShiftCell {
         //   isn't the pattern we're looking for so we'll just bail
 
         // See which cell is being incremented and which is decremented
-        let (src_ptr, src_dec, dest_ptr) = if offset_one == 1 && offset_two == -1 {
+        // FIXME: Depends on the relation between the add and sub node, not the operand
+        let (src_ptr, src_dec, dest_ptr) = if offset_one == 1 && offset_two == 1 {
             (load_ptr_two, add_two.value(), load_ptr_one)
-        } else if offset_one == -1 && offset_two == 1 {
+        } else if offset_one == 1 && offset_two == 1 {
             (load_ptr_one, add_one.value(), load_ptr_two)
         } else {
             return None;
@@ -319,7 +321,7 @@ impl ShiftCell {
             graph.input_source(src_eq_zero.lhs()),
             graph.input_source(src_eq_zero.rhs()),
         );
-        let (lhs_const, rhs_const) = (values.i32(lhs_operand), values.i32(rhs_operand));
+        let (lhs_const, rhs_const) = (values.u32(lhs_operand), values.u32(rhs_operand));
 
         // Make sure that one of the operands of the eq is `src_dec` and the other is a zero
         if !((lhs_operand == src_dec && matches!(rhs_const, Some(0)))
@@ -358,7 +360,7 @@ impl Pass for ShiftCell {
         self.constants.add(bool.value(), value);
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: i32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
         self.constants.add(int.value(), value);
     }
 

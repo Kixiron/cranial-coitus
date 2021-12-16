@@ -1,11 +1,13 @@
 use crate::jit::ffi::State;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::{
-    io::Error,
+    io::{self, Error, Write},
     mem::transmute,
     ops::{Deref, DerefMut},
+    panic::{self, AssertUnwindSafe},
     ptr::{self, NonNull},
     slice,
+    time::Instant,
 };
 use winapi::um::{
     handleapi::CloseHandle,
@@ -18,7 +20,7 @@ use winapi::um::{
 // https://devblogs.microsoft.com/oldnewthing/20210510-00/?p=105200
 const PAGE_SIZE: usize = 1024 * 4;
 
-pub(super) struct CodeBuffer {
+pub struct CodeBuffer {
     buffer: NonNull<u8>,
     /// The length of the buffer's valid and executable area
     length: usize,
@@ -205,7 +207,7 @@ impl Drop for CodeBuffer {
 }
 
 #[repr(transparent)]
-pub(super) struct Executable<T>(T);
+pub struct Executable<T>(T);
 
 impl<T> Executable<T> {
     fn new(inner: T) -> Self {
@@ -214,10 +216,46 @@ impl<T> Executable<T> {
 }
 
 impl Executable<CodeBuffer> {
-    pub(super) unsafe fn call(&self, state: *mut State, start: *mut u8, end: *mut u8) -> u8 {
+    pub unsafe fn call(&self, state: *mut State, start: *mut u8, end: *mut u8) -> u8 {
         let func: unsafe extern "win64" fn(*mut State, *mut u8, *const u8) -> u8 =
             transmute(self.0.as_ptr());
 
         func(state, start, end)
+    }
+
+    pub unsafe fn execute(&self, tape: &mut [u8]) -> Result<u8> {
+        let tape_len = tape.len();
+
+        let (stdin, stdout) = (io::stdin(), io::stdout());
+        let mut state = State::new(stdin.lock(), stdout.lock());
+        state
+            .stdout
+            .flush()
+            .context("failed to flush stdout prior to jitted function execution")?;
+
+        let jit_start = Instant::now();
+        let jit_return = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
+            let start = tape.as_mut_ptr();
+            let end = start.add(tape_len);
+
+            self.call(&mut state, start, end)
+        }))
+        .map_err(|err| anyhow::anyhow!("jitted function panicked: {:?}", err));
+        let elapsed = jit_start.elapsed();
+
+        writeln!(&mut state.stdout).context("failed to write newline to stdout")?;
+        state
+            .stdout
+            .flush()
+            .context("failed to flush stdout after jitted function execution")?;
+        drop(state);
+
+        tracing::debug!(
+            "jitted function returned {:?} in {:#?}",
+            jit_return,
+            elapsed,
+        );
+
+        jit_return
     }
 }

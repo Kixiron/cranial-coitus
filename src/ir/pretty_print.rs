@@ -93,3 +93,49 @@ pub trait Pretty {
         D::Doc: Clone,
         A: Clone;
 }
+
+pub mod pretty_utils {
+    use crate::ir::{Pretty, PrettyConfig};
+    use pretty::{DocAllocator, DocBuilder};
+
+    pub fn binary<'a, D, A, L, R>(
+        op: &'static str,
+        lhs: &'a L,
+        rhs: &'a R,
+        allocator: &'a D,
+        config: PrettyConfig,
+    ) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+        L: Pretty,
+        R: Pretty,
+    {
+        allocator
+            .text(op)
+            .append(allocator.space())
+            .append(lhs.pretty(allocator, config))
+            .append(allocator.text(","))
+            .append(allocator.space())
+            .append(rhs.pretty(allocator, config))
+    }
+
+    pub fn unary<'a, D, A, U>(
+        op: &'static str,
+        arg: &'a U,
+        allocator: &'a D,
+        config: PrettyConfig,
+    ) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+        U: Pretty + 'static,
+    {
+        allocator
+            .text(op)
+            .append(allocator.space())
+            .append(arg.pretty(allocator, config))
+    }
+}

@@ -1,9 +1,14 @@
 #[macro_use]
 mod ffi;
+mod basic_block;
+mod block_builder;
+mod cir_to_bb;
+mod coloring;
 mod disassemble;
-mod ilp;
 mod memory;
 mod regalloc;
+
+pub use memory::{CodeBuffer, Executable};
 
 use crate::{
     ir::{
@@ -12,19 +17,12 @@ use crate::{
     },
     jit::{
         ffi::State,
-        memory::CodeBuffer,
         regalloc::{Regalloc, StackSlot},
     },
     utils::AssertNone,
 };
 use iced_x86::code_asm::{CodeAssembler, *};
-use std::{
-    borrow::Cow,
-    collections::BTreeMap,
-    io::{self, Write},
-    panic::{self, AssertUnwindSafe},
-    time::Instant,
-};
+use std::{borrow::Cow, collections::BTreeMap};
 
 type AsmResult<T> = Result<T, IcedError>;
 
@@ -77,14 +75,20 @@ impl Jit {
     }
 
     #[tracing::instrument(skip_all)]
-    pub fn assemble(&mut self, block: &Block) -> AsmResult<String> {
-        self.named_label(self.asm.instructions().len(), ".PROLOGUE");
+    pub fn assemble(&mut self, block: &Block) -> AsmResult<(Executable<CodeBuffer>, String)> {
+        let blocks = cir_to_bb::translate(block);
+        println!(
+            "SSA form:\n{}",
+            blocks.pretty_print(PrettyConfig::minimal()),
+        );
+
+        self.named_label(".PROLOGUE");
         self.prologue()?;
 
-        self.named_label(self.asm.instructions().len(), ".BODY");
+        self.named_label(".BODY");
         self.assemble_block(block)?;
 
-        self.named_label(self.asm.instructions().len(), ".EPILOGUE");
+        self.named_label(".EPILOGUE");
         // Set the return code
         self.asm.mov(rax, RETURN_SUCCESS)?;
         self.epilogue()?;
@@ -93,6 +97,36 @@ impl Jit {
         if self.has_io_functions {
             self.build_io_failure()?;
         }
+
+        // let mut max_stack_size = self.regalloc.max_stack_size();
+        //
+        // let mut this = Self::new(self.tape_len)?;
+        // this.regalloc.should_free = false;
+        // this.regalloc.stack.should_free = false;
+        //
+        // this.named_label(this.asm.instructions().len(), ".PROLOGUE");
+        // this.prologue()?;
+        // this.asm.sub(rsp, max_stack_size as i32)?;
+        //
+        // while max_stack_size >= 8 {
+        //     let (slot, _) = this.regalloc.stack.reserve();
+        //     this.regalloc.stack.free(slot);
+        //     max_stack_size -= 8;
+        // }
+        // this.regalloc.stack.virtual_rsp += max_stack_size;
+        //
+        // this.named_label(this.asm.instructions().len(), ".BODY");
+        // this.assemble_block(block)?;
+        //
+        // this.named_label(this.asm.instructions().len(), ".EPILOGUE");
+        // // Set the return code
+        // this.asm.mov(rax, RETURN_SUCCESS)?;
+        // this.epilogue()?;
+        //
+        // // Only build the IO handler if there's IO functions
+        // if this.has_io_functions {
+        //     this.build_io_failure()?;
+        // }
 
         let code_buffer = {
             // The maximum size of an instruction is 15 bytes, so we allocate the most memory we could possibly use
@@ -104,49 +138,11 @@ impl Jit {
             debug_assert!(code_buffer.len() >= code.len());
             code_buffer[..code.len()].copy_from_slice(&code);
 
-            // TODO: Shrink code_buffer to the used size?
-            code_buffer
+            code_buffer.executable().unwrap()
         };
+        let pretty = self.disassemble();
 
-        std::fs::write(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/output.asm"),
-            self.disassemble(),
-        )
-        .unwrap();
-
-        {
-            let code_buffer = code_buffer.executable().unwrap();
-
-            let mut tape = vec![0x00; self.tape_len];
-            let tape_len = tape.len();
-
-            let (stdin, stdout) = (io::stdin(), io::stdout());
-            let mut state = State::new(stdin.lock(), stdout.lock());
-            state.stdout.flush().unwrap();
-
-            let jit_start = Instant::now();
-            let jit_return = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
-                let start = tape.as_mut_ptr();
-                let end = start.add(tape_len);
-
-                // code_buffer.call(&mut state, start, end)
-                0
-            }));
-            let elapsed = jit_start.elapsed();
-
-            writeln!(&mut state.stdout).unwrap();
-            state.stdout.flush().unwrap();
-            drop(state);
-
-            tracing::debug!(
-                "jitted function returned {:?} in {:#?}",
-                jit_return,
-                elapsed,
-            );
-            // println!("tape: {:?}", utils::debug_collapse(&tape));
-        }
-
-        Ok(self.disassemble())
+        Ok((code_buffer, pretty))
     }
 
     fn assemble_block(&mut self, block: &[Instruction]) -> AsmResult<()> {
@@ -162,6 +158,7 @@ impl Jit {
             Instruction::Call(call) => {
                 self.add_comment(call.pretty_print(PrettyConfig::minimal()));
                 self.assemble_call(call)?.debug_unwrap_none();
+
                 Ok(())
             }
 
@@ -268,12 +265,23 @@ impl Jit {
 
     #[tracing::instrument(skip(self))]
     fn assemble_theta(&mut self, theta: &Theta) -> AsmResult<()> {
+        self.add_comment("[header] do {{ ... }} while {{ ... }}");
+
         // A fix to keep us from making instructions with multiple labels
         self.asm.nop()?;
 
-        // Create a label for the head of the theta's body
-        let theta_head = self.create_label();
-        self.set_label(theta_head);
+        // Create the theta's header
+        for inst in &theta.body {
+            if matches!(
+                inst,
+                Instruction::Assign(Assign {
+                    tag: AssignTag::InputParam(_),
+                    ..
+                })
+            ) {
+                self.assemble_inst(inst)?;
+            }
+        }
 
         self.add_comment(format!(
             "do {{ ... }} while {{ {} }}",
@@ -282,8 +290,22 @@ impl Jit {
 
         self.output_feedbacks.push(theta.output_feedback.clone());
 
+        // Create a label for the theta's body
+        let theta_body = self.create_label();
+        self.set_label(theta_body);
+
         // Build the theta's body
-        self.assemble_block(&theta.body)?;
+        for inst in &theta.body {
+            if !matches!(
+                inst,
+                Instruction::Assign(Assign {
+                    tag: AssignTag::InputParam(_),
+                    ..
+                })
+            ) {
+                self.assemble_inst(inst)?;
+            }
+        }
 
         self.add_comment(format!(
             "[condition] do {{ ... }} while {{ {} }}",
@@ -311,10 +333,12 @@ impl Jit {
             Value::Const(_) | Value::Missing => {}
         }
 
-        // self.regalloc.stack.free_vacant_slots();
+        // if let Some(freed) = self.regalloc.stack.free_vacant_slots() {
+        //     self.asm.add(rsp, freed.get() as i32)?;
+        // }
 
         // If the condition is true, jump to the beginning of the theta's body
-        self.asm.je(theta_head)?;
+        self.asm.je(theta_body)?;
 
         self.output_feedbacks.pop().debug_unwrap();
 
@@ -386,7 +410,7 @@ impl Jit {
 
         // Move the given byte into rdx
         match call.args[0] {
-            Value::Var(var) => match *self.values.get(&var).unwrap() {
+            Value::Var(var) => match self.get_var(var) {
                 Operand::Register(register) => self.asm.mov(rdx, register)?,
                 Operand::Stack(offset) => self.asm.mov(rdx, self.stack_offset(offset))?,
                 Operand::Const(constant) => self
@@ -463,7 +487,7 @@ impl Jit {
                 .last()
                 .and_then(|feedback| feedback.get(&assign.var))
             {
-                match *self.inputs.get(&input).unwrap() {
+                match self.get_input(input) {
                     Operand::Register(feedback) => match value {
                         Operand::Register(reg) => self.asm.mov(feedback, reg)?,
                         Operand::Const(value) => self
@@ -569,7 +593,7 @@ impl Jit {
                 Expr::Value(value) => {
                     match *value {
                         Value::Var(var) => {
-                            match *self.values.get(&var).unwrap() {
+                            match self.get_var(var) {
                                 Operand::Register(register) => {
                                     let dest = self.allocate_register()?;
                                     self.asm.mov(dest, register)?;
@@ -928,6 +952,28 @@ impl Jit {
         }
     }
 
+    #[track_caller]
+    fn get_var(&self, var: VarId) -> Operand {
+        match self.values.get(&var) {
+            Some(&operand) => operand,
+            None => panic!(
+                "attempted to get the value of {}, but it couldn't be found",
+                var,
+            ),
+        }
+    }
+
+    #[track_caller]
+    fn get_input(&self, input: VarId) -> Operand {
+        match self.inputs.get(&input) {
+            Some(&operand) => operand,
+            None => panic!(
+                "attempted to get the input value {}, but it couldn't be found",
+                input,
+            ),
+        }
+    }
+
     /// Create the IO failure block
     #[allow(clippy::fn_to_numeric_cast)]
     fn build_io_failure(&mut self) -> AsmResult<()> {
@@ -1161,12 +1207,12 @@ impl Jit {
     }
 
     #[track_caller]
-    fn named_label<N>(&mut self, index: usize, name: N)
+    fn named_label<N>(&mut self, name: N)
     where
         N: Into<Cow<'static, str>>,
     {
         self.named_labels
-            .insert(index, name.into())
+            .insert(self.asm.instructions().len(), name.into())
             .debug_unwrap_none();
     }
 

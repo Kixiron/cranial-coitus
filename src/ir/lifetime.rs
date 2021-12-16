@@ -161,6 +161,20 @@ fn analyze_instruction(
             }
 
             analyze_block(body, |var| saved_keys.contains(&var));
+
+            last_usage.extend(body.iter().filter_map(|inst| {
+                if let &Instruction::Assign(Assign {
+                    tag: AssignTag::InputParam(_),
+                    // TODO: Do we need to analyze sub-expressions?
+                    value: Expr::Value(Value::Var(var)),
+                    ..
+                }) = inst
+                {
+                    Some((var, idx))
+                } else {
+                    None
+                }
+            }));
         }
 
         Instruction::Gamma(Gamma {

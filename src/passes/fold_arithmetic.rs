@@ -34,7 +34,7 @@ impl FoldArithmetic {
 // TODO: Double bitwise and logical negation
 impl Pass for FoldArithmetic {
     fn pass_name(&self) -> &str {
-        "constant-folding"
+        "fold-arithmetic"
     }
 
     fn did_change(&self) -> bool {
@@ -55,8 +55,8 @@ impl Pass for FoldArithmetic {
     }
 
     // TODO: `add x, neg y => sub x, y`, `add neg x, neg y => neg (add x, y)`
-    fn visit_add(&mut self, graph: &mut Rvsdg, mut add: Add) {
-        let ((lhs_src, lhs_val), (rhs_src, rhs_val)) = (
+    fn visit_add(&mut self, graph: &mut Rvsdg, add: Add) {
+        let ((lhs_src, lhs_val), (_, rhs_val)) = (
             self.operand(graph, add.lhs()),
             self.operand(graph, add.rhs()),
         );
@@ -68,26 +68,51 @@ impl Pass for FoldArithmetic {
 
         if let Some((lhs_sub, rhs_val)) = graph.cast_parent::<_, Sub>(lhs_src).copied().zip(rhs_val)
         {
-            let (sub_rhs, sub_rhs_val) = self.operand(graph, lhs_sub.rhs());
+            let (_, sub_rhs_val) = self.operand(graph, lhs_sub.rhs());
 
             if let Some(sub_rhs_val) = sub_rhs_val {
+                let lhs_source = graph.input_source(lhs_sub.lhs());
+
+                // `add (sub x, y), z where y > z => sub x, (y - z)`
                 if sub_rhs_val > rhs_val {
                     let replacement = Sub::new(add.node(), add.lhs(), add.rhs(), add.value());
                     graph.replace_node(add.node(), replacement);
 
                     graph.remove_inputs(replacement.node());
-                    graph.add_value_edge(graph.input_source(lhs_sub.lhs()), add.lhs());
+                    graph.add_value_edge(lhs_source, add.lhs());
 
                     let difference = graph.int(sub_rhs_val - rhs_val);
                     graph.add_value_edge(difference.value(), add.rhs());
 
+                    tracing::debug!(
+                        add = ?add.node(),
+                        "turned add (sub {sub_lhs}, {sub_rhs}), {add_rhs} where {sub_rhs} > {add_rhs} \
+                        into sub {sub_lhs}, ({sub_rhs} - {add_rhs} = {diff})",
+                        sub_lhs = lhs_source,
+                        sub_rhs = sub_rhs_val,
+                        add_rhs = rhs_val,
+                        diff = sub_rhs_val - rhs_val,
+                    );
+
                     self.changed();
+
+                // `add (sub x, y), z where y <= z => add x, (z - y)`
                 } else {
                     graph.remove_inputs(add.node());
-                    graph.add_value_edge(graph.input_source(lhs_sub.lhs()), add.lhs());
+                    graph.add_value_edge(lhs_source, add.lhs());
 
                     let difference = graph.int(rhs_val - sub_rhs_val);
                     graph.add_value_edge(difference.value(), add.rhs());
+
+                    tracing::debug!(
+                        add = ?add.node(),
+                        "turned add (sub {sub_lhs}, {sub_rhs}), {add_rhs} where {sub_rhs} <= {add_rhs} \
+                        into add {sub_lhs}, ({add_rhs} - {sub_rhs} = {diff})",
+                        sub_lhs = lhs_source,
+                        sub_rhs = sub_rhs_val,
+                        add_rhs = rhs_val,
+                        diff = rhs_val - sub_rhs_val,
+                    );
 
                     self.changed();
                 }
@@ -96,27 +121,42 @@ impl Pass for FoldArithmetic {
     }
 
     fn visit_sub(&mut self, graph: &mut Rvsdg, sub: Sub) {
-        let ((lhs_src, lhs_val), (rhs_src, rhs_val)) = (
+        let ((lhs_src, _), (_, rhs_val)) = (
             self.operand(graph, sub.lhs()),
             self.operand(graph, sub.rhs()),
         );
 
         if let Some((lhs_add, rhs_val)) = graph.cast_parent::<_, Add>(lhs_src).copied().zip(rhs_val)
         {
-            let (add_rhs, add_rhs_val) = self.operand(graph, lhs_add.rhs());
+            let (_, add_rhs_val) = self.operand(graph, lhs_add.rhs());
 
             if let Some(add_rhs_val) = add_rhs_val {
+                let lhs_source = graph.input_source(lhs_add.lhs());
+
+                // `sub (add x, y), z where y > z => add x, (y - z)`
                 if add_rhs_val > rhs_val {
                     let replacement = Add::new(sub.node(), sub.lhs(), sub.rhs(), sub.value());
                     graph.replace_node(sub.node(), replacement);
 
                     graph.remove_inputs(sub.node());
-                    graph.add_value_edge(graph.input_source(lhs_add.lhs()), sub.lhs());
+                    graph.add_value_edge(lhs_source, sub.lhs());
 
                     let difference = graph.int(add_rhs_val - rhs_val);
                     graph.add_value_edge(difference.value(), sub.rhs());
 
+                    tracing::debug!(
+                        sub = ?sub.node(),
+                        "turned sub (add {add_lhs}, {add_rhs}), {sub_rhs} where {add_rhs} > {sub_rhs} \
+                        into add {add_lhs}, ({add_rhs} - {sub_rhs} = {diff})",
+                        add_lhs = lhs_source,
+                        add_rhs = add_rhs_val,
+                        sub_rhs = rhs_val,
+                        diff = add_rhs_val - rhs_val,
+                    );
+
                     self.changed();
+
+                // `sub (add x, y), z where y <= z => sub x, (z - y)`
                 } else {
                     graph.remove_inputs(sub.node());
                     graph.add_value_edge(graph.input_source(lhs_add.lhs()), sub.lhs());
@@ -124,13 +164,23 @@ impl Pass for FoldArithmetic {
                     let difference = graph.int(rhs_val - add_rhs_val);
                     graph.add_value_edge(difference.value(), sub.rhs());
 
+                    tracing::debug!(
+                        sub = ?sub.node(),
+                        "turned sub (add {add_lhs}, {add_rhs}), {sub_rhs} where {add_rhs} <= {sub_rhs} \
+                        into sub {add_lhs}, ({sub_rhs} - {add_rhs} = {diff})",
+                        add_lhs = lhs_source,
+                        add_rhs = add_rhs_val,
+                        sub_rhs = rhs_val,
+                        diff = rhs_val - add_rhs_val,
+                    );
+
                     self.changed();
                 }
             }
         }
     }
 
-    fn visit_neg(&mut self, graph: &mut Rvsdg, neg: Neg) {}
+    fn visit_neg(&mut self, _graph: &mut Rvsdg, _neg: Neg) {}
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;

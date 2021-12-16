@@ -1,6 +1,6 @@
 use crate::{jit::AsmResult, utils::AssertNone};
 use iced_x86::code_asm::{registers::*, AsmRegister64, CodeAssembler};
-use std::{cmp::Reverse, collections::VecDeque, fmt::Debug};
+use std::{cmp::Reverse, collections::VecDeque, fmt::Debug, num::NonZeroUsize};
 
 pub(super) const NONVOLATILE_REGISTERS: &[AsmRegister64] =
     &[rbx, rbp, rdi, rsi, rsp, r12, r13, r14, r15];
@@ -22,6 +22,10 @@ impl Regalloc {
             registers: Registers::new(),
             stack: Stack::new(),
         }
+    }
+
+    pub fn max_stack_size(&self) -> usize {
+        self.stack.max_size
     }
 
     /// Allocate a specific register, returning it and the stack slot of the value it spilled
@@ -227,9 +231,10 @@ pub(super) struct Stack {
     /// The "virtual" stack pointer
     pub(super) virtual_rsp: usize,
     /// Vacant stack slots
-    vacant_slots: Vec<StackSlot>,
+    pub(super) vacant_slots: Vec<StackSlot>,
     /// Is `true` if the vacant stack slots aren't sorted
     dirty: bool,
+    max_size: usize,
 }
 
 impl Stack {
@@ -239,6 +244,7 @@ impl Stack {
             virtual_rsp: 0,
             vacant_slots: Vec::new(),
             dirty: false,
+            max_size: 0,
         }
     }
 
@@ -249,7 +255,7 @@ impl Stack {
     /// Reserve a stack slot of 8 bytes, returns the slot and whether or not the
     /// `push` instruction can be used to place a value into it
     // TODO: Allow customizable sizes
-    fn reserve(&mut self) -> (StackSlot, bool) {
+    pub(super) fn reserve(&mut self) -> (StackSlot, bool) {
         // If the vacant slots aren't sorted, sort them
         self.sort_vacant_slots();
 
@@ -273,6 +279,10 @@ impl Stack {
                 };
                 self.virtual_rsp += 8;
 
+                if self.virtual_rsp > self.max_size {
+                    self.max_size = self.virtual_rsp;
+                }
+
                 tracing::debug!(
                     is_top = true,
                     "allocated new stack slot: {:?}, vrsp: {} → {}",
@@ -287,7 +297,7 @@ impl Stack {
     }
 
     /// Free a stack slot, returns whether or not `pop` can be used to deallocate the space
-    fn free(&mut self, slot: StackSlot) -> bool {
+    pub(super) fn free(&mut self, slot: StackSlot) -> bool {
         tracing::debug!(
             is_top = slot.offset + slot.size == self.virtual_rsp,
             "freed slot from stack: {:?}",
@@ -319,6 +329,7 @@ impl Stack {
     }
 
     /// Get the padding required to align the stack to 16 bytes for a function call
+    // TODO: Check if there's 32 bytes of free space on the top of the stack
     fn align_for_call(&self, registers: &Registers) -> usize {
         // We start with an offset of 8 since `call` pushes the return address to the stack
         // https://www.felixcloutier.com/x86/call#operation
@@ -338,21 +349,27 @@ impl Stack {
     }
 
     /// Frees all contiguous vacant slots at the top of the stack
-    pub(super) fn free_vacant_slots(&mut self) -> Option<usize> {
+    pub(super) fn free_vacant_slots(&mut self) -> Option<NonZeroUsize> {
         self.sort_vacant_slots();
 
-        let vacant_offset = 0;
-        // TODO: Free contiguous vacant slots
-        dbg!(&self.vacant_slots);
+        let mut total_deallocated = 0;
+        self.vacant_slots
+            .drain_filter(|slot| {
+                if slot.offset + slot.size == self.virtual_rsp {
+                    self.virtual_rsp -= total_deallocated;
+                    total_deallocated += slot.size;
 
-        if vacant_offset == 0 {
-            None
-        } else {
-            Some(vacant_offset)
-        }
+                    true
+                } else {
+                    false
+                }
+            })
+            .for_each(|_| {});
+
+        NonZeroUsize::new(total_deallocated)
     }
 
-    /// Sort all vacant stack slots in decreasing order by their offset
+    /// Sort all vacant stack slots in increasing order by their offset
     fn sort_vacant_slots(&mut self) {
         if self.dirty {
             self.dirty = false;
@@ -375,7 +392,7 @@ impl Stack {
                     let slot2_ptr = self.slot_offset(slot2);
 
                     assert!(
-                        slot1_ptr > slot2_ptr && slot1_ptr + slot1.size > slot2_ptr + slot2.size,
+                        slot1_ptr <= slot2_ptr && slot1_ptr + slot1.size <= slot2_ptr + slot2.size,
                     );
                 }
             }

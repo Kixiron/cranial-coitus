@@ -44,6 +44,8 @@ use crate::{
 };
 use std::collections::VecDeque;
 
+// TODO: Genetic algorithm for pass ordering
+//       https://kunalspathak.github.io/2021-07-22-Genetic-Algorithms-In-LSRA/
 pub fn default_passes(cells: usize) -> Vec<Box<dyn Pass>> {
     bvec![
         UnobservedStore::new(),

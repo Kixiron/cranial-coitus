@@ -5,9 +5,7 @@ use crate::{
     },
     ir::Const,
     passes::{utils::ConstantStore, Pass},
-    utils::AssertNone,
 };
-use std::collections::BTreeMap;
 
 /// Evaluates constant operations within the program
 pub struct ConstFolding {

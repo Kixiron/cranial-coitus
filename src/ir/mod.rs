@@ -4,13 +4,13 @@ mod parse;
 mod pretty_print;
 
 pub use builder::IrBuilder;
-pub use pretty_print::{Pretty, PrettyConfig};
+pub use pretty_print::{pretty_utils, Pretty, PrettyConfig};
 
 use crate::{
     graph::{NodeId, OutputPort, Port},
     utils::percent_total,
 };
-use pretty::{Arena, DocAllocator, DocBuilder};
+use pretty::{DocAllocator, DocBuilder};
 use pretty_print::{COMMENT_ALIGNMENT_OFFSET, INDENT_WIDTH};
 use std::{
     borrow::Cow,

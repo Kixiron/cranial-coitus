@@ -108,6 +108,9 @@ fn debug(
     // Note: This happens *after* we print out the initial graph for better debugging
     validate(&graph);
 
+    let (_, assembly) = Jit::new(cells).unwrap().assemble(&input_program)?;
+    fs::write(dump_dir.join("input.asm"), assembly)?;
+
     let unoptimized_execution = if !only_final_run {
         let result_path = dump_dir.join("input-result.txt");
         let mut result_file = File::create(&result_path)
@@ -491,8 +494,7 @@ fn debug(
             Unoptimized execution stats:\n{}",
             unoptimized_execution_duration,
             unoptimized_stats.display(),
-        )
-        .unwrap();
+        )?;
     }
 
     writeln!(
@@ -501,20 +503,22 @@ fn debug(
         Optimized execution stats:\n{}",
         optimized_execution_duration,
         optimized_stats.display(),
-    )
-    .unwrap();
+    )?;
 
     print!("{}", change);
-    fs::write(dump_dir.join("change.txt"), change).unwrap();
+    fs::write(dump_dir.join("change.txt"), change)?;
 
     let annotated_program =
         output_program.pretty_print(PrettyConfig::instrumented(optimized_stats.instructions));
-    fs::write(dump_dir.join("annotated_output.cir"), annotated_program).unwrap();
+    fs::write(dump_dir.join("annotated_output.cir"), annotated_program)?;
 
-    fs::write(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/optimized_output.asm"),
-        Jit::new(cells).unwrap().assemble(&output_program).unwrap(),
-    )?;
+    let (jit, assembly) = Jit::new(cells).unwrap().assemble(&output_program)?;
+    fs::write(dump_dir.join("output.asm"), assembly)?;
+
+    let mut tape = vec![0x00; cells];
+    // Safety: It probably isn't lol, my codegen is garbage
+    unsafe { jit.execute(&mut tape)? };
+    println!("{:?}", utils::debug_collapse(&tape));
 
     Ok(())
 }
@@ -556,40 +560,6 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
         graph
     };
 
-    let ir = IrBuilder::new(false).translate(&graph);
-    fs::write(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/unoptimized_output.asm"),
-        Jit::new(cells).unwrap().assemble(&ir).unwrap(),
-    )?;
-
-    // {
-    //     let mut graph = Rvsdg::new();
-    //     let start = graph.start();
-    //     let zero = graph.int(0);
-    //
-    //     // Inflate the stack some to force spilling
-    //     let mut last_effect = start.effect();
-    //     for _ in 0..20 {
-    //         last_effect = graph.load(zero.value(), last_effect).output_effect();
-    //     }
-    //
-    //     let input = graph.input(last_effect);
-    //     let store = graph.store(zero.value(), input.output_value(), input.output_effect());
-    //     let load = graph.load(zero.value(), store.output_effect());
-    //     let output = graph.output(load.output_value(), load.output_effect());
-    //     graph.end(output.output_effect());
-    //
-    //     let ir = IrBuilder::new(false).translate(&graph);
-    //     println!("{}", ir.pretty_print(PrettyConfig::minimal()));
-    //
-    //     fs::write(
-    //         concat!(env!("CARGO_MANIFEST_DIR"), "/output.asm"),
-    //         Jit::new(cells).unwrap().assemble(&ir).unwrap(),
-    //     )?;
-    //
-    //     return Ok(());
-    // }
-
     let input_stats = graph.stats();
     validate(&graph);
 
@@ -605,11 +575,6 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
 
     let mut program = IrBuilder::new(args.inline_constants).translate(&graph);
     let elapsed = start_time.elapsed();
-
-    fs::write(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/optimized_output.asm"),
-        Jit::new(cells).unwrap().assemble(&program).unwrap(),
-    )?;
 
     let output_stats = graph.stats();
     let difference = input_stats.difference(output_stats);

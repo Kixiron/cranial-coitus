@@ -4,7 +4,6 @@ use std::{
     cmp::max,
     io::{self, Error, Write},
     mem::transmute,
-    ops::{Deref, DerefMut},
     panic::{self, AssertUnwindSafe},
     ptr::{self, NonNull},
     slice,
@@ -133,6 +132,7 @@ impl CodeBuffer {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn as_slice(&self) -> &[u8] {
         unsafe { slice::from_raw_parts(self.buffer.as_ptr(), self.len()) }
     }
@@ -257,9 +257,9 @@ impl<T> Executable<T> {
 impl Executable<CodeBuffer> {
     pub unsafe fn call(&self, state: *mut State, start: *mut u8, end: *mut u8) -> u8 {
         let func: unsafe extern "win64" fn(*mut State, *mut u8, *const u8) -> u8 =
-            transmute(self.0.as_ptr());
+            unsafe { transmute(self.0.as_ptr()) };
 
-        func(state, start, end)
+        unsafe { func(state, start, end) }
     }
 
     pub unsafe fn execute(&self, tape: &mut [u8]) -> Result<u8> {

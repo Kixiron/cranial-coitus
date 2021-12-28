@@ -2,6 +2,7 @@ use crate::{jit::AsmResult, utils::AssertNone};
 use iced_x86::code_asm::{registers::*, AsmRegister64, CodeAssembler};
 use std::{cmp::Reverse, collections::VecDeque, fmt::Debug, num::NonZeroUsize};
 
+#[allow(dead_code)]
 pub(super) const NONVOLATILE_REGISTERS: &[AsmRegister64] =
     &[rbx, rbp, rdi, rsi, rsp, r12, r13, r14, r15];
 
@@ -24,6 +25,7 @@ impl Regalloc {
         }
     }
 
+    #[allow(dead_code)]
     pub fn max_stack_size(&self) -> usize {
         self.stack.max_size
     }
@@ -209,10 +211,12 @@ impl Regalloc {
         Ok(register)
     }
 
+    #[allow(dead_code)]
     pub fn peek_free_register(&self) -> Option<AsmRegister64> {
         self.registers.peek_free_r64()
     }
 
+    #[allow(dead_code)]
     pub fn least_recently_used_register(&self) -> AsmRegister64 {
         self.registers.peek_least_recently_used()
     }
@@ -361,6 +365,7 @@ impl Stack {
     }
 
     /// Frees all contiguous vacant slots at the top of the stack
+    #[allow(dead_code)]
     pub(super) fn free_vacant_slots(&mut self) -> Option<NonZeroUsize> {
         self.sort_vacant_slots();
 
@@ -415,12 +420,13 @@ impl Stack {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StackSlot {
     /// The offset from the virtual rsp
-    offset: usize,
+    pub offset: usize,
     /// The size of the stack slot
     size: usize,
 }
 
 impl StackSlot {
+    #[allow(dead_code)]
     pub fn new(offset: usize, size: usize) -> Self {
         Self { offset, size }
     }
@@ -494,6 +500,7 @@ impl Registers {
         panic!("attempted to allocate unmanaged register {:?}", register);
     }
 
+    #[allow(dead_code)]
     fn peek_least_recently_used(&self) -> AsmRegister64 {
         let mut registers: Vec<_> = self.r64.iter().map(|&(reg, _)| reg).collect();
 
@@ -513,6 +520,7 @@ impl Registers {
         registers.pop().unwrap()
     }
 
+    #[allow(dead_code)]
     fn peek_free_r64(&self) -> Option<AsmRegister64> {
         let mut free_regs: Vec<_> = self
             .r64
@@ -711,6 +719,7 @@ impl<T> RegisterLru<T> {
         }
     }
 
+    #[allow(dead_code)]
     fn rank(&self, register: T) -> Option<usize>
     where
         T: PartialEq,

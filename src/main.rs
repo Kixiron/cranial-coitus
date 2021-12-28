@@ -12,6 +12,7 @@
     destructuring_assignment,
     nonnull_slice_from_raw_parts
 )]
+#![forbid(unsafe_op_in_unsafe_fn)]
 
 #[macro_use]
 mod utils;

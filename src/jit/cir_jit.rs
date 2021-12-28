@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::{
     ir::{
         Add, Assign, AssignTag, Block, Call, Const, Eq, Expr, Gamma, Instruction, LifetimeEnd,
@@ -43,7 +45,7 @@ enum Operand {
 }
 
 impl Jit {
-    pub fn new(tape_len: usize) -> AsmResult<Self> {
+    pub fn new(_tape_len: usize) -> AsmResult<Self> {
         let mut asm = CodeAssembler::new(BITNESS)?;
         let io_failure = asm.create_label();
         let epilogue = asm.create_label();
@@ -387,7 +389,7 @@ impl Jit {
         let (stack_padding, slots) = self.before_win64_call()?;
 
         // Call the output function
-        type_eq::<unsafe extern "win64" fn(state: *mut State, byte: u64) -> bool>(ffi::output);
+        type_eq::<unsafe extern "win64" fn(state: *mut State, byte: u64) -> u8>(ffi::output);
         self.asm.mov(rax, ffi::output as u64)?;
         self.asm.call(rax)?;
 

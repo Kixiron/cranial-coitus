@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use crate::{
     ir::{
         AssignTag, Block as CirBlock, Expr as CirExpr, Instruction as CirInstruction, VarId,
@@ -11,9 +9,11 @@ use crate::{
             Output, Phi, RValue, Store, Sub, Terminator, ValId, Value,
         },
         block_builder::BlockBuilder,
+        RETURN_SUCCESS,
     },
     utils::AssertNone,
 };
+use std::collections::BTreeMap;
 
 pub fn translate(block: &CirBlock) -> Blocks {
     let (mut builder, mut phis) = (BlockBuilder::new(), BTreeMap::new());
@@ -24,7 +24,7 @@ pub fn translate(block: &CirBlock) -> Blocks {
     // Set the final block to return zero for success
     builder
         .current()
-        .set_terminator(Terminator::Return(Value::Byte(0)));
+        .set_terminator(Terminator::Return(Value::Byte(RETURN_SUCCESS as u8)));
     builder.finalize();
 
     // Run a few really basic optimization passes to clean up from codegen

@@ -20,7 +20,7 @@ impl<'a> State<'a> {
 
 #[allow(unused_macros)]
 macro_rules! log_registers {
-    () => {
+    () => {{
         let (
             mut rcx_val,
             mut rdx_val,
@@ -58,18 +58,16 @@ macro_rules! log_registers {
             r9_val,
             rsp_val,
         );
-    };
+    }};
 }
 
 /// Returns a `u16` where the first byte is the input value and the second
 /// byte is a 1 upon IO failure and a 0 upon success
 pub(super) unsafe extern "win64" fn input(state: *mut State) -> u16 {
-    log_registers!();
+    unsafe { log_registers!() }
     println!("state = {}", state as usize);
 
-    let state = &mut *state;
-    let mut value = 0;
-
+    let (state, mut value) = (unsafe { &mut *state }, 0);
     let input_panicked = panic::catch_unwind(AssertUnwindSafe(|| {
         // Flush stdout
         let flush_failed = match state.stdout.flush() {
@@ -105,13 +103,13 @@ pub(super) unsafe extern "win64" fn input(state: *mut State) -> u16 {
 }
 
 // FIXME: Make this take a u8
-pub(super) unsafe extern "win64" fn output(state: *mut State, byte: u64) -> bool {
-    log_registers!();
+pub(super) unsafe extern "win64" fn output(state: *mut State, byte: u64) -> u8 {
+    unsafe { log_registers!() }
 
-    let byte = byte as u8;
     println!("state = {}, byte = {}", state as usize, byte);
+    let byte = byte as u8;
 
-    let state = &mut *state;
+    let state = unsafe { &mut *state };
     let output_panicked = panic::catch_unwind(AssertUnwindSafe(|| {
         let write_result = if byte.is_ascii() {
             state.stdout.write_all(&[byte])
@@ -130,20 +128,19 @@ pub(super) unsafe extern "win64" fn output(state: *mut State, byte: u64) -> bool
     }));
 
     match output_panicked {
-        Ok(result) => result,
+        Ok(result) => result as u8,
         Err(err) => {
             tracing::error!("writing byte to stdout panicked: {:?}", err);
-            true
+            true as u8
         }
     }
 }
 
 pub(super) unsafe extern "win64" fn io_error_encountered(state: *mut State) -> bool {
-    log_registers!();
+    unsafe { log_registers!() }
     println!("state = {}", state as usize);
 
-    let state = &mut *state;
-
+    let state = unsafe { &mut *state };
     let io_failure_panicked = panic::catch_unwind(AssertUnwindSafe(|| {
         let write_failed = match state.stdout.write_all(IO_FAILURE_MESSAGE) {
             Ok(()) => false,

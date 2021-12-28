@@ -12,7 +12,7 @@ pub trait BasicBlockVisitor {
     }
 
     /// Called before a block is visited
-    fn before_visit_block(&mut self, block: &BasicBlock) {}
+    fn before_visit_block(&mut self, _block: &BasicBlock) {}
 
     fn visit_block(&mut self, block: &BasicBlock) {
         for inst in block {

@@ -3,7 +3,7 @@ use iced_x86::{
     FlowControl, Formatter, FormatterOptions, Instruction, MasmFormatter, SymbolResolver,
     SymbolResult,
 };
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
 impl Jit {
     /// Disassembles the jit's current code
@@ -20,8 +20,26 @@ impl Jit {
         let mut formatter = MasmFormatter::with_options(Some(Box::new(Resolver)), None);
         set_formatter_options(formatter.options_mut());
 
+        // Make sure all of the named labels are valid label names
+        if cfg!(debug_assertions) {
+            for label in self.named_labels.values() {
+                assert!(is_valid_label_name(label));
+            }
+        }
+
         // Collect all jump targets and label them
-        let labels = self.collect_jump_labels();
+        let mut labels = self.collect_jump_labels();
+
+        // Collect the addresses of all named labels
+        for (idx, inst) in self.asm.instructions().iter().enumerate() {
+            let address = inst.ip();
+
+            if let Some(label) = labels.get_mut(&address) {
+                if let Some(named_label) = self.named_labels.get(&idx) {
+                    label.clone_from(named_label);
+                }
+            }
+        }
 
         // Format all instructions
         let mut is_indented = false;
@@ -44,10 +62,10 @@ impl Jit {
             }
 
             // If the current address is jumped to, add a label to the output text
-            if let Some(label) = labels.get(&address) {
+            if let Some(label) = labels.get(&address).filter(|_| !has_named_label) {
                 is_indented = true;
 
-                if idx != 0 && !has_named_label {
+                if idx != 0 {
                     output.push('\n');
                 }
 
@@ -113,7 +131,7 @@ impl Jit {
         }
     }
 
-    fn collect_jump_labels(&self) -> BTreeMap<u64, String> {
+    fn collect_jump_labels(&self) -> BTreeMap<u64, Cow<'static, str>> {
         // Collect all jump targets
         let mut jump_targets = Vec::new();
         for inst in self.asm.instructions() {
@@ -135,7 +153,7 @@ impl Jit {
         jump_targets
             .into_iter()
             .enumerate()
-            .map(|(idx, address)| (address, format!(".LBL_{}", idx)))
+            .map(|(idx, address)| (address, Cow::Owned(format!(".LBL_{}", idx))))
             .collect()
     }
 }

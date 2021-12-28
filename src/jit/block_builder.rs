@@ -78,6 +78,7 @@ impl BlockBuilder {
     }
 
     /// Move to the given block
+    #[allow(dead_code)]
     pub fn move_to(&mut self, block: BlockId) -> &mut BasicBlock {
         if self.current.as_ref().unwrap().id() != block {
             if let Some(block) = self.blocks.remove(&block) {
@@ -150,6 +151,7 @@ impl BlockBuilder {
 /// Internal utility functions
 impl BlockBuilder {
     /// Creates a new block with a unique id
+    #[allow(dead_code)]
     fn new_block(&mut self) -> BasicBlock {
         BasicBlock::new(self.next_block(), Vec::new(), Terminator::Error)
     }

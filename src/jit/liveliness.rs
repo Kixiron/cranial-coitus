@@ -3,7 +3,7 @@ use crate::jit::{
     block_visitor::BasicBlockVisitor,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fmt::{self, Debug},
 };
 
@@ -32,6 +32,7 @@ impl Liveliness {
 
     /// Returns `true` if the given instruction of the given block is the *first* usage of the given [`ValId`].
     /// A [`None`] given for `index` means a block terminator instead of an instruction in the block's body
+    #[allow(dead_code)]
     pub fn is_first_usage(&self, val: ValId, block: BlockId, index: Option<usize>) -> bool {
         self.first_usages.get(&val).copied() == Some((block, index))
     }
@@ -44,6 +45,7 @@ impl Liveliness {
 
     /// Returns `true` if the given instruction of the given block is the *only* usage of the given [`ValId`].
     /// A [`None`] given for `index` means a block terminator instead of an instruction in the block's body
+    #[allow(dead_code)]
     pub fn is_only_usage(&self, val: ValId, block: BlockId, index: Option<usize>) -> bool {
         // If an instruction is both the first and last usage of a value then it should be the only user.
         // This doesn't account for instructions that use a value twice, like `add %x, %x`, but that shouldn't

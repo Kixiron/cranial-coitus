@@ -1,6 +1,7 @@
 use crate::jit::ffi::State;
 use anyhow::{Context, Result};
 use std::{
+    cmp::max,
     io::{self, Error, Write},
     mem::transmute,
     ops::{Deref, DerefMut},
@@ -20,7 +21,12 @@ use winapi::um::{
 // https://devblogs.microsoft.com/oldnewthing/20210510-00/?p=105200
 const PAGE_SIZE: usize = 1024 * 4;
 
+// TODO: Full-on commit-on-write semantics for this
 pub struct CodeBuffer {
+    /// A pointer to the allocated memory, `buffer..buffer + capacity` is *virtually allocated*
+    /// memory and `buffer..buffer + length` is *physically allocated* memory. Only the latter
+    /// may be read from or written to, the former must first be committed in order to be
+    /// readable/writable
     buffer: NonNull<u8>,
     /// The length of the buffer's valid and executable area
     length: usize,
@@ -29,21 +35,21 @@ pub struct CodeBuffer {
 }
 
 impl CodeBuffer {
-    pub fn new(length: usize) -> Result<Self> {
-        if length == 0 {
+    pub fn new(capacity: usize) -> Result<Self> {
+        if capacity == 0 {
             tracing::error!("tried to allocate code buffer of zero bytes");
             anyhow::bail!("tried to allocate a code buffer of 0 bytes");
         }
 
         // FIXME: This isn't aligning things properly?
-        let padding = length % PAGE_SIZE;
-        let capacity = length + padding;
+        let padding = capacity % PAGE_SIZE;
+        let padded_capacity = capacity + padding;
         tracing::debug!(
-            "allocating a code buffer with a length of {} bytes and capacity of {} bytes \
-            (added {} bytes of padding to align to {} bytes)",
-            length,
-            capacity,
+            "allocating a code buffer with a capacity of {} bytes \
+            (added {} bytes of padding to {} in order to align it to {} bytes)",
+            padded_capacity,
             padding,
+            capacity,
             PAGE_SIZE,
         );
 
@@ -51,8 +57,8 @@ impl CodeBuffer {
         let ptr = unsafe {
             VirtualAlloc(
                 ptr::null_mut(),
-                capacity,
-                MEM_COMMIT | MEM_RESERVE,
+                padded_capacity,
+                MEM_RESERVE,
                 PAGE_READWRITE,
             )
         };
@@ -61,7 +67,7 @@ impl CodeBuffer {
             let error = Error::last_os_error();
             tracing::error!(
                 "call to VirtualAlloc() for {} bytes failed: {}",
-                capacity,
+                padded_capacity,
                 error,
             );
 
@@ -70,14 +76,14 @@ impl CodeBuffer {
 
         tracing::debug!(
             "allocated code buffer of {} bytes at {:p}",
-            capacity,
+            padded_capacity,
             buffer.as_ptr(),
         );
 
         Ok(Self {
             buffer,
-            length,
-            capacity,
+            length: 0,
+            capacity: padded_capacity,
         })
     }
 
@@ -92,6 +98,39 @@ impl CodeBuffer {
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn copy_from_slice(&mut self, source: &[u8]) -> Result<()> {
+        self.length = max(self.length, source.len());
+
+        // Commit the memory for the length of the source array
+        let ret = unsafe {
+            VirtualAlloc(
+                self.buffer.as_ptr().cast(),
+                self.len(),
+                MEM_COMMIT,
+                PAGE_READWRITE,
+            )
+        };
+
+        if ret.is_null() {
+            let error = Error::last_os_error();
+            tracing::error!(
+                "committing {} bytes in `.copy_from_slice()` via `VirtualAlloc()` failed: {}",
+                self.len(),
+                error,
+            );
+
+            let error =
+                anyhow::anyhow!(error).context("failed to allocate code buffer's backing memory");
+            return Err(error);
+        }
+        assert_eq!(self.buffer.as_ptr().cast(), ret);
+
+        // Copy the data over
+        self.as_mut_slice()[..source.len()].copy_from_slice(source);
+
+        Ok(())
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -178,19 +217,19 @@ impl CodeBuffer {
     }
 }
 
-impl Deref for CodeBuffer {
-    type Target = [u8];
+// impl Deref for CodeBuffer {
+//     type Target = [u8];
+//
+//     fn deref(&self) -> &Self::Target {
+//         self.as_slice()
+//     }
+// }
 
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
-}
-
-impl DerefMut for CodeBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_mut_slice()
-    }
-}
+// impl DerefMut for CodeBuffer {
+//     fn deref_mut(&mut self) -> &mut Self::Target {
+//         self.as_mut_slice()
+//     }
+// }
 
 impl Drop for CodeBuffer {
     fn drop(&mut self) {

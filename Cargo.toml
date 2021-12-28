@@ -12,17 +12,21 @@ atty = "0.2.14"
 paste = "1.0.5"
 ranges = "0.3.3"
 anyhow = "1.0.45"
-pretty = "0.10.0"
+pretty = "0.11.2"
 similar = "2.1.0"
 clap = "3.0.0-beta.5"
 superluminal-perf = "0.1.1"
-# "release_max_level_info"
-tracing = { version = "0.1.29", features = [] }
 tinyvec = { version = "1.5.0", features = ["alloc"] }
 winapi = { version = "0.3.9", features = ["memoryapi"] }
 xxhash-rust = { version = "0.8.2", features = ["xxh3"] }
-iced-x86 = { version = "1.15.0", features = ["code_asm"] }
-tracing-tree = { version = "0.1.11", default-features = false }
+tracing-tree = { version = "0.2.0", default-features = false }
+tracing = { version = "0.1.29", features = ["release_max_level_info"] }
+
+    [dependencies.iced-x86]
+    version = "1.15.0"
+    default-features = false
+    git = "https://github.com/icedland/iced"
+    features = ["std", "masm", "encoder", "code_asm", "instr_info"]
 
     [dependencies.tui]
     version = "0.16.0"
@@ -30,7 +34,7 @@ tracing-tree = { version = "0.1.11", default-features = false }
     features = ["crossterm"]
 
     [dependencies.tracing-subscriber]
-    version = "0.2.25"
+    version = "0.3.3"
     features = ["env-filter", "registry"]
 
 [dev-dependencies]

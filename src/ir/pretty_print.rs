@@ -18,6 +18,7 @@ pub struct PrettyConfig {
     pub duration_logging: bool,
     /// If printed to an ansi-capable source, this will allow coloration
     pub colored: bool,
+    pub show_lifetimes: bool,
 }
 
 impl PrettyConfig {
@@ -28,6 +29,7 @@ impl PrettyConfig {
             total_instructions: Some(instructions),
             duration_logging: false,
             colored: true,
+            show_lifetimes: false,
         }
     }
 
@@ -38,19 +40,20 @@ impl PrettyConfig {
             total_instructions: None,
             duration_logging: false,
             colored: true,
+            show_lifetimes: false,
         }
     }
 
-    pub fn with_duration_logging(self, duration_logging: bool) -> Self {
-        Self {
-            duration_logging,
-            ..self
-        }
-    }
+    // pub const fn with_duration_logging(self, duration_logging: bool) -> Self {
+    //     Self {
+    //         duration_logging,
+    //         ..self
+    //     }
+    // }
 
-    pub fn with_color(self, colored: bool) -> Self {
-        Self { colored, ..self }
-    }
+    // pub const fn with_color(self, colored: bool) -> Self {
+    //     Self { colored, ..self }
+    // }
 }
 
 pub trait Pretty {
@@ -95,7 +98,7 @@ pub trait Pretty {
 }
 
 pub mod pretty_utils {
-    use crate::ir::{Pretty, PrettyConfig};
+    use crate::ir::{pretty_print::INDENT_WIDTH, Instruction, Pretty, PrettyConfig};
     use pretty::{DocAllocator, DocBuilder};
 
     pub fn binary<'a, D, A, L, R>(
@@ -137,5 +140,38 @@ pub mod pretty_utils {
             .text(op)
             .append(allocator.space())
             .append(arg.pretty(allocator, config))
+    }
+
+    pub fn body_block<'a, D, A>(
+        allocator: &'a D,
+        config: PrettyConfig,
+        block: &'a [Instruction],
+    ) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+    {
+        let instructions = block
+            .iter()
+            .filter(|inst| config.show_lifetimes || !inst.is_lifetime_end());
+
+        let total_instructions = instructions.clone().count();
+
+        if total_instructions == 0 {
+            allocator.nil()
+        } else {
+            allocator
+                .hardline()
+                .append(
+                    allocator
+                        .intersperse(
+                            instructions.map(|inst| inst.pretty(allocator, config)),
+                            allocator.hardline(),
+                        )
+                        .indent(INDENT_WIDTH),
+                )
+                .append(allocator.hardline())
+        }
     }
 }

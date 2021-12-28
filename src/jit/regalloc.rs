@@ -70,6 +70,10 @@ impl Regalloc {
         Ok((register, spilled))
     }
 
+    pub fn allocate_overwrite(&mut self, register: AsmRegister64) {
+        self.registers.allocate_specific_r64(register, true);
+    }
+
     /// Allocate a register, returning it and the stack slot of the value it spilled (if applicable)
     pub fn allocate(
         &mut self,
@@ -203,6 +207,14 @@ impl Regalloc {
         }
 
         Ok(register)
+    }
+
+    pub fn peek_free_register(&self) -> Option<AsmRegister64> {
+        self.registers.peek_free_r64()
+    }
+
+    pub fn least_recently_used_register(&self) -> AsmRegister64 {
+        self.registers.peek_least_recently_used()
     }
 
     pub fn align_for_call(&self) -> usize {
@@ -482,6 +494,52 @@ impl Registers {
         panic!("attempted to allocate unmanaged register {:?}", register);
     }
 
+    fn peek_least_recently_used(&self) -> AsmRegister64 {
+        let mut registers: Vec<_> = self.r64.iter().map(|&(reg, _)| reg).collect();
+
+        // Sort the free registers by the last time they were used and their allocation priority
+        registers.sort_unstable_by_key(|&register| {
+            let least_recently_used = self.r64_lru.rank(register);
+            let allocation_priority = self
+                .r64
+                .iter()
+                .enumerate()
+                .find_map(|(idx, &(reg, _))| reg.eq(&register).then_some(idx));
+
+            (least_recently_used, allocation_priority)
+        });
+
+        // Return the least recently used register
+        registers.pop().unwrap()
+    }
+
+    fn peek_free_r64(&self) -> Option<AsmRegister64> {
+        let mut free_regs: Vec<_> = self
+            .r64
+            .iter()
+            .filter_map(|&(register, occupied)| occupied.is_none().then_some(register))
+            .collect();
+
+        if free_regs.is_empty() {
+            return None;
+        }
+
+        // Sort the free registers by the last time they were used and their allocation priority
+        free_regs.sort_unstable_by_key(|&register| {
+            let least_recently_used = self.r64_lru.rank(register);
+            let allocation_priority = self
+                .r64
+                .iter()
+                .enumerate()
+                .find_map(|(idx, &(reg, _))| reg.eq(&register).then_some(idx));
+
+            (least_recently_used, allocation_priority)
+        });
+
+        // Get the last (and therefore least recently used) register
+        free_regs.pop()
+    }
+
     /// Allocates a 64-bit register and the register it evicted, if there is one
     fn allocate_r64(&mut self, clobber_sensitive: bool) -> (AsmRegister64, Option<AsmRegister64>) {
         tracing::debug!(
@@ -561,7 +619,7 @@ impl Registers {
     fn deallocate_r64(&mut self, register: AsmRegister64) {
         tracing::debug!("deallocated {:?}", register);
 
-        self.r64_lru.remove(register);
+        self.r64_lru.demote(register);
         for (reg, occupied) in &mut self.r64 {
             if *reg == register {
                 // debug_assert!(occupied.is_some());
@@ -650,6 +708,26 @@ impl<T> RegisterLru<T> {
             self.cache.push_front(register);
 
             Some(evicted)
+        }
+    }
+
+    fn rank(&self, register: T) -> Option<usize>
+    where
+        T: PartialEq,
+    {
+        self.cache
+            .iter()
+            .enumerate()
+            .find_map(|(idx, reg)| reg.eq(&register).then_some(idx))
+    }
+
+    fn demote(&mut self, register: T)
+    where
+        T: Copy + PartialEq + Debug,
+    {
+        if self.cache.contains(&register) {
+            self.remove(register);
+            self.cache.push_back(register);
         }
     }
 

@@ -1,8 +1,12 @@
-use crate::ir::{pretty_utils, Pretty, PrettyConfig};
+use crate::{
+    ir::{pretty_utils, Pretty, PrettyConfig},
+    utils::DebugDisplay,
+};
 use pretty::{DocAllocator, DocBuilder};
 use std::{
     fmt::{self, Debug, Display, Write},
     ops::{Deref, DerefMut},
+    slice, vec,
 };
 
 #[derive(Debug, Clone)]
@@ -13,6 +17,14 @@ pub struct Blocks {
 impl Blocks {
     pub const fn new(blocks: Vec<BasicBlock>) -> Self {
         Self { blocks }
+    }
+
+    pub fn as_slice(&self) -> &[BasicBlock] {
+        self.blocks.as_slice()
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [BasicBlock] {
+        self.blocks.as_mut_slice()
     }
 }
 
@@ -27,6 +39,33 @@ impl Deref for Blocks {
 impl DerefMut for Blocks {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.blocks
+    }
+}
+
+impl<'a> IntoIterator for &'a Blocks {
+    type Item = &'a BasicBlock;
+    type IntoIter = slice::Iter<'a, BasicBlock>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.blocks.as_slice().iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Blocks {
+    type Item = &'a mut BasicBlock;
+    type IntoIter = slice::IterMut<'a, BasicBlock>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.blocks.as_mut_slice().iter_mut()
+    }
+}
+
+impl IntoIterator for Blocks {
+    type Item = BasicBlock;
+    type IntoIter = vec::IntoIter<BasicBlock>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.blocks.into_iter()
     }
 }
 
@@ -98,6 +137,49 @@ impl BasicBlock {
     /// Set the basic block's terminator.
     pub fn set_terminator(&mut self, terminator: Terminator) {
         self.terminator = terminator;
+    }
+
+    pub fn as_slice(&self) -> &[Instruction] {
+        self.instructions.as_slice()
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [Instruction] {
+        self.instructions.as_mut_slice()
+    }
+
+    pub fn iter(&self) -> slice::Iter<'_, Instruction> {
+        self.as_slice().iter()
+    }
+
+    pub fn iter_mut(&mut self) -> slice::IterMut<'_, Instruction> {
+        self.as_mut_slice().iter_mut()
+    }
+}
+
+impl<'a> IntoIterator for &'a BasicBlock {
+    type Item = &'a Instruction;
+    type IntoIter = slice::Iter<'a, Instruction>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut BasicBlock {
+    type Item = &'a mut Instruction;
+    type IntoIter = slice::IterMut<'a, Instruction>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+impl IntoIterator for BasicBlock {
+    type Item = Instruction;
+    type IntoIter = vec::IntoIter<Instruction>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.instructions.into_iter()
     }
 }
 
@@ -181,6 +263,14 @@ impl Store {
     pub const fn new(ptr: Value, value: Value) -> Self {
         Self { ptr, value }
     }
+
+    pub fn ptr(&self) -> Value {
+        self.ptr
+    }
+
+    pub fn value(&self) -> Value {
+        self.value
+    }
 }
 
 impl Pretty for Store {
@@ -194,13 +284,15 @@ impl Pretty for Store {
     }
 }
 
+/// An assignment instruction that assigns an evaluated value to a name
 #[derive(Debug, Clone)]
 pub struct Assign {
-    pub(super) value: ValId,
-    pub(super) rval: RValue,
+    value: ValId,
+    rval: RValue,
 }
 
 impl Assign {
+    /// Create a new assignment
     pub fn new<R>(value: ValId, rval: R) -> Self
     where
         R: Into<RValue>,
@@ -209,6 +301,21 @@ impl Assign {
             value,
             rval: rval.into(),
         }
+    }
+
+    /// Get the value this assignment assigns to
+    pub const fn value(&self) -> ValId {
+        self.value
+    }
+
+    /// Get a reference to the assignment's right value.
+    pub const fn rval(&self) -> &RValue {
+        &self.rval
+    }
+
+    /// Get a mutable reference to the assignment's right value.
+    pub fn rval_mut(&mut self) -> &mut RValue {
+        &mut self.rval
     }
 }
 
@@ -236,6 +343,10 @@ pub struct Output {
 impl Output {
     pub const fn new(value: Value) -> Self {
         Self { value }
+    }
+
+    pub fn value(&self) -> Value {
+        self.value
     }
 }
 
@@ -405,10 +516,18 @@ impl Phi {
         &mut self.lhs
     }
 
+    // pub fn lhs_src_mut(&mut self) -> &mut BlockId {
+    //     &mut self.lhs_src
+    // }
+
     /// Get a mutable reference to the phi's right hand side.
     pub fn rhs_mut(&mut self) -> &mut Value {
         &mut self.rhs
     }
+
+    // pub fn rhs_src_mut(&mut self) -> &mut BlockId {
+    //     &mut self.rhs_src
+    // }
 }
 
 impl Pretty for Phi {
@@ -418,6 +537,23 @@ impl Pretty for Phi {
         D::Doc: Clone,
         A: Clone,
     {
+        // allocator.text("phi").append(allocator.space()).append(
+        //     self.lhs
+        //         .pretty(allocator, config)
+        //         .append(allocator.space())
+        //         .append(allocator.text("from"))
+        //         .append(allocator.space())
+        //         .append(self.lhs_src.pretty(allocator, config))
+        //         .append(allocator.text(","))
+        //         .append(allocator.space())
+        //         .append(self.rhs.pretty(allocator, config))
+        //         .append(allocator.space())
+        //         .append(allocator.text("from"))
+        //         .append(allocator.space())
+        //         .append(self.rhs_src.pretty(allocator, config))
+        //         .brackets(),
+        // )
+
         pretty_utils::binary("phi", &self.lhs, &self.rhs, allocator, config)
     }
 }
@@ -803,6 +939,10 @@ impl ValId {
     pub const fn new(id: u32) -> Self {
         Self(id)
     }
+
+    pub fn display(&self) -> DebugDisplay<Self> {
+        DebugDisplay::new(*self)
+    }
 }
 
 impl Debug for ValId {
@@ -838,6 +978,10 @@ pub struct BlockId(pub u32);
 impl BlockId {
     pub const fn new(id: u32) -> Self {
         Self(id)
+    }
+
+    pub fn display(&self) -> DebugDisplay<Self> {
+        DebugDisplay::new(*self)
     }
 }
 

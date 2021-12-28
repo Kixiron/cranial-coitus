@@ -145,7 +145,7 @@ impl Pass for ConstFolding {
 
             // If either side of the sub are zero, we can simplify it to the non-zero value
             // `x - 0 => x`
-            [(_, Some(0)), (value, None)] => {
+            [(value, None), (_, Some(0))] => {
                 tracing::debug!(
                     "removing an subtraction by zero {:?} into a direct value of {:?}",
                     sub,
@@ -162,7 +162,7 @@ impl Pass for ConstFolding {
             }
 
             // `0 - x => -x`
-            [(value, None), (_, Some(0))] => {
+            [(_, Some(0)), (value, None)] => {
                 tracing::debug!(
                     "removing an subtraction by zero {:?} (0 - x) into a -{:?}",
                     sub,

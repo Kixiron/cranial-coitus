@@ -104,11 +104,12 @@ pub(super) unsafe extern "win64" fn input(state: *mut State) -> u16 {
     u16::from_be_bytes([value, failed as u8])
 }
 
+// FIXME: Make this take a u8
 pub(super) unsafe extern "win64" fn output(state: *mut State, byte: u64) -> bool {
     log_registers!();
-    println!("state = {}, byte = {}", state as usize, byte);
 
     let byte = byte as u8;
+    println!("state = {}, byte = {}", state as usize, byte);
 
     let state = &mut *state;
     let output_panicked = panic::catch_unwind(AssertUnwindSafe(|| {

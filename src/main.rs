@@ -44,6 +44,7 @@ use std::{
     fmt::Write,
     fs::{self, File},
     io::{BufWriter, Write as _},
+    panic,
     path::Path,
     time::Instant,
 };
@@ -108,8 +109,12 @@ fn debug(
     // Note: This happens *after* we print out the initial graph for better debugging
     validate(&graph);
 
-    let (_, assembly) = Jit::new(cells).unwrap().assemble(&input_program)?;
-    fs::write(dump_dir.join("input.asm"), assembly)?;
+    let _: Result<Result<()>, _> = panic::catch_unwind(|| {
+        let (_, assembly) = Jit::new(cells).unwrap().assemble(&input_program)?;
+        fs::write(dump_dir.join("input.asm"), assembly)?;
+
+        Ok(())
+    });
 
     let unoptimized_execution = if !only_final_run {
         let result_path = dump_dir.join("input-result.txt");

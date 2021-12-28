@@ -6,7 +6,7 @@ use crate::graph::{
 };
 use tinyvec::tiny_vec;
 
-// TODO: Div
+// TODO: Div, Neq
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Add {

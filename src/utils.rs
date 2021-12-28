@@ -2,7 +2,7 @@ use atty::Stream;
 use similar::{Algorithm, TextDiff};
 use std::{
     collections::BTreeSet,
-    fmt::{self, Debug},
+    fmt::{self, Debug, Display},
     hash::{BuildHasherDefault, Hash},
     time::{Duration, Instant},
 };
@@ -153,6 +153,41 @@ pub fn compile_brainfuck_into(
 
         (ptr, effect)
     })
+}
+
+/// Uses a type's [`Display`] implementation for [`Debug`] printing it
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct DebugDisplay<T>(T);
+
+impl<T> DebugDisplay<T> {
+    /// Creates a new `DebugDisplay`
+    pub fn new(inner: T) -> Self {
+        Self(inner)
+    }
+
+    /// Gets the inner value from a `DebugDisplay`
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> Debug for DebugDisplay<T>
+where
+    T: Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
+impl<T> Display for DebugDisplay<T>
+where
+    T: Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.0, f)
+    }
 }
 
 pub trait Set<K> {

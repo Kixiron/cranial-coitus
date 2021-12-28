@@ -203,16 +203,14 @@ fn translate_inst(
                                 };
 
                                 for inst in block.instructions_mut() {
-                                    if let Instruction::Assign(Assign {
-                                        value: assign_val,
-                                        rval: RValue::Phi(phi),
-                                    }) = inst
-                                    {
-                                        if *assign_val == val {
-                                            if resolve_lhs {
-                                                *phi.lhs_mut() = value;
-                                            } else {
-                                                *phi.rhs_mut() = value;
+                                    if let Instruction::Assign(assign) = inst {
+                                        if assign.value() == val {
+                                            if let RValue::Phi(phi) = assign.rval_mut() {
+                                                if resolve_lhs {
+                                                    *phi.lhs_mut() = value;
+                                                } else {
+                                                    *phi.rhs_mut() = value;
+                                                }
                                             }
                                         }
                                     }
@@ -265,9 +263,10 @@ fn translate_inst(
 
             builder.create_block(true_block);
             for inst in &gamma.true_branch {
-                translate_inst(builder, phis, inst);
+                if !inst.is_output_param() {
+                    translate_inst(builder, phis, inst);
+                }
             }
-            // FIXME: Outputs
 
             // After executing the branch, jump to the instructions after the gamma
             builder
@@ -276,9 +275,10 @@ fn translate_inst(
 
             builder.create_block(false_block);
             for inst in &gamma.false_branch {
-                translate_inst(builder, phis, inst);
+                if !inst.is_output_param() {
+                    translate_inst(builder, phis, inst);
+                }
             }
-            // FIXME: Outputs
 
             // After executing the branch, jump to the instructions after the gamma
             builder
@@ -289,6 +289,15 @@ fn translate_inst(
 
             // Create & enter a new block for the following instructions
             builder.create_block(tail);
+
+            for (var_id, true_val) in gamma.true_outputs.iter() {
+                let val = builder.create_val();
+                let false_val = builder.get(*gamma.false_outputs.get(var_id).unwrap());
+                let true_val = builder.get(*true_val);
+
+                builder.assign(*var_id, val);
+                builder.push(Assign::new(val, Phi::new(true_val, false_val)))
+            }
         }
 
         CirInstruction::Store(store) => {

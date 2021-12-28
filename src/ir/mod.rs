@@ -11,7 +11,7 @@ use crate::{
     utils::percent_total,
 };
 use pretty::{DocAllocator, DocBuilder};
-use pretty_print::{COMMENT_ALIGNMENT_OFFSET, INDENT_WIDTH};
+use pretty_print::COMMENT_ALIGNMENT_OFFSET;
 use std::{
     borrow::Cow,
     collections::BTreeMap,
@@ -104,6 +104,7 @@ impl Pretty for Block {
             .intersperse(
                 self.instructions
                     .iter()
+                    .filter(|inst| config.show_lifetimes || !inst.is_lifetime_end())
                     .map(|inst| inst.pretty(allocator, config)),
                 allocator.hardline(),
             )
@@ -127,6 +128,20 @@ impl Instruction {
     /// [`LifetimeEnd`]: Instruction::LifetimeEnd
     pub const fn is_lifetime_end(&self) -> bool {
         matches!(self, Self::LifetimeEnd(..))
+    }
+
+    pub const fn as_assign(&self) -> Option<&Assign> {
+        if let Self::Assign(assign) = self {
+            Some(assign)
+        } else {
+            None
+        }
+    }
+
+    pub fn is_output_param(&self) -> bool {
+        self.as_assign()
+            .map(Assign::is_output_param)
+            .unwrap_or_default()
     }
 }
 
@@ -364,21 +379,7 @@ impl Pretty for Theta {
         .append(allocator.text("do"))
         .append(allocator.space())
         .append(allocator.text("{"))
-        .append(if self.body.is_empty() {
-            allocator.nil()
-        } else {
-            allocator
-                .hardline()
-                .append(
-                    allocator
-                        .intersperse(
-                            self.body.iter().map(|inst| inst.pretty(allocator, config)),
-                            allocator.hardline(),
-                        )
-                        .indent(INDENT_WIDTH),
-                )
-                .append(allocator.hardline())
-        })
+        .append(pretty_utils::body_block(allocator, config, &self.body))
         .append(allocator.text("}"))
         .append(allocator.space())
         .append(allocator.text("while"))
@@ -542,45 +543,21 @@ impl Pretty for Gamma {
         .append(self.cond.pretty(allocator, config))
         .append(allocator.space())
         .append(allocator.text("{"))
-        .append(if self.true_branch.is_empty() {
-            allocator.nil()
-        } else {
-            allocator
-                .hardline()
-                .append(
-                    allocator
-                        .intersperse(
-                            self.true_branch
-                                .iter()
-                                .map(|inst| inst.pretty(allocator, config)),
-                            allocator.hardline(),
-                        )
-                        .indent(INDENT_WIDTH),
-                )
-                .append(allocator.hardline())
-        })
+        .append(pretty_utils::body_block(
+            allocator,
+            config,
+            &self.true_branch,
+        ))
         .append(allocator.text("}"))
         .append(allocator.space())
         .append(allocator.text("else"))
         .append(allocator.space())
         .append(allocator.text("{"))
-        .append(if self.false_branch.is_empty() {
-            allocator.nil()
-        } else {
-            allocator
-                .hardline()
-                .append(
-                    allocator
-                        .intersperse(
-                            self.false_branch
-                                .iter()
-                                .map(|inst| inst.pretty(allocator, config)),
-                            allocator.hardline(),
-                        )
-                        .indent(INDENT_WIDTH),
-                )
-                .append(allocator.hardline())
-        })
+        .append(pretty_utils::body_block(
+            allocator,
+            config,
+            &self.false_branch,
+        ))
         .append(allocator.text("}"))
     }
 }

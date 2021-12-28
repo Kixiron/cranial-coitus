@@ -103,9 +103,7 @@ impl BlockBuilder {
     where
         V: Into<Value>,
     {
-        self.values.insert(var, value.into());
-        // TODO: We double-insert because of gamma branches
-        // .debug_unwrap_none();
+        self.values.insert(var, value.into()).debug_unwrap_none();
     }
 
     /// Gets the current block

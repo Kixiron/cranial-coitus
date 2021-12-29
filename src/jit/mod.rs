@@ -486,6 +486,8 @@ impl Jit {
         let (lhs, rhs) = (self.get_value(add.lhs()), self.get_value(add.rhs()));
 
         let mut dest = None;
+
+        // Attempt to reuse the lhs's register if available
         if let Operand::Register(reg) = lhs {
             if let Value::Val(val) = add.lhs() {
                 if self
@@ -494,41 +496,41 @@ impl Jit {
                 {
                     self.regalloc.allocate_overwrite(reg);
                     self.values.remove(&val);
-                    dest = Some(reg);
+                    dest = Some((reg, rhs));
                 }
             }
         }
 
-        // TODO: We can reuse the right register as well, order of addition doesn't matter
-        // if dest.is_none() {
-        //     if let Operand::Register(reg) = rhs {
-        //         if let Value::Val(val) = add.rhs() {
-        //             if self.liveliness.is_last_usage(
-        //                 val,
-        //                 self.current_block,
-        //                 self.current_inst,
-        //             ) {
-        //                 self.regalloc.allocate_overwrite(reg);
-        //                 self.values.remove(&val);
-        //                 dest = Some(reg);
-        //             }
-        //         }
-        //     }
-        // }
+        // If we couldn't reuse the lhs's register, try to reuse the rhs's
+        if dest.is_none() {
+            if let Operand::Register(reg) = rhs {
+                if let Value::Val(val) = add.rhs() {
+                    if self
+                        .liveliness
+                        .is_last_usage(val, self.current_block, self.current_inst)
+                    {
+                        self.regalloc.allocate_overwrite(reg);
+                        self.values.remove(&val);
+                        dest = Some((reg, lhs));
+                    }
+                }
+            }
+        }
 
-        // Currently `dest` is assumed to contain the lhs
-        let dest = match dest {
+        // Currently `dest` contains one operand of the add and `operand` contains
+        // the other
+        let (dest, operand) = match dest {
             Some(dest) => dest,
             None => {
                 let dest = self.allocate_register()?;
                 self.move_to_reg(dest, lhs)?;
-                dest
+                (dest, rhs)
             }
         };
 
-        match rhs {
-            // Operand::Byte(0) | Operand::Uint(0) => {}
-            // Operand::Byte(1) | Operand::Uint(1) => self.asm.inc(dest)?,
+        match operand {
+            Operand::Byte(0) | Operand::Uint(0) => {}
+            Operand::Byte(1) | Operand::Uint(1) => self.asm.inc(dest)?,
             Operand::Byte(byte) => self.asm.add(dest, byte as i32)?,
             Operand::Uint(uint) => self.asm.add(dest, uint as i32)?,
 
@@ -590,6 +592,8 @@ impl Jit {
 
             Operand::Register(reg) => {
                 let mut dest = None;
+
+                // Attempt to reuse the register
                 if let Value::Val(val) = load.ptr() {
                     if self
                         .liveliness

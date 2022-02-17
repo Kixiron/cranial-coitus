@@ -1390,7 +1390,7 @@ impl Const {
 
     pub fn convert_to_u8(&self) -> Option<u8> {
         match *self {
-            Self::Int(int) => Some(int.rem_euclid(u8::MAX as u32 + 1) as u8),
+            Self::Int(int) => Some(int.rem_euclid(u8::MAX as u32) as u8),
             Self::U8(byte) => Some(byte),
             Self::Bool(bool) => Some(bool as u8),
         }
@@ -1398,7 +1398,7 @@ impl Const {
 
     pub fn convert_to_u16(&self) -> Option<u16> {
         match *self {
-            Self::Int(int) => Some(int.rem_euclid(u16::MAX as u32 + 1) as u16),
+            Self::Int(int) => Some(int.rem_euclid(u16::MAX as u32) as u16),
             Self::U8(byte) => Some(byte as u16),
             Self::Bool(bool) => Some(bool as u16),
         }
@@ -1468,10 +1468,10 @@ impl ops::Add for Const {
         match (self, rhs) {
             (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs + rhs),
             (Self::Int(lhs), Self::U8(rhs)) => {
-                Self::U8((lhs.rem_euclid(u8::MAX as u32 + 1) as u8).wrapping_add(rhs))
+                Self::U8((lhs.rem_euclid(u8::MAX as u32) as u8).wrapping_add(rhs))
             }
             (Self::U8(lhs), Self::Int(rhs)) => {
-                Self::U8(lhs.wrapping_add(rhs.rem_euclid(u8::MAX as u32 + 1) as u8))
+                Self::U8(lhs.wrapping_add(rhs.rem_euclid(u8::MAX as u32) as u8))
             }
             (Self::U8(lhs), Self::U8(rhs)) => Self::U8(lhs.wrapping_add(rhs)),
             (Self::Bool(_), _) | (_, Self::Bool(_)) => panic!("can't add booleans"),
@@ -1494,10 +1494,10 @@ impl ops::Sub for Const {
         match (self, rhs) {
             (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs - rhs),
             (Self::Int(lhs), Self::U8(rhs)) => {
-                Self::U8((lhs.rem_euclid(u8::MAX as u32 + 1) as u8).wrapping_sub(rhs))
+                Self::U8((lhs.rem_euclid(u8::MAX as u32) as u8).wrapping_sub(rhs))
             }
             (Self::U8(lhs), Self::Int(rhs)) => {
-                Self::U8(lhs.wrapping_sub(rhs.rem_euclid(u8::MAX as u32 + 1) as u8))
+                Self::U8(lhs.wrapping_sub(rhs.rem_euclid(u8::MAX as u32) as u8))
             }
             (Self::U8(lhs), Self::U8(rhs)) => Self::U8(lhs.wrapping_sub(rhs)),
             (Self::Bool(_), _) | (_, Self::Bool(_)) => panic!("can't subtract booleans"),
@@ -1520,10 +1520,10 @@ impl ops::Mul for Const {
         match (self, rhs) {
             (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs * rhs),
             (Self::Int(lhs), Self::U8(rhs)) => {
-                Self::U8((lhs.rem_euclid(u8::MAX as u32 + 1) as u8).wrapping_mul(rhs))
+                Self::U8((lhs.rem_euclid(u8::MAX as u32) as u8).wrapping_mul(rhs))
             }
             (Self::U8(lhs), Self::Int(rhs)) => {
-                Self::U8(lhs.wrapping_mul(rhs.rem_euclid(u8::MAX as u32 + 1) as u8))
+                Self::U8(lhs.wrapping_mul(rhs.rem_euclid(u8::MAX as u32) as u8))
             }
             (Self::U8(lhs), Self::U8(rhs)) => Self::U8(lhs.wrapping_mul(rhs)),
             (Self::Bool(_), _) | (_, Self::Bool(_)) => panic!("can't multiply booleans"),

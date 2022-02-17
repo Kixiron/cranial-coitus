@@ -14,6 +14,7 @@ ranges = "0.3.3"
 anyhow = "1.0.45"
 pretty = "0.11.2"
 similar = "2.1.0"
+petgraph = "0.6.0"
 clap = "3.0.0-beta.5"
 superluminal-perf = "0.1.1"
 tinyvec = { version = "1.5.0", features = ["alloc"] }

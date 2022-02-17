@@ -289,6 +289,7 @@ impl Pretty for Store {
 pub struct Assign {
     value: ValId,
     rval: RValue,
+    phi_targets: Vec<ValId>,
 }
 
 impl Assign {
@@ -300,6 +301,7 @@ impl Assign {
         Self {
             value,
             rval: rval.into(),
+            phi_targets: Vec::new(),
         }
     }
 
@@ -316,6 +318,14 @@ impl Assign {
     /// Get a mutable reference to the assignment's right value.
     pub fn rval_mut(&mut self) -> &mut RValue {
         &mut self.rval
+    }
+
+    pub fn phi_targets(&self) -> &[ValId] {
+        &self.phi_targets
+    }
+
+    pub fn phi_targets_mut(&mut self) -> &mut Vec<ValId> {
+        &mut self.phi_targets
     }
 }
 

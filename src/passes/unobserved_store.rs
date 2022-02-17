@@ -5,6 +5,11 @@ use crate::{
 };
 
 /// Removes unobserved stores
+// FIXME: Every time an unobserved store is removed, a new node becomes the last effect.
+//        This isn't bad, but it requires the pass to run many many times before
+//        all of the unobserved effects have been removed. Instead, we want to do
+//        batched removal where we remove *all* of the trailing stores instead of
+//        removing them one at a time.
 pub struct UnobservedStore {
     changed: bool,
     // TODO: This is also a bit ham-fisted, but a more complex analysis of

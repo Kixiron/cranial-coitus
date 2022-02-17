@@ -1,15 +1,12 @@
 #![feature(
-    asm,
     try_blocks,
     drain_filter,
     array_windows,
-    result_cloned,
     slice_ptr_get,
     slice_ptr_len,
     bool_to_option,
     hash_drain_filter,
     vec_into_raw_parts,
-    destructuring_assignment,
     nonnull_slice_from_raw_parts
 )]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -111,8 +108,12 @@ fn debug(
     validate(&graph);
 
     let _: Result<Result<()>, _> = panic::catch_unwind(|| {
-        let (_, assembly) = Jit::new(cells).unwrap().assemble(&input_program)?;
+        let (jit, assembly) = Jit::new(cells).unwrap().assemble(&input_program)?;
         fs::write(dump_dir.join("input.asm"), assembly)?;
+
+        // let mut tape = vec![0x00; cells];
+        // // Safety: Decidedly not safe in the slightest
+        // unsafe { jit.execute(&mut tape)? };
 
         Ok(())
     });

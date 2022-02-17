@@ -30,7 +30,7 @@ macro_rules! log_registers {
             mut rsp_val,
         ): (u64, u64, u64, u64, u64, u64);
 
-        asm!(
+        ::std::arch::asm!(
             "mov {0}, rax",
             "mov {1}, rcx",
             "mov {2}, rdx",
@@ -46,7 +46,7 @@ macro_rules! log_registers {
             options(pure, nostack, readonly),
         );
 
-        println!(
+        ::std::println!(
             "[{}:{}:{}]: rax = {}, rcx = {}, rdx = {}, r8 = {}, r9 = {}, rsp = {}",
             file!(),
             line!(),

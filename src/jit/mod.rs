@@ -21,7 +21,7 @@ use crate::{
             Store, Terminator, ValId, Value,
         },
         ffi::State,
-        liveliness::Liveliness,
+        liveliness::{BlockLifetime, Liveliness, LivelinessAnalysis, Location},
         regalloc::{Regalloc, StackSlot},
     },
     utils::AssertNone,
@@ -86,8 +86,8 @@ pub struct Jit {
     // TODO: Control flow graph + liveliness gives us the ability to
     //       get the current set of live variables at any given point
     liveliness: Liveliness,
-    current_block: BlockId,
-    current_inst: Option<usize>,
+    current_location: Location,
+    phi_destinations: BTreeMap<ValId, AsmRegister64>,
 }
 
 impl Jit {
@@ -107,8 +107,8 @@ impl Jit {
             named_labels: BTreeMap::new(),
             block_labels: BTreeMap::new(),
             liveliness: Liveliness::new(),
-            current_block: BlockId::new(u32::MAX),
-            current_inst: None,
+            current_location: Location::new(BlockId::new(u32::MAX), None),
+            phi_destinations: BTreeMap::new(),
         })
     }
 
@@ -120,7 +120,7 @@ impl Jit {
             blocks.pretty_print(PrettyConfig::minimal()),
         );
 
-        self.liveliness.run(&blocks);
+        self.liveliness = LivelinessAnalysis::new().run(&blocks);
         println!("liveliness: {:#?}", self.liveliness);
 
         self.prologue()?;
@@ -129,7 +129,7 @@ impl Jit {
 
         self.create_block_labels(&blocks);
         for (idx, block) in blocks.iter().enumerate() {
-            self.current_block = block.id();
+            *self.current_location.block_mut() = block.id();
 
             let next_block = blocks.get(idx + 1).map(BasicBlock::id);
             self.assemble_block(block, next_block)?;
@@ -166,12 +166,38 @@ impl Jit {
         self.add_comment(format!("start {}", block.id()));
         // self.asm.nop()?;
 
+        for (&value, lifetime) in &self.liveliness.lifetimes {
+            if let Ok(idx) = lifetime
+                .blocks
+                .binary_search_by_key(&block.id(), |&(block, _)| block)
+            {
+                match lifetime.blocks[idx].1 {
+                    BlockLifetime::Whole => {
+                        if !self.values.contains_key(&value) {
+                            let dest = self.allocate_register()?;
+                            self.values.insert(value, Operand::Register(dest));
+                        }
+                    }
+                    BlockLifetime::Span(..) => todo!(),
+                }
+            }
+        }
+
         for (idx, inst) in block.iter().enumerate() {
-            self.current_inst = Some(idx);
+            *self.current_location.inst_mut() = Some(idx);
+
+            // // Allocate space for all declared variables
+            // for decl in self.liveliness.declarations_at(self.current_location) {
+            //     let dest = self.allocate_register()?;
+            //     self.values
+            //         .insert(decl, Operand::Register(dest))
+            //         .debug_unwrap_none();
+            // }
+
             self.assemble_inst(inst)?;
         }
 
-        self.current_inst = None;
+        *self.current_location.inst_mut() = None;
         self.assemble_terminator(block.terminator(), next_block)?;
 
         Ok(())
@@ -329,9 +355,18 @@ impl Jit {
     }
 
     fn assemble_assign(&mut self, assign: &Assign) -> AsmResult<()> {
+        let dest = match self.get_var(assign.value()) {
+            Operand::Register(dest) => dest,
+            Operand::Stack(slot) => {
+                let dest = self.allocate_register()?;
+                self.asm.mov(dest, self.stack_offset(slot))?;
+                dest
+            }
+            _ => unreachable!(),
+        };
+
         match assign.rval() {
             RValue::Eq(eq) => {
-                let dest = self.allocate_register()?;
                 let (lhs, rhs) = (self.get_value(eq.lhs()), self.get_value(eq.rhs()));
 
                 match (lhs, rhs) {
@@ -397,41 +432,32 @@ impl Jit {
                 // Move the comparison result from al into the allocated
                 // register with a zero sign extension
                 self.asm.movzx(dest, al)?;
-
-                self.values
-                    .insert(assign.value(), Operand::Register(dest))
-                    .debug_unwrap_none();
             }
 
-            // RValue::Phi(_) => todo!(),
             // RValue::Neg(_) => todo!(),
             RValue::Not(not) => {
                 let value = self.get_value(not.value());
-                let dest = if let Value::Val(val) = not.value() {
-                    match value {
-                        Operand::Register(register)
-                            if self.liveliness.is_last_usage(
-                                val,
-                                self.current_block,
-                                self.current_inst,
-                            ) =>
-                        {
-                            self.regalloc.allocate_overwrite(register);
-                            self.values.remove(&val);
-                            register
-                        }
-
-                        _ => {
-                            let dest = self.allocate_register()?;
-                            self.move_to_reg(dest, value)?;
-                            dest
-                        }
-                    }
-                } else {
-                    let dest = self.allocate_register()?;
-                    self.move_to_reg(dest, value)?;
-                    dest
-                };
+                // let dest = if let Value::Val(val) = not.value() {
+                //     match value {
+                //         Operand::Register(register)
+                //             if self.liveliness.is_last_usage(val, self.current_location) =>
+                //         {
+                //             self.regalloc.allocate_overwrite(register);
+                //             self.values.remove(&val);
+                //             register
+                //         }
+                //
+                //         _ => {
+                //             let dest = self.allocate_register()?;
+                //             self.move_to_reg(dest, value)?;
+                //             dest
+                //         }
+                //     }
+                // } else {
+                //     let dest = self.allocate_register()?;
+                //     self.move_to_reg(dest, value)?;
+                //     dest
+                // };
 
                 // Perform a *logical* not on the destination value
                 self.asm.xor(dest, 1)?;
@@ -441,10 +467,10 @@ impl Jit {
                     .debug_unwrap_none();
             }
 
-            RValue::Add(add) => self.assemble_add(add, assign)?,
+            RValue::Add(add) => self.assemble_add(dest, add, assign)?,
 
             RValue::Sub(sub) => {
-                let dest = self.allocate_register()?;
+                // let dest = self.allocate_register()?;
                 let (lhs, rhs) = (self.get_value(sub.lhs()), self.get_value(sub.rhs()));
 
                 self.move_to_reg(dest, lhs)?;
@@ -465,76 +491,30 @@ impl Jit {
             }
 
             // RValue::Mul(_) => todo!(),
-            RValue::Load(load) => self.assemble_load(load, assign)?,
+            RValue::Load(load) => self.assemble_load(dest, load, assign)?,
 
-            RValue::Input(input) => self.assemble_input(input, assign)?,
+            RValue::Input(input) => self.assemble_input(dest, input, assign)?,
+
+            RValue::Phi(phi) => {}
 
             // RValue::BitNot(_) => todo!(),
-            rvalue => {
-                self.values
-                    .insert(assign.value(), Operand::Byte(0))
-                    .debug_unwrap_none();
-
-                todo!("{:?}", rvalue);
-            }
+            rvalue => todo!("{:?}", rvalue),
         }
 
         Ok(())
     }
 
-    fn assemble_add(&mut self, add: &Add, assign: &Assign) -> AsmResult<()> {
+    fn assemble_add(&mut self, dest: AsmRegister64, add: &Add, assign: &Assign) -> AsmResult<()> {
         let (lhs, rhs) = (self.get_value(add.lhs()), self.get_value(add.rhs()));
 
-        let mut dest = None;
+        self.move_to_reg(dest, lhs)?;
 
-        // Attempt to reuse the lhs's register if available
-        if let Operand::Register(reg) = lhs {
-            if let Value::Val(val) = add.lhs() {
-                if self
-                    .liveliness
-                    .is_last_usage(val, self.current_block, self.current_inst)
-                {
-                    self.regalloc.allocate_overwrite(reg);
-                    self.values.remove(&val);
-                    dest = Some((reg, rhs));
-                }
-            }
-        }
-
-        // If we couldn't reuse the lhs's register, try to reuse the rhs's
-        if dest.is_none() {
-            if let Operand::Register(reg) = rhs {
-                if let Value::Val(val) = add.rhs() {
-                    if self
-                        .liveliness
-                        .is_last_usage(val, self.current_block, self.current_inst)
-                    {
-                        self.regalloc.allocate_overwrite(reg);
-                        self.values.remove(&val);
-                        dest = Some((reg, lhs));
-                    }
-                }
-            }
-        }
-
-        // Currently `dest` contains one operand of the add and `operand` contains
-        // the other
-        let (dest, operand) = match dest {
-            Some(dest) => dest,
-            None => {
-                let dest = self.allocate_register()?;
-                self.move_to_reg(dest, lhs)?;
-                (dest, rhs)
-            }
-        };
-
-        match operand {
+        match rhs {
             Operand::Byte(0) | Operand::Uint(0) => {}
             Operand::Byte(1) | Operand::Uint(1) => self.asm.inc(dest)?,
+
             Operand::Byte(byte) => self.asm.add(dest, byte as i32)?,
             Operand::Uint(uint) => self.asm.add(dest, uint as i32)?,
-
-            Operand::Bool(_) => panic!("cannot add a boolean"),
 
             Operand::Stack(slot) => {
                 let addr = self.stack_offset(slot);
@@ -542,20 +522,80 @@ impl Jit {
             }
 
             Operand::Register(reg) => self.asm.add(dest, reg)?,
+
+            Operand::Bool(_) => panic!("cannot add a boolean"),
         }
 
-        self.values
-            .insert(assign.value(), Operand::Register(dest))
-            .debug_unwrap_none();
+        // let mut dest = None;
+        //
+        // // Attempt to reuse the lhs's register if available
+        // if let Operand::Register(reg) = lhs {
+        //     if let Value::Val(val) = add.lhs() {
+        //         if self.liveliness.is_last_usage(val, self.current_location) {
+        //             self.regalloc.allocate_overwrite(reg);
+        //             self.values.remove(&val);
+        //             dest = Some((reg, rhs));
+        //         }
+        //     }
+        // }
+        //
+        // // If we couldn't reuse the lhs's register, try to reuse the rhs's
+        // if dest.is_none() {
+        //     if let Operand::Register(reg) = rhs {
+        //         if let Value::Val(val) = add.rhs() {
+        //             if self.liveliness.is_last_usage(val, self.current_location) {
+        //                 self.regalloc.allocate_overwrite(reg);
+        //                 self.values.remove(&val);
+        //                 dest = Some((reg, lhs));
+        //             }
+        //         }
+        //     }
+        // }
+        //
+        // // Currently `dest` contains one operand of the add and `operand` contains
+        // // the other
+        // let (dest, operand) = match dest {
+        //     Some(dest) => dest,
+        //     None => {
+        //         let dest = self.allocate_register()?;
+        //         self.move_to_reg(dest, lhs)?;
+        //         (dest, rhs)
+        //     }
+        // };
+        //
+        // match operand {
+        //     Operand::Byte(0) | Operand::Uint(0) => {}
+        //     Operand::Byte(1) | Operand::Uint(1) => self.asm.inc(dest)?,
+        //     Operand::Byte(byte) => self.asm.add(dest, byte as i32)?,
+        //     Operand::Uint(uint) => self.asm.add(dest, uint as i32)?,
+        //
+        //     Operand::Bool(_) => panic!("cannot add a boolean"),
+        //
+        //     Operand::Stack(slot) => {
+        //         let addr = self.stack_offset(slot);
+        //         self.asm.add(dest, addr)?;
+        //     }
+        //
+        //     Operand::Register(reg) => self.asm.add(dest, reg)?,
+        // }
+        //
+        // self.values
+        //     .insert(assign.value(), Operand::Register(dest))
+        //     .debug_unwrap_none();
 
         Ok(())
     }
 
-    fn assemble_load(&mut self, load: &Load, assign: &Assign) -> AsmResult<()> {
+    fn assemble_load(
+        &mut self,
+        dest: AsmRegister64,
+        load: &Load,
+        assign: &Assign,
+    ) -> AsmResult<()> {
         let ptr = self.get_value(load.ptr());
         let dest = match ptr {
             Operand::Byte(ptr) => {
-                let dest = self.allocate_register()?;
+                // let dest = self.allocate_register()?;
                 let tape_ptr = self.tape_start_ptr();
 
                 self.asm.mov(dest, tape_ptr)?;
@@ -566,7 +606,7 @@ impl Jit {
             }
 
             Operand::Uint(ptr) => {
-                let dest = self.allocate_register()?;
+                // let dest = self.allocate_register()?;
                 let tape_ptr = self.tape_start_ptr();
 
                 self.asm.mov(dest, tape_ptr)?;
@@ -579,7 +619,7 @@ impl Jit {
             Operand::Bool(_) => panic!("cannot offset a pointer by a boolean"),
 
             Operand::Stack(slot) => {
-                let dest = self.allocate_register()?;
+                // let dest = self.allocate_register()?;
                 let tape_ptr = self.tape_start_ptr();
                 let addr = self.stack_offset(slot);
 
@@ -591,24 +631,21 @@ impl Jit {
             }
 
             Operand::Register(reg) => {
-                let mut dest = None;
-
-                // Attempt to reuse the register
-                if let Value::Val(val) = load.ptr() {
-                    if self
-                        .liveliness
-                        .is_last_usage(val, self.current_block, self.current_inst)
-                    {
-                        self.regalloc.allocate_overwrite(reg);
-                        self.values.remove(&val);
-                        dest = Some(reg);
-                    }
-                }
-
-                let dest = match dest {
-                    Some(dest) => dest,
-                    None => self.allocate_register()?,
-                };
+                // let mut dest = None;
+                //
+                // // Attempt to reuse the register
+                // if let Value::Val(val) = load.ptr() {
+                //     if self.liveliness.is_last_usage(val, self.current_location) {
+                //         self.regalloc.allocate_overwrite(reg);
+                //         self.values.remove(&val);
+                //         dest = Some(reg);
+                //     }
+                // }
+                //
+                // let dest = match dest {
+                //     Some(dest) => dest,
+                //     None => self.allocate_register()?,
+                // };
                 let tape_ptr = self.tape_start_ptr();
 
                 self.asm.mov(dest, tape_ptr)?;
@@ -619,14 +656,19 @@ impl Jit {
             }
         };
 
-        self.values
-            .insert(assign.value(), Operand::Register(dest))
-            .debug_unwrap_none();
+        // self.values
+        //     .insert(assign.value(), Operand::Register(dest))
+        //     .debug_unwrap_none();
 
         Ok(())
     }
 
-    fn assemble_input(&mut self, _input: &Input, assign: &Assign) -> AsmResult<()> {
+    fn assemble_input(
+        &mut self,
+        input_reg: AsmRegister64,
+        _input: &Input,
+        assign: &Assign,
+    ) -> AsmResult<()> {
         self.has_io_functions = true;
 
         // Move the state pointer into rcx
@@ -648,8 +690,8 @@ impl Jit {
         // 7th byte is the input value (if the function succeeded) and the 8th byte is the status
         // code, 1 for error and 0 for success
 
-        // Allocate the register that'll hold the value gotten from the input
-        let input_reg = self.allocate_register()?;
+        // // Allocate the register that'll hold the value gotten from the input
+        // let input_reg = self.allocate_register()?;
 
         // Check if an IO error occurred
         self.asm.cmp(low_byte_register(rax), 0)?;
@@ -662,9 +704,9 @@ impl Jit {
         // Shift right by one byte in order to keep only the input value
         self.asm.shr(input_reg, 8)?;
 
-        self.values
-            .insert(assign.value(), Operand::Register(input_reg))
-            .debug_unwrap_none();
+        // self.values
+        //     .insert(assign.value(), Operand::Register(input_reg))
+        //     .debug_unwrap_none();
 
         Ok(())
     }
@@ -880,12 +922,13 @@ impl Jit {
             Value::Byte(byte) => Operand::Byte(byte),
             Value::Uint(uint) => Operand::Uint(uint),
             Value::Bool(bool) => Operand::Bool(bool),
-            Value::Val(var) => self.values.get(&var).copied().unwrap_or_else(|| {
-                panic!(
+            Value::Val(var) => match self.values.get(&var).copied() {
+                Some(operand) => operand,
+                None => panic!(
                     "attempted to get the value of {:?}, but {} couldn't be found",
                     value, var,
-                )
-            }),
+                ),
+            },
         }
     }
 

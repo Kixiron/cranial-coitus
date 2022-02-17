@@ -2,11 +2,10 @@ use crate::{
     graph::{Node, NodeId, Port, PortData, PortId, Rvsdg},
     utils::Set,
 };
-use std::fmt::Debug;
 
 impl Rvsdg {
     /// Remove the given node from the graph along with all ports and edges associated with it
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn remove_node(&mut self, node_id: NodeId) -> Option<Node> {
         if let Some(node) = self.nodes.remove(&node_id) {
             tracing::trace!("removing {:?}", node);
@@ -34,10 +33,10 @@ impl Rvsdg {
     ///
     /// Returns `true` if any nodes, ports or edges were removed from the graph
     ///
-    #[tracing::instrument(skip(self, removed_nodes))]
+    #[tracing::instrument(level = "trace", skip(self, removed_nodes))]
     pub fn bulk_remove_nodes<S>(&mut self, removed_nodes: &S) -> bool
     where
-        S: Set<NodeId> + Debug,
+        S: Set<NodeId>,
     {
         self.retain_graph_elements(
             |parent| !removed_nodes.contains(&parent),
@@ -54,10 +53,10 @@ impl Rvsdg {
     ///
     /// Returns `true` if any nodes, ports or edges were removed from the graph
     ///
-    #[tracing::instrument(skip(self, retained_nodes))]
+    #[tracing::instrument(level = "trace", skip(self, retained_nodes))]
     pub fn bulk_retain_nodes<S>(&mut self, retained_nodes: &S) -> bool
     where
-        S: Set<NodeId> + Debug,
+        S: Set<NodeId>,
     {
         self.retain_graph_elements(
             |parent| retained_nodes.contains(&parent),

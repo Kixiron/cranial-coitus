@@ -63,7 +63,7 @@ macro_rules! log_registers {
 
 /// Returns a `u16` where the first byte is the input value and the second
 /// byte is a 1 upon IO failure and a 0 upon success
-pub(super) unsafe extern "win64" fn input(state: *mut State) -> u16 {
+pub(super) unsafe extern "fastcall" fn input(state: *mut State) -> u16 {
     unsafe { log_registers!() }
     println!("state = {}", state as usize);
 
@@ -102,15 +102,13 @@ pub(super) unsafe extern "win64" fn input(state: *mut State) -> u16 {
     u16::from_be_bytes([value, failed as u8])
 }
 
-// FIXME: Make this take a u8
-pub(super) unsafe extern "win64" fn output(state: *mut State, byte: u64) -> u8 {
+pub(super) unsafe extern "fastcall" fn output(state: *mut State, byte: u8) -> bool {
     unsafe { log_registers!() }
 
     println!("state = {}, byte = {}", state as usize, byte);
-    let byte = byte as u8;
 
     let state = unsafe { &mut *state };
-    let output_panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+    panic::catch_unwind(AssertUnwindSafe(|| {
         let write_result = if byte.is_ascii() {
             state.stdout.write_all(&[byte])
         } else {
@@ -125,18 +123,14 @@ pub(super) unsafe extern "win64" fn output(state: *mut State, byte: u64) -> u8 {
                 true
             }
         }
-    }));
-
-    match output_panicked {
-        Ok(result) => result as u8,
-        Err(err) => {
-            tracing::error!("writing byte to stdout panicked: {:?}", err);
-            true as u8
-        }
-    }
+    }))
+    .unwrap_or_else(|err| {
+        tracing::error!("writing byte to stdout panicked: {:?}", err);
+        true
+    })
 }
 
-pub(super) unsafe extern "win64" fn io_error_encountered(state: *mut State) -> bool {
+pub(super) unsafe extern "fastcall" fn io_error_encountered(state: *mut State) -> bool {
     unsafe { log_registers!() }
     println!("state = {}", state as usize);
 

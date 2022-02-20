@@ -108,7 +108,7 @@ fn debug(
     validate(&graph);
 
     let _: Result<Result<()>, _> = panic::catch_unwind(|| {
-        let (jit, assembly) = Jit::new(cells).unwrap().assemble(&input_program)?;
+        let (jit, assembly) = Jit::new(cells).compile(&input_program)?;
         fs::write(dump_dir.join("input.asm"), assembly)?;
 
         // let mut tape = vec![0x00; cells];
@@ -519,7 +519,7 @@ fn debug(
         output_program.pretty_print(PrettyConfig::instrumented(optimized_stats.instructions));
     fs::write(dump_dir.join("annotated_output.cir"), annotated_program)?;
 
-    let (jit, assembly) = Jit::new(cells).unwrap().assemble(&output_program)?;
+    let (jit, assembly) = Jit::new(cells).compile(&output_program)?;
     fs::write(dump_dir.join("output.asm"), assembly)?;
 
     let mut tape = vec![0x00; cells];

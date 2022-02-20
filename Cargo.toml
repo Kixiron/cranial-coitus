@@ -23,6 +23,11 @@ xxhash-rust = { version = "0.8.2", features = ["xxh3"] }
 tracing-tree = { version = "0.2.0", default-features = false }
 tracing = { version = "0.1.29", features = ["release_max_level_info"] }
 
+# Cranelift
+cranelift = "0.81.0"
+cranelift-jit = "0.81.0"
+cranelift-module = "0.81.0"
+
     [dependencies.iced-x86]
     version = "1.15.0"
     default-features = false

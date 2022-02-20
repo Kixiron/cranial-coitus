@@ -1,4 +1,4 @@
-use crate::jit::ffi::State;
+use crate::jit::{ffi::State, JitFunction};
 use anyhow::{Context, Result};
 use std::{
     cmp::max,
@@ -149,7 +149,7 @@ impl CodeBuffer {
         self.buffer.as_ptr()
     }
 
-    pub fn executable(mut self) -> Result<Executable<Self>> {
+    pub fn executable(mut self) -> Result<Executable> {
         tracing::debug!("making code buffer at {:p} executable", self.as_ptr());
 
         unsafe {
@@ -213,7 +213,8 @@ impl CodeBuffer {
             }
         }
 
-        Ok(Executable::new(self))
+        todo!()
+        // Ok(Executable::new(self))
     }
 }
 
@@ -246,20 +247,15 @@ impl Drop for CodeBuffer {
 }
 
 #[repr(transparent)]
-pub struct Executable<T>(T);
+pub struct Executable(JitFunction);
 
-impl<T> Executable<T> {
-    fn new(inner: T) -> Self {
-        Self(inner)
+impl Executable {
+    pub(super) fn new(function: JitFunction) -> Self {
+        Self(function)
     }
-}
 
-impl Executable<CodeBuffer> {
     pub unsafe fn call(&self, state: *mut State, start: *mut u8, end: *mut u8) -> u8 {
-        let func: unsafe extern "win64" fn(*mut State, *mut u8, *const u8) -> u8 =
-            unsafe { transmute(self.0.as_ptr()) };
-
-        unsafe { func(state, start, end) }
+        unsafe { (self.0)(state, start, end) }
     }
 
     pub unsafe fn execute(&self, tape: &mut [u8]) -> Result<u8> {

@@ -3,7 +3,6 @@ use anyhow::{Context, Result};
 use std::{
     cmp::max,
     io::{self, Error, Write},
-    mem::transmute,
     panic::{self, AssertUnwindSafe},
     ptr::{self, NonNull},
     slice,

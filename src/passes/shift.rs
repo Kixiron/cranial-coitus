@@ -5,6 +5,7 @@ use crate::{
     },
     passes::{utils::ConstantStore, Pass},
     utils::HashMap,
+    values::Ptr,
 };
 
 #[derive(Debug)]
@@ -12,14 +13,16 @@ pub struct ShiftCell {
     changed: bool,
     constants: ConstantStore,
     shifts_removed: usize,
+    tape_len: u16,
 }
 
 impl ShiftCell {
-    pub fn new() -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
-            constants: ConstantStore::new(),
+            constants: ConstantStore::new(tape_len),
             changed: false,
             shifts_removed: 0,
+            tape_len,
         }
     }
 
@@ -33,7 +36,7 @@ impl ShiftCell {
         theta: &mut Theta,
     ) -> (bool, Option<(ShiftCandidate, Self)>) {
         let mut changed = false;
-        let mut visitor = Self::new();
+        let mut visitor = Self::new(self.tape_len);
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -69,7 +72,7 @@ impl ShiftCell {
         let mut get_gamma_input = |output| {
             visitor
                 .constants
-                .u32(output)
+                .ptr(output)
                 .map(|int| graph.int(int).value())
                 .or_else(|| {
                     theta
@@ -83,7 +86,7 @@ impl ShiftCell {
                         })
                         .and_then(|output| {
                             self.constants
-                                .u32(output)
+                                .ptr(output)
                                 .map(|int| graph.int(int).value())
                                 .or_else(|| {
                                     gamma.inputs().iter().zip(gamma.input_params()).find_map(
@@ -116,7 +119,7 @@ impl ShiftCell {
                 graph.store(dest_ptr, src_val.output_value(), src_val.output_effect());
 
             // Unconditionally store 0 to the destination cell
-            let zero = graph.int(0);
+            let zero = graph.int(Ptr::zero(self.tape_len));
             let zero_dest_cell =
                 graph.store(src_ptr, zero.value(), store_src_to_dest.output_effect());
 
@@ -245,7 +248,7 @@ impl ShiftCell {
         );
 
         // Get the offset being applied by figuring out which side is the loaded value
-        let offset_one = values.u32(if lhs_operand == load_one.output_value() {
+        let offset_one = values.ptr(if lhs_operand == load_one.output_value() {
             rhs_operand
         } else if rhs_operand == load_one.output_value() {
             lhs_operand
@@ -275,7 +278,7 @@ impl ShiftCell {
         );
 
         // Get the offset being applied by figuring out which side is the loaded value
-        let offset_two = values.u32(if lhs_operand == load_two.output_value() {
+        let offset_two = values.ptr(if lhs_operand == load_two.output_value() {
             rhs_operand
         } else if rhs_operand == load_two.output_value() {
             lhs_operand
@@ -321,11 +324,11 @@ impl ShiftCell {
             graph.input_source(src_eq_zero.lhs()),
             graph.input_source(src_eq_zero.rhs()),
         );
-        let (lhs_const, rhs_const) = (values.u32(lhs_operand), values.u32(rhs_operand));
+        let (lhs_const, rhs_const) = (values.ptr(lhs_operand), values.ptr(rhs_operand));
 
         // Make sure that one of the operands of the eq is `src_dec` and the other is a zero
-        if !((lhs_operand == src_dec && matches!(rhs_const, Some(0)))
-            || (rhs_operand == src_dec && matches!(lhs_const, Some(0))))
+        if !((lhs_operand == src_dec && matches!(rhs_const, Some(zero) if zero.is_zero()))
+            || (rhs_operand == src_dec && matches!(lhs_const, Some(zero) if zero.is_zero())))
         {
             return None;
         }
@@ -360,14 +363,15 @@ impl Pass for ShiftCell {
         self.constants.add(bool.value(), value);
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         self.constants.add(int.value(), value);
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
 
-        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) =
+            (Self::new(self.tape_len), Self::new(self.tape_len));
         self.constants.gamma_inputs_into(
             &gamma,
             graph,
@@ -448,7 +452,7 @@ impl Pass for ShiftCell {
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
 
-        let mut visitor = Self::new();
+        let mut visitor = Self::new(self.tape_len);
         self.constants
             .theta_invariant_inputs_into(&theta, graph, &mut visitor.constants);
 
@@ -458,12 +462,6 @@ impl Pass for ShiftCell {
             graph.replace_node(theta.node(), theta);
             self.changed();
         }
-    }
-}
-
-impl Default for ShiftCell {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

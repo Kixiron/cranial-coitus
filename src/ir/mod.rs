@@ -9,6 +9,7 @@ pub use pretty_print::{pretty_utils, Pretty, PrettyConfig};
 use crate::{
     graph::{NodeId, OutputPort, Port},
     utils::percent_total,
+    values::{Cell, Ptr},
 };
 use pretty::{DocAllocator, DocBuilder};
 use pretty_print::COMMENT_ALIGNMENT_OFFSET;
@@ -1370,37 +1371,25 @@ impl From<Const> for Value {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Const {
-    Int(u32),
-    U8(u8),
+    Ptr(Ptr),
+    Cell(Cell),
     Bool(bool),
 }
 
 impl Const {
-    pub fn equal_values(&self, other: &Self) -> bool {
-        self.convert_to_u32().unwrap() == other.convert_to_u32().unwrap()
-    }
-
-    pub fn convert_to_u32(&self) -> Option<u32> {
+    pub fn into_ptr(&self, tape_len: u16) -> Ptr {
         match *self {
-            Self::Int(int) => Some(int),
-            Self::U8(byte) => Some(byte as u32),
-            Self::Bool(bool) => Some(bool as u32),
+            Self::Ptr(ptr) => ptr,
+            Self::Cell(cell) => cell.into_ptr(tape_len),
+            Self::Bool(_) => unreachable!(),
         }
     }
 
-    pub fn convert_to_u8(&self) -> Option<u8> {
+    pub fn into_cell(&self) -> Cell {
         match *self {
-            Self::Int(int) => Some(int.rem_euclid(u8::MAX as u32) as u8),
-            Self::U8(byte) => Some(byte),
-            Self::Bool(bool) => Some(bool as u8),
-        }
-    }
-
-    pub fn convert_to_u16(&self) -> Option<u16> {
-        match *self {
-            Self::Int(int) => Some(int.rem_euclid(u16::MAX as u32) as u16),
-            Self::U8(byte) => Some(byte as u16),
-            Self::Bool(bool) => Some(bool as u16),
+            Self::Ptr(ptr) => ptr.into_cell(),
+            Self::Cell(cell) => cell,
+            Self::Bool(_) => unreachable!(),
         }
     }
 
@@ -1412,9 +1401,9 @@ impl Const {
         }
     }
 
-    pub fn as_u32(&self) -> Option<u32> {
-        if let Self::Int(int) = *self {
-            Some(int)
+    pub fn as_ptr(&self) -> Option<Ptr> {
+        if let Self::Ptr(ptr) = *self {
+            Some(ptr)
         } else {
             None
         }
@@ -1426,8 +1415,8 @@ impl ops::Not for Const {
 
     fn not(self) -> Self::Output {
         match self {
-            Self::Int(int) => Self::Int(!int),
-            Self::U8(byte) => Self::U8(!byte),
+            Self::Ptr(ptr) => Self::Ptr(!ptr),
+            Self::Cell(cell) => Self::Cell(!cell),
             Self::Bool(bool) => Self::Bool(!bool),
         }
     }
@@ -1446,8 +1435,8 @@ impl ops::Neg for Const {
 
     fn neg(self) -> Self::Output {
         match self {
-            Self::Int(int) => Self::Int(int.wrapping_neg()),
-            Self::U8(byte) => Self::U8(byte.wrapping_neg()),
+            Self::Ptr(int) => Self::Ptr(Ptr::zero(int.tape_len()) - int),
+            Self::Cell(byte) => Self::Cell(byte.wrapping_neg()),
             Self::Bool(_) => panic!("cannot negate bool"),
         }
     }
@@ -1466,14 +1455,10 @@ impl ops::Add for Const {
 
     fn add(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
-            (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs + rhs),
-            (Self::Int(lhs), Self::U8(rhs)) => {
-                Self::U8((lhs.rem_euclid(u8::MAX as u32) as u8).wrapping_add(rhs))
-            }
-            (Self::U8(lhs), Self::Int(rhs)) => {
-                Self::U8(lhs.wrapping_add(rhs.rem_euclid(u8::MAX as u32) as u8))
-            }
-            (Self::U8(lhs), Self::U8(rhs)) => Self::U8(lhs.wrapping_add(rhs)),
+            (Self::Ptr(lhs), Self::Ptr(rhs)) => Self::Ptr(lhs + rhs),
+            (Self::Ptr(lhs), Self::Cell(rhs)) => Self::Ptr(lhs + rhs),
+            (Self::Cell(lhs), Self::Ptr(rhs)) => Self::Ptr(lhs + rhs),
+            (Self::Cell(lhs), Self::Cell(rhs)) => Self::Cell(lhs + rhs),
             (Self::Bool(_), _) | (_, Self::Bool(_)) => panic!("can't add booleans"),
         }
     }
@@ -1492,14 +1477,10 @@ impl ops::Sub for Const {
 
     fn sub(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
-            (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs - rhs),
-            (Self::Int(lhs), Self::U8(rhs)) => {
-                Self::U8((lhs.rem_euclid(u8::MAX as u32) as u8).wrapping_sub(rhs))
-            }
-            (Self::U8(lhs), Self::Int(rhs)) => {
-                Self::U8(lhs.wrapping_sub(rhs.rem_euclid(u8::MAX as u32) as u8))
-            }
-            (Self::U8(lhs), Self::U8(rhs)) => Self::U8(lhs.wrapping_sub(rhs)),
+            (Self::Ptr(lhs), Self::Ptr(rhs)) => Self::Ptr(lhs - rhs),
+            (Self::Ptr(lhs), Self::Cell(rhs)) => Self::Ptr(lhs - rhs),
+            (Self::Cell(lhs), Self::Ptr(rhs)) => Self::Ptr(lhs - rhs),
+            (Self::Cell(lhs), Self::Cell(rhs)) => Self::Cell(lhs - rhs),
             (Self::Bool(_), _) | (_, Self::Bool(_)) => panic!("can't subtract booleans"),
         }
     }
@@ -1518,14 +1499,10 @@ impl ops::Mul for Const {
 
     fn mul(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
-            (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs * rhs),
-            (Self::Int(lhs), Self::U8(rhs)) => {
-                Self::U8((lhs.rem_euclid(u8::MAX as u32) as u8).wrapping_mul(rhs))
-            }
-            (Self::U8(lhs), Self::Int(rhs)) => {
-                Self::U8(lhs.wrapping_mul(rhs.rem_euclid(u8::MAX as u32) as u8))
-            }
-            (Self::U8(lhs), Self::U8(rhs)) => Self::U8(lhs.wrapping_mul(rhs)),
+            (Self::Ptr(lhs), Self::Ptr(rhs)) => Self::Ptr(lhs * rhs),
+            (Self::Ptr(lhs), Self::Cell(rhs)) => Self::Ptr(lhs * rhs),
+            (Self::Cell(lhs), Self::Ptr(rhs)) => Self::Ptr(lhs * rhs),
+            (Self::Cell(lhs), Self::Cell(rhs)) => Self::Cell(lhs * rhs),
             (Self::Bool(_), _) | (_, Self::Bool(_)) => panic!("can't multiply booleans"),
         }
     }
@@ -1547,23 +1524,29 @@ impl Pretty for Const {
         A: Clone,
     {
         let text = match *self {
-            Self::Int(int) => format!("int {}", int),
-            Self::U8(byte) => format!("byte {}", byte),
+            Self::Ptr(int) => format!("int {}", int),
+            Self::Cell(byte) => format!("byte {}", byte),
             Self::Bool(boolean) => format!("bool {}", boolean),
         };
         allocator.text(text)
     }
 }
 
-impl From<u32> for Const {
-    fn from(int: u32) -> Self {
-        Self::Int(int)
+impl From<Ptr> for Const {
+    fn from(ptr: Ptr) -> Self {
+        Self::Ptr(ptr)
+    }
+}
+
+impl From<Cell> for Const {
+    fn from(cell: Cell) -> Self {
+        Self::Cell(cell)
     }
 }
 
 impl From<u8> for Const {
     fn from(byte: u8) -> Self {
-        Self::U8(byte)
+        Self::Cell(Cell::new(byte))
     }
 }
 
@@ -1576,8 +1559,8 @@ impl From<bool> for Const {
 impl Display for Const {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::Int(int) => write!(f, "int {}", int),
-            Self::U8(byte) => write!(f, "byte {}", byte),
+            Self::Ptr(int) => write!(f, "int {}", int),
+            Self::Cell(byte) => write!(f, "byte {}", byte),
             Self::Bool(boolean) => write!(f, "bool {}", boolean),
         }
     }

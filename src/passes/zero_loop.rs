@@ -5,6 +5,7 @@ use crate::{
     },
     passes::{utils::ConstantStore, Pass},
     utils::HashMap,
+    values::Ptr,
 };
 
 pub struct ZeroLoop {
@@ -12,15 +13,17 @@ pub struct ZeroLoop {
     values: ConstantStore,
     zero_gammas_removed: usize,
     zero_loops_removed: usize,
+    tape_len: u16,
 }
 
 impl ZeroLoop {
-    pub fn new() -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
             changed: false,
-            values: ConstantStore::new(),
+            values: ConstantStore::new(tape_len),
             zero_gammas_removed: 0,
             zero_loops_removed: 0,
+            tape_len,
         }
     }
 
@@ -64,7 +67,7 @@ impl ZeroLoop {
         &self,
         theta: &Theta,
         body_values: &ConstantStore,
-    ) -> Option<Result<u32, InputPort>> {
+    ) -> Option<Result<Ptr, InputPort>> {
         let graph = theta.body();
 
         // The theta's start node
@@ -76,7 +79,7 @@ impl ZeroLoop {
         let (target_node, source, _) = graph.get_input(load.ptr());
 
         // We can zero out constant addresses or a dynamically generated ones
-        let target_ptr = match body_values.u32(source) {
+        let target_ptr = match body_values.ptr(source) {
             Some(ptr) => Ok(ptr),
             None => {
                 // FIXME: We're pretty strict right now and only take inputs as "dynamic addresses",
@@ -98,10 +101,10 @@ impl ZeroLoop {
 
             // Make sure that one of the add's operands is the loaded cell and the other is 1 or -1
             if lhs == load.output_value() {
-                let value = body_values.u32(rhs)?;
+                let value = body_values.ptr(rhs)?;
 
                 // Any odd integer will eventually converge to zero
-                if value.rem_euclid(2) == 0 {
+                if value.is_even() {
                     // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
                     //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
                     //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
@@ -109,10 +112,10 @@ impl ZeroLoop {
                     return None;
                 }
             } else if rhs == load.output_value() {
-                let value = body_values.u32(lhs)?;
+                let value = body_values.ptr(lhs)?;
 
                 // Any odd integer will eventually converge to zero
-                if value.rem_euclid(2) == 0 {
+                if value.is_even() {
                     // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
                     //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
                     //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
@@ -129,10 +132,10 @@ impl ZeroLoop {
 
             // Make sure that one of the add's operands is the loaded cell and the other is 1 or -1
             if lhs == load.output_value() {
-                let value = body_values.u32(rhs)?;
+                let value = body_values.ptr(rhs)?;
 
                 // Any odd integer will eventually converge to zero
-                if value.rem_euclid(2) == 0 {
+                if value.is_even() {
                     // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
                     //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
                     //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
@@ -140,10 +143,10 @@ impl ZeroLoop {
                     return None;
                 }
             } else if rhs == load.output_value() {
-                let value = body_values.u32(lhs)?;
+                let value = body_values.ptr(lhs)?;
 
                 // Any odd integer will eventually converge to zero
-                if value.rem_euclid(2) == 0 {
+                if value.is_even() {
                     // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
                     //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
                     //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
@@ -172,13 +175,13 @@ impl ZeroLoop {
 
         // Make sure that one of the eq's operands is the added val and the other is 0
         if lhs == value {
-            let value = body_values.u32(rhs)?;
+            let value = body_values.ptr(rhs)?;
 
             if value != 0 {
                 return None;
             }
         } else if rhs == value {
-            let value = body_values.u32(lhs)?;
+            let value = body_values.ptr(lhs)?;
 
             if value != 0 {
                 return None;
@@ -210,7 +213,7 @@ impl ZeroLoop {
         graph: &Rvsdg,
         false_values: &ConstantStore,
         gamma: &Gamma,
-    ) -> Option<Result<u32, OutputPort>> {
+    ) -> Option<Result<Ptr, OutputPort>> {
         self.gamma_store_motif_1(graph, false_values, gamma)
             .or_else(|| self.gamma_store_motif_2(graph, false_values, gamma))
     }
@@ -230,7 +233,7 @@ impl ZeroLoop {
         graph: &Rvsdg,
         false_values: &ConstantStore,
         gamma: &Gamma,
-    ) -> Option<Result<u32, OutputPort>> {
+    ) -> Option<Result<Ptr, OutputPort>> {
         // value_is_zero = eq value, int 0
         let eq_zero = graph.get_input(gamma.condition()).0.as_eq()?;
         let [lhs, rhs] = [
@@ -239,8 +242,8 @@ impl ZeroLoop {
         ];
 
         let (lhs_zero, rhs_zero) = (
-            self.values.u32(lhs.1) == Some(0),
-            self.values.u32(rhs.1) == Some(0),
+            self.values.ptr_is_zero(lhs.1),
+            self.values.ptr_is_zero(rhs.1),
         );
 
         // If the eq doesn't fit the pattern of `value_is_zero = eq value, int 0` this isn't a candidate
@@ -254,7 +257,7 @@ impl ZeroLoop {
         .as_load()?;
 
         let source = graph.input_source(value.ptr());
-        let target_ptr = self.values.u32(source).ok_or(source);
+        let target_ptr = self.values.ptr(source).ok_or(source);
 
         let start_effect = gamma
             .true_branch()
@@ -280,7 +283,7 @@ impl ZeroLoop {
             .cast_output_dest::<Store>(start.effect())?;
 
         // If the stored value isn't zero this isn't a candidate
-        if false_values.u32(gamma.false_branch().input_source(store.value())) != Some(0) {
+        if false_values.ptr_is_zero(gamma.false_branch().input_source(store.value())) {
             return None;
         }
 
@@ -308,7 +311,7 @@ impl ZeroLoop {
         graph: &Rvsdg,
         false_values: &ConstantStore,
         gamma: &Gamma,
-    ) -> Option<Result<u32, OutputPort>> {
+    ) -> Option<Result<Ptr, OutputPort>> {
         // value_is_zero = eq value, int 0
         let eq_zero = graph.cast_input_source::<Eq>(gamma.condition())?;
         let [lhs, rhs] = [
@@ -317,8 +320,8 @@ impl ZeroLoop {
         ];
 
         let (lhs_zero, rhs_zero) = (
-            self.values.u32(lhs.1) == Some(0),
-            self.values.u32(rhs.1) == Some(0),
+            self.values.ptr_is_zero(lhs.1),
+            self.values.ptr_is_zero(rhs.1),
         );
 
         // If the eq doesn't fit the pattern of `value_is_zero = eq value, int 0` this isn't a candidate
@@ -337,7 +340,7 @@ impl ZeroLoop {
         }
 
         let source = graph.input_source(store.ptr());
-        let target_ptr = self.values.u32(source).ok_or(source);
+        let target_ptr = self.values.ptr(source).ok_or(source);
 
         let start_effect = gamma
             .true_branch()
@@ -363,7 +366,7 @@ impl ZeroLoop {
             .cast_output_dest::<Store>(start.effect())?;
 
         // If the stored value isn't zero this isn't a candidate
-        if false_values.u32(gamma.false_branch().input_source(store.value())) != Some(0) {
+        if false_values.ptr_is_zero(gamma.false_branch().input_source(store.value())) {
             return None;
         }
 
@@ -402,14 +405,15 @@ impl Pass for ZeroLoop {
         self.values.add(bool.value(), value);
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         self.values.add(int.value(), value);
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
 
-        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) =
+            (Self::new(self.tape_len), Self::new(self.tape_len));
         self.values.gamma_inputs_into(
             &gamma,
             graph,
@@ -421,9 +425,9 @@ impl Pass for ZeroLoop {
         changed |= false_visitor.visit_graph(gamma.false_mut());
 
         if let Some(target_ptr) = self.is_zero_gamma_store(graph, &false_visitor.values, &gamma) {
-            let zero = graph.int(0);
+            let zero = graph.int(Ptr::zero(self.tape_len));
             let target_ptr = match target_ptr {
-                Ok(0) => zero.value(),
+                Ok(ptr) if ptr.is_zero() => zero.value(),
                 Ok(ptr) => graph.int(ptr).value(),
                 Err(port) => port,
             };
@@ -457,7 +461,7 @@ impl Pass for ZeroLoop {
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
 
-        let mut visitor = Self::new();
+        let mut visitor = Self::new(self.tape_len);
         self.values
             .theta_invariant_inputs_into(&theta, graph, &mut visitor.values);
 
@@ -479,7 +483,7 @@ impl Pass for ZeroLoop {
             };
 
             // Create the zero store
-            let zero = graph.int(0);
+            let zero = graph.int(Ptr::zero(self.tape_len));
             let store = graph.store(target_cell, zero.value(), effect_source);
 
             // Rewire the theta's ports
@@ -512,11 +516,5 @@ impl Pass for ZeroLoop {
             graph.replace_node(theta.node(), theta);
             self.changed();
         }
-    }
-}
-
-impl Default for ZeroLoop {
-    fn default() -> Self {
-        Self::new()
     }
 }

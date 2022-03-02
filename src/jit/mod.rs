@@ -15,15 +15,16 @@ pub use ffi::State;
 pub use memory::Executable;
 
 use crate::{
-    ir::Block,
+    ir::{Block, Pretty, PrettyConfig},
     jit::basic_block::{Instruction, RValue, Terminator, Value},
     utils::AssertNone,
+    values::{Cell, Ptr},
 };
 use anyhow::Result;
 use cranelift::{
     codegen::{
         ir::{
-            types::{B1, B8, I16, I32, I64, I8},
+            types::{B1, I16, I32, I64, I8},
             InstBuilder,
         },
         Context,
@@ -33,14 +34,14 @@ use cranelift::{
 };
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataContext, Linkage, Module};
-use std::{collections::BTreeMap, mem::transmute};
+use std::{collections::BTreeMap, mem::transmute, ops::Not};
 
 /// The function produced by jit code
 pub type JitFunction = unsafe extern "fastcall" fn(*mut State, *mut u8, *const u8) -> u8;
 
-const RETURN_SUCCESS: i64 = 0;
+const RETURN_SUCCESS: Cell = Cell::zero();
 
-const RETURN_IO_FAILURE: i64 = 101;
+const RETURN_IO_FAILURE: Cell = Cell::new(101);
 
 pub struct Jit {
     /// The function builder context, which is reused across multiple
@@ -60,12 +61,12 @@ pub struct Jit {
     module: JITModule,
 
     /// The length of the (program/turing) tape we're targeting
-    tape_len: usize,
+    tape_len: u16,
 }
 
 impl Jit {
     /// Create a new jit
-    pub fn new(tape_len: usize) -> Self {
+    pub fn new(tape_len: u16) -> Self {
         let mut builder = JITBuilder::new(cranelift_module::default_libcall_names());
 
         // Add external functions to the module so they're accessible within
@@ -80,10 +81,12 @@ impl Jit {
         ]);
 
         let module = JITModule::new(builder);
+        let mut ctx = module.make_context();
+        ctx.set_disasm(true);
 
         Self {
             builder_context: FunctionBuilderContext::new(),
-            ctx: module.make_context(),
+            ctx,
             data_ctx: DataContext::new(),
             module,
             tape_len,
@@ -91,8 +94,8 @@ impl Jit {
     }
 
     /// Compile a block of CIR into an executable buffer
-    pub fn compile(&mut self, block: &Block) -> Result<(Executable, String)> {
-        {
+    pub fn compile(&mut self, block: &Block) -> Result<(Executable, String, String)> {
+        let ssa_ir = {
             // Translate CIR into SSA form
             let blocks = cir_to_bb::translate(block);
 
@@ -193,6 +196,20 @@ impl Jit {
             // A lazily-constructed block to handle IO errors
             let (io_error_handler, mut io_handler_used) = (builder.create_block(), false);
 
+            // let mut block_params = Vec::with_capacity(blocks.len() * 2);
+            // for block in &blocks {
+            //     for inst in block {
+            //         if let Instruction::Assign(assign) = inst {
+            //             block_params.extend(
+            //                 assign
+            //                     .phi_targets()
+            //                     .iter()
+            //                     .map(|&value| (block.id(), value)),
+            //             );
+            //         }
+            //     }
+            // }
+
             for block in &blocks {
                 // Switch to the basic block for the current block
                 let ssa_block = ssa_blocks[&block.id()];
@@ -206,9 +223,10 @@ impl Jit {
                         Instruction::Store(store) => {
                             // Get the value to store
                             let value = match store.value() {
-                                Value::Byte(byte) => builder.ins().iconst(I8, byte as i64),
-                                Value::Uint(uint) => builder.ins().iconst(I8, uint as i64),
-                                Value::Val(value) => {
+                                Value::U8(byte) => builder.ins().iconst(I8, byte),
+                                Value::U16(int) => builder.ins().iconst(I16, int.0 as i64),
+                                Value::TapePtr(uint) => builder.ins().iconst(I8, uint),
+                                Value::Val(value, _ty) => {
                                     let (value, ty) = values[&value];
                                     if ty == I8 {
                                         value
@@ -222,35 +240,34 @@ impl Jit {
                             match store.ptr() {
                                 // We can optimize stores with const-known offsets to use
                                 // constant offsets instead of dynamic ones
-                                Value::Byte(byte) => {
-                                    // Wrap the offset to the tape's address space
-                                    let offset = (byte as usize).rem_euclid(self.tape_len);
-
+                                Value::U8(byte) => {
                                     builder.ins().store(
                                         MemFlags::new(),
                                         value,
                                         tape_start,
-                                        offset as i32,
+                                        byte.into_ptr(self.tape_len),
                                     );
                                 }
-                                Value::Uint(uint) => {
-                                    // Wrap the offset to the tape's address space
-                                    let offset = (uint as usize).rem_euclid(self.tape_len);
-
+                                Value::U16(int) => {
                                     builder.ins().store(
                                         MemFlags::new(),
                                         value,
                                         tape_start,
-                                        offset as i32,
+                                        Ptr::new(int.0, self.tape_len),
                                     );
+                                }
+                                Value::TapePtr(uint) => {
+                                    builder
+                                        .ins()
+                                        .store(MemFlags::new(), value, tape_start, uint);
                                 }
 
                                 // TODO: Bounds checking & wrapping on pointers
-                                Value::Val(offset) => {
+                                Value::Val(offset, _ty) => {
                                     let offset = {
                                         let (value, ty) = values[&offset];
                                         if ty != I64 {
-                                            builder.ins().bitcast(I64, value)
+                                            builder.ins().uextend(I64, value)
                                         } else {
                                             value
                                         }
@@ -279,26 +296,28 @@ impl Jit {
                             let value = match assign.rval() {
                                 RValue::Eq(eq) => {
                                     let lhs = match eq.lhs() {
-                                        Value::Byte(byte) => builder.ins().iconst(I8, byte as i64),
-                                        Value::Uint(uint) => builder.ins().iconst(I8, uint as i64),
+                                        Value::U8(byte) => builder.ins().iconst(I8, byte),
+                                        Value::U16(int) => builder.ins().iconst(I16, int.0 as i64),
+                                        Value::TapePtr(uint) => builder.ins().iconst(I8, uint),
                                         Value::Bool(bool) => builder.ins().iconst(I8, bool as i64),
-                                        Value::Val(value) => {
+                                        Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty != I8 {
-                                                builder.ins().bitcast(I8, value)
+                                                builder.ins().ireduce(I8, value)
                                             } else {
                                                 value
                                             }
                                         }
                                     };
                                     let rhs = match eq.rhs() {
-                                        Value::Byte(byte) => builder.ins().iconst(I8, byte as i64),
-                                        Value::Uint(uint) => builder.ins().iconst(I8, uint as i64),
+                                        Value::U8(byte) => builder.ins().iconst(I8, byte),
+                                        Value::U16(int) => builder.ins().iconst(I16, int.0 as i64),
+                                        Value::TapePtr(uint) => builder.ins().iconst(I8, uint),
                                         Value::Bool(bool) => builder.ins().iconst(I8, bool as i64),
-                                        Value::Val(value) => {
+                                        Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty != I8 {
-                                                builder.ins().bitcast(I8, value)
+                                                builder.ins().ireduce(I8, value)
                                             } else {
                                                 value
                                             }
@@ -309,21 +328,78 @@ impl Jit {
                                     (builder.ins().icmp(IntCC::Equal, lhs, rhs), B1)
                                 }
 
-                                RValue::Phi(_) => todo!(),
-                                RValue::Neg(_) => todo!(),
-                                RValue::Not(_) => todo!(),
-                                RValue::BitNot(_) => todo!(),
+                                RValue::Phi(phi) => {
+                                    // Figure out the phi value's type
+                                    let ty = match phi.lhs() {
+                                        Value::U8(_) => I8,
+                                        Value::U16(_) => I16,
+                                        Value::TapePtr(_) => I32,
+                                        Value::Bool(_) => B1,
+                                        Value::Val(value, _ty) => values[&value].1,
+                                    };
+
+                                    // Create the phi value
+                                    let phi = builder
+                                        .append_block_param(builder.current_block().unwrap(), ty);
+
+                                    (phi, ty)
+                                }
+
+                                RValue::Neg(neg) => {
+                                    let (value, ty) = match neg.value() {
+                                        Value::U8(byte) => (builder.ins().iconst(I8, byte), I8),
+                                        Value::U16(int) => {
+                                            (builder.ins().iconst(I16, int.not().0 as i64), I16)
+                                        }
+                                        Value::TapePtr(uint) => {
+                                            (builder.ins().iconst(I32, uint), I32)
+                                        }
+                                        Value::Bool(_) => unreachable!("cannot negate a boolean"),
+                                        Value::Val(value, _ty) => values[&value],
+                                    };
+
+                                    (builder.ins().ineg(value), ty)
+                                }
+
+                                // TODO: What cranelift does is pretty clever tbh, we should do this
+                                //       for CIR and our bb form since all you need is type info to
+                                //       do this properly so we can just have a single "not" node
+                                RValue::Not(not) => match not.value() {
+                                    Value::U8(byte) => (builder.ins().iconst(I8, !byte), I8),
+                                    Value::U16(int) => {
+                                        (builder.ins().iconst(I16, int.not().0 as i64), I16)
+                                    }
+                                    Value::TapePtr(uint) => (builder.ins().iconst(I32, !uint), I32),
+                                    Value::Bool(bool) => (builder.ins().bconst(B1, !bool), B1),
+                                    Value::Val(value, _ty) => {
+                                        let (value, ty) = values[&value];
+                                        (builder.ins().bnot(value), ty)
+                                    }
+                                },
+                                RValue::BitNot(bit_not) => match bit_not.value() {
+                                    Value::U8(byte) => (builder.ins().iconst(I8, !byte), I8),
+                                    Value::U16(int) => {
+                                        (builder.ins().iconst(I16, int.not().0 as i64), I16)
+                                    }
+                                    Value::TapePtr(uint) => (builder.ins().iconst(I32, !uint), I32),
+                                    Value::Bool(bool) => (builder.ins().bconst(B1, !bool), B1),
+                                    Value::Val(value, _ty) => {
+                                        let (value, ty) = values[&value];
+                                        (builder.ins().bnot(value), ty)
+                                    }
+                                },
 
                                 RValue::Add(add) => {
                                     let lhs = match add.lhs() {
-                                        Value::Byte(byte) => builder.ins().iconst(I64, byte as i64),
-                                        Value::Uint(uint) => builder.ins().iconst(I64, uint as i64),
-                                        Value::Bool(bool) => builder.ins().iconst(I64, bool as i64),
-                                        Value::Val(value) => {
+                                        Value::U8(byte) => builder.ins().iconst(I64, byte),
+                                        Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
+                                        Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
+                                        Value::Bool(bool) => unreachable!(),
+                                        Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty == I64 {
                                                 value
-                                            } else if ty == I8 {
+                                            } else if ty == I8 || ty == I32 {
                                                 builder.ins().uextend(I64, value)
                                             } else {
                                                 panic!("{}", ty)
@@ -331,14 +407,15 @@ impl Jit {
                                         }
                                     };
                                     let rhs = match add.rhs() {
-                                        Value::Byte(byte) => builder.ins().iconst(I8, byte as i64),
-                                        Value::Uint(uint) => builder.ins().iconst(I32, uint as i64),
-                                        Value::Bool(bool) => builder.ins().iconst(I8, bool as i64),
-                                        Value::Val(value) => {
+                                        Value::U8(byte) => builder.ins().iconst(I64, byte),
+                                        Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
+                                        Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
+                                        Value::Bool(bool) => unreachable!(),
+                                        Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty == I64 {
                                                 value
-                                            } else if ty == I8 {
+                                            } else if ty == I8 || ty == I32 {
                                                 builder.ins().uextend(I64, value)
                                             } else {
                                                 panic!("{}", ty)
@@ -352,14 +429,15 @@ impl Jit {
 
                                 RValue::Sub(sub) => {
                                     let lhs = match sub.lhs() {
-                                        Value::Byte(byte) => builder.ins().iconst(I8, byte as i64),
-                                        Value::Uint(uint) => builder.ins().iconst(I32, uint as i64),
-                                        Value::Bool(bool) => builder.ins().iconst(I8, bool as i64),
-                                        Value::Val(value) => {
+                                        Value::U8(byte) => builder.ins().iconst(I64, byte),
+                                        Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
+                                        Value::TapePtr(uint) => builder.ins().iconst(I32, uint),
+                                        Value::Bool(bool) => unreachable!(),
+                                        Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty == I64 {
                                                 value
-                                            } else if ty == I8 {
+                                            } else if ty == I8 || ty == I32 {
                                                 builder.ins().uextend(I64, value)
                                             } else {
                                                 panic!("{}", ty)
@@ -367,14 +445,15 @@ impl Jit {
                                         }
                                     };
                                     let rhs = match sub.rhs() {
-                                        Value::Byte(byte) => builder.ins().iconst(I8, byte as i64),
-                                        Value::Uint(uint) => builder.ins().iconst(I32, uint as i64),
-                                        Value::Bool(bool) => builder.ins().iconst(I8, bool as i64),
-                                        Value::Val(value) => {
+                                        Value::U8(byte) => builder.ins().iconst(I64, byte),
+                                        Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
+                                        Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
+                                        Value::Bool(bool) => unreachable!(),
+                                        Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty == I64 {
                                                 value
-                                            } else if ty == I8 {
+                                            } else if ty == I8 || ty == I32 {
                                                 builder.ins().uextend(I64, value)
                                             } else {
                                                 panic!("{}", ty)
@@ -388,14 +467,15 @@ impl Jit {
 
                                 RValue::Mul(mul) => {
                                     let lhs = match mul.lhs() {
-                                        Value::Byte(byte) => builder.ins().iconst(I64, byte as i64),
-                                        Value::Uint(uint) => builder.ins().iconst(I64, uint as i64),
-                                        Value::Bool(bool) => builder.ins().iconst(I64, bool as i64),
-                                        Value::Val(value) => {
+                                        Value::U8(byte) => builder.ins().iconst(I64, byte),
+                                        Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
+                                        Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
+                                        Value::Bool(bool) => unreachable!(),
+                                        Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty == I64 {
                                                 value
-                                            } else if ty == I8 {
+                                            } else if ty == I8 || ty == I32 {
                                                 builder.ins().uextend(I64, value)
                                             } else {
                                                 panic!("{}", ty)
@@ -403,14 +483,15 @@ impl Jit {
                                         }
                                     };
                                     let rhs = match mul.rhs() {
-                                        Value::Byte(byte) => builder.ins().iconst(I64, byte as i64),
-                                        Value::Uint(uint) => builder.ins().iconst(I64, uint as i64),
-                                        Value::Bool(bool) => builder.ins().iconst(I64, bool as i64),
-                                        Value::Val(value) => {
+                                        Value::U8(byte) => builder.ins().iconst(I64, byte),
+                                        Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
+                                        Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
+                                        Value::Bool(bool) => unreachable!(),
+                                        Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty == I64 {
                                                 value
-                                            } else if ty == I8 {
+                                            } else if ty == I8 || ty == I32 {
                                                 builder.ins().uextend(I64, value)
                                             } else {
                                                 panic!("{}", ty)
@@ -426,13 +507,16 @@ impl Jit {
                                 RValue::Load(load) => {
                                     // Get the value to store
                                     let offset = match load.ptr() {
-                                        Value::Byte(byte) => builder.ins().iconst(I64, byte as i64),
-                                        Value::Uint(uint) => builder.ins().iconst(I64, uint as i64),
-                                        Value::Val(offset) => {
+                                        Value::U8(byte) => builder.ins().iconst(I64, byte),
+                                        Value::U16(int) => builder
+                                            .ins()
+                                            .iconst(I64, Ptr::new(int.0, self.tape_len)),
+                                        Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
+                                        Value::Val(offset, _ty) => {
                                             let (value, ty) = values[&offset];
                                             if ty == I64 {
                                                 value
-                                            } else if ty == I8 {
+                                            } else if ty == I8 || ty == I32 {
                                                 builder.ins().uextend(I64, value)
                                             } else {
                                                 panic!("{}", ty)
@@ -484,13 +568,14 @@ impl Jit {
 
                             // Get the argument to the function
                             let value = match output.value() {
-                                Value::Byte(byte) => builder.ins().iconst(I8, byte as i64),
-                                Value::Uint(uint) => builder.ins().iconst(I8, uint as i64),
+                                Value::U8(byte) => builder.ins().iconst(I8, byte),
+                                Value::U16(int) => builder.ins().iconst(I8, int.0 as i64),
+                                Value::TapePtr(uint) => builder.ins().iconst(I8, uint),
                                 Value::Bool(bool) => builder.ins().iconst(I8, bool as i64),
-                                Value::Val(value) => {
+                                Value::Val(value, _ty) => {
                                     let (value, ty) = values[&value];
                                     if ty != I8 {
-                                        builder.ins().bitcast(I8, value)
+                                        builder.ins().ireduce(I8, value)
                                     } else {
                                         value
                                     }
@@ -516,36 +601,167 @@ impl Jit {
                 match block.terminator() {
                     // FIXME: Block arguments
                     Terminator::Jump(target) => {
-                        builder.ins().jump(ssa_blocks[target], &[]);
+                        let params: Vec<_> = {
+                            let idx = blocks
+                                .binary_search_by_key(target, |block| block.id())
+                                .unwrap();
+
+                            blocks[idx]
+                                .instructions()
+                                .iter()
+                                .filter_map(|inst| {
+                                    inst.as_assign()
+                                        .and_then(|assign| assign.rval().as_phi())
+                                        .and_then(|phi| {
+                                            if phi.lhs_src() == block.id() {
+                                                Some(phi.lhs())
+                                            } else if phi.rhs_src() == block.id() {
+                                                Some(phi.rhs())
+                                            } else {
+                                                tracing::warn!(
+                                                    ?inst,
+                                                    "found phi node without the jump source {} as a source: {}",
+                                                    block.id(),
+                                                    inst.pretty_print(PrettyConfig::minimal()),
+                                                );
+
+                                                None
+                                            }
+                                        })
+                                        .and_then(|value| match value {
+                                            Value::U8(byte) => {
+                                                Some(builder.ins().iconst(I8, byte))
+                                            }
+                                            Value::U16(int) => Some(builder.ins().iconst(I8, int.0 as i64)),
+                                            Value::TapePtr(uint) => {
+                                                Some(builder.ins().iconst(I32, uint))
+                                            }
+                                            Value::Bool(bool) => Some(builder.ins().bconst(B1, bool)),
+                                            // FIXME: Sometimes the value doesn't exist???
+                                            Value::Val(value, _ty) => values.get(&value).map(|&(value, _)| value),
+                                        })
+                                })
+                                .collect()
+                        };
+
+                        builder.ins().jump(ssa_blocks[target], &params);
                     }
 
                     // FIXME: Block arguments
                     Terminator::Branch(branch) => {
                         let cond = match branch.condition() {
-                            Value::Byte(byte) => builder.ins().iconst(I8, byte as i64),
-                            Value::Uint(uint) => builder.ins().iconst(I32, uint as i64),
+                            Value::U8(byte) => builder.ins().iconst(I8, byte),
+                            Value::U16(int) => builder.ins().iconst(I16, int.0 as i64),
+                            Value::TapePtr(uint) => builder.ins().iconst(I32, uint),
                             Value::Bool(bool) => builder.ins().bconst(B1, bool),
-                            Value::Val(value) => values[&value].0,
+                            Value::Val(value, _ty) => values[&value].0,
+                        };
+
+                        let true_params: Vec<_> = {
+                            let idx = blocks
+                                .binary_search_by_key(&branch.true_jump(), |block| block.id())
+                                .unwrap();
+
+                            blocks[idx]
+                                .instructions()
+                                .iter()
+                                .filter_map(|inst| {
+                                    inst.as_assign()
+                                        .and_then(|assign| assign.rval().as_phi())
+                                        .and_then(|phi| {
+                                            if phi.lhs_src() == block.id() {
+                                                Some(phi.lhs())
+                                            } else if phi.rhs_src() == block.id() {
+                                                Some(phi.rhs())
+                                            } else {
+                                                tracing::warn!(
+                                                    ?inst,
+                                                    "found phi node without the jump source {} as a source: {}",
+                                                    block.id(),
+                                                    inst.pretty_print(PrettyConfig::minimal()),
+                                                );
+
+                                                None
+                                            }
+                                        })
+                                        .map(|value| match value {
+                                            Value::U8(byte) => {
+                                                builder.ins().iconst(I8, byte)
+                                            }
+                                            Value::U16(int) => builder.ins().iconst(I16, int.0 as i64),
+                                            Value::TapePtr(uint) => {
+                                                builder.ins().iconst(I32, uint)
+                                            }
+                                            Value::Bool(bool) => builder.ins().bconst(B1, bool),
+                                            Value::Val(value, _ty) => values[&value].0,
+                                        })
+                                })
+                                .collect()
                         };
 
                         // Jump to the true branch if the condition is true (or non-zero)
                         builder
                             .ins()
-                            .brnz(cond, ssa_blocks[&branch.true_jump()], &[]);
+                            .brnz(cond, ssa_blocks[&branch.true_jump()], &true_params);
+
+                        let false_params: Vec<_> = {
+                            let idx = blocks
+                                .binary_search_by_key(&branch.false_jump(), |block| block.id())
+                                .unwrap();
+
+                            blocks[idx]
+                                .instructions()
+                                .iter()
+                                .filter_map(|inst| {
+                                    inst.as_assign()
+                                        .and_then(|assign| assign.rval().as_phi())
+                                        .and_then(|phi| {
+                                            if phi.lhs_src() == block.id() {
+                                                Some(phi.lhs())
+                                            } else if phi.rhs_src() == block.id() {
+                                                Some(phi.rhs())
+                                            } else {
+                                                tracing::warn!(
+                                                    ?inst,
+                                                    "found phi node without the jump source {} as a source: {}",
+                                                    block.id(),
+                                                    inst.pretty_print(PrettyConfig::minimal()),
+                                                );
+
+                                                None
+                                            }
+                                        })
+                                        .map(|value| match value {
+                                            Value::U8(byte) => {
+                                                builder.ins().iconst(I8, byte)
+                                            }
+                                        Value::U16(int) => builder.ins().iconst(I16, int.0 as i64),
+                                            Value::TapePtr(uint) => {
+                                                builder.ins().iconst(I32, uint)
+                                            }
+                                            Value::Bool(bool) => builder.ins().bconst(B1, bool),
+                                            Value::Val(value, _ty) => values[&value].0,
+                                        })
+                                })
+                                .collect()
+                        };
 
                         // Otherwise jump to the false branch
-                        builder.ins().jump(ssa_blocks[&branch.false_jump()], &[]);
+                        builder
+                            .ins()
+                            .jump(ssa_blocks[&branch.false_jump()], &false_params);
                     }
 
                     &Terminator::Return(value) => {
                         let value = match value {
-                            Value::Byte(byte) => builder.ins().iconst(I8, byte as i64),
-                            Value::Uint(uint) => builder.ins().iconst(I8, uint as i64),
+                            Value::U8(byte) => builder.ins().iconst(I8, byte),
+                            Value::U16(int) => builder.ins().iconst(I8, int.0 as i64),
+                            Value::TapePtr(uint) => builder.ins().iconst(I8, uint),
                             Value::Bool(bool) => builder.ins().iconst(I8, bool as i64),
-                            Value::Val(value) => {
+                            Value::Val(value, _ty) => {
                                 let (value, ty) = values[&value];
                                 if ty != I8 {
-                                    builder.ins().bitcast(I8, value)
+                                    builder.ins().ireduce(I8, value)
                                 } else {
                                     value
                                 }
@@ -583,9 +799,14 @@ impl Jit {
             // FIXME: We should seal blocks as it becomes possible to since it's more efficient
             builder.seal_all_blocks();
 
+            tracing::debug!("generated cranelift ir: {}", builder.func);
+
             // Finalize the generated code
             builder.finalize();
-        }
+
+            // Create a formatted version of the ssa ir we generated
+            blocks.pretty_print(PrettyConfig::minimal())
+        };
 
         // Next, declare the function to jit. Functions must be declared
         // before they can be called, or defined
@@ -617,1277 +838,6 @@ impl Jit {
 
         // TODO: Disassembly of jit code
 
-        Ok((function, clif_ir))
+        Ok((function, clif_ir, ssa_ir))
     }
 }
-
-/*
-pub use memory::{CodeBuffer, Executable};
-
-use crate::{
-    ir::{Block, Pretty, PrettyConfig},
-    jit::{
-        basic_block::{
-            Add, Assign, BasicBlock, BlockId, Blocks, Input, Instruction, Load, Output, RValue,
-            Store, Terminator, ValId, Value,
-        },
-        ffi::State,
-        liveliness::{BlockLifetime, Liveliness, LivelinessAnalysis, Location},
-        regalloc::{Regalloc, StackSlot},
-    },
-    utils::AssertNone,
-};
-use iced_x86::code_asm::{CodeAssembler, *};
-use std::{borrow::Cow, collections::BTreeMap};
-
-type AsmResult<T> = Result<T, IcedError>;
-
-const BITNESS: u32 = 64;
-
-
-// https://docs.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170#callercallee-saved-registers
-// Note: Cannot preserve rsp here since it makes things go bananas
-const CALLEE_SAVED_REGISTERS: &[AsmRegister64] = &[rbx, rbp, rdi, rsi, r12, r13, r14, r15];
-const CALLEE_REGISTER_OFFSET: usize = CALLEE_SAVED_REGISTERS.len() * 8;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Operand {
-    Byte(u8),
-    Uint(u32),
-    Bool(bool),
-    Stack(StackSlot),
-    Register(AsmRegister64),
-}
-
-impl Operand {
-    #[allow(dead_code)]
-    pub fn is_zero(&self) -> bool {
-        match *self {
-            Self::Byte(byte) => byte == 0,
-            Self::Uint(uint) => uint == 0,
-            Self::Bool(_) => todo!(),
-            Self::Stack(_) | Self::Register(_) => false,
-        }
-    }
-
-    pub fn map_stack<F>(&self, map: F) -> Self
-    where
-        F: FnOnce(StackSlot) -> StackSlot,
-    {
-        match *self {
-            Self::Stack(addr) => Self::Stack(map(addr)),
-            operand => operand,
-        }
-    }
-}
-
-pub struct Jit {
-    asm: CodeAssembler,
-    epilogue: CodeLabel,
-    io_failure: CodeLabel,
-    has_io_functions: bool,
-    values: BTreeMap<ValId, Operand>,
-    regalloc: Regalloc,
-    comments: BTreeMap<usize, Vec<String>>,
-    named_labels: BTreeMap<usize, Cow<'static, str>>,
-    block_labels: BTreeMap<BlockId, CodeLabel>,
-    // TODO: Control flow graph + liveliness gives us the ability to
-    //       get the current set of live variables at any given point
-    liveliness: Liveliness,
-    current_location: Location,
-    phi_destinations: BTreeMap<ValId, AsmRegister64>,
-}
-
-impl Jit {
-    pub fn new(_tape_len: usize) -> AsmResult<Self> {
-        let mut asm = CodeAssembler::new(BITNESS)?;
-        let epilogue = asm.create_label();
-        let io_failure = asm.create_label();
-
-        Ok(Self {
-            asm,
-            epilogue,
-            io_failure,
-            has_io_functions: false,
-            values: BTreeMap::new(),
-            regalloc: Regalloc::new(),
-            comments: BTreeMap::new(),
-            named_labels: BTreeMap::new(),
-            block_labels: BTreeMap::new(),
-            liveliness: Liveliness::new(),
-            current_location: Location::new(BlockId::new(u32::MAX), None),
-            phi_destinations: BTreeMap::new(),
-        })
-    }
-
-    #[tracing::instrument(skip_all)]
-    pub fn assemble(&mut self, block: &Block) -> AsmResult<(Executable<CodeBuffer>, String)> {
-        let blocks = cir_to_bb::translate(block);
-        println!(
-            "SSA form:\n{}",
-            blocks.pretty_print(PrettyConfig::minimal()),
-        );
-
-        self.liveliness = LivelinessAnalysis::new().run(&blocks);
-        println!("liveliness: {:#?}", self.liveliness);
-
-        self.prologue()?;
-
-        self.named_label(".BODY");
-
-        self.create_block_labels(&blocks);
-        for (idx, block) in blocks.iter().enumerate() {
-            *self.current_location.block_mut() = block.id();
-
-            let next_block = blocks.get(idx + 1).map(BasicBlock::id);
-            self.assemble_block(block, next_block)?;
-        }
-
-        // Only build the IO handler if there's IO functions
-        if self.has_io_functions {
-            self.build_io_failure()?;
-        }
-
-        self.epilogue()?;
-
-        let code_buffer = {
-            // The maximum size of an instruction is 15 bytes, so we (virtually) allocate the most memory we could possibly use
-            let maximum_possible_size = self.asm.instructions().len() * 15;
-            let mut code_buffer = CodeBuffer::new(maximum_possible_size).unwrap();
-
-            let code = self.asm.assemble(code_buffer.as_ptr() as u64)?;
-
-            debug_assert!(code_buffer.len() <= code.capacity());
-            code_buffer.copy_from_slice(&code).unwrap();
-
-            code_buffer.executable().unwrap()
-        };
-        let pretty = self.disassemble();
-
-        Ok((code_buffer, pretty))
-    }
-
-    fn assemble_block(&mut self, block: &BasicBlock, next_block: Option<BlockId>) -> AsmResult<()> {
-        let label = *self.block_labels.get(&block.id()).unwrap();
-        self.set_label(label);
-
-        self.add_comment(format!("start {}", block.id()));
-        // self.asm.nop()?;
-
-        for (&value, lifetime) in &self.liveliness.lifetimes {
-            if let Ok(idx) = lifetime
-                .blocks
-                .binary_search_by_key(&block.id(), |&(block, _)| block)
-            {
-                match lifetime.blocks[idx].1 {
-                    BlockLifetime::Whole => {
-                        if !self.values.contains_key(&value) {
-                            let dest = self.allocate_register()?;
-                            self.values.insert(value, Operand::Register(dest));
-                        }
-                    }
-                    BlockLifetime::Span(..) => todo!(),
-                }
-            }
-        }
-
-        for (idx, inst) in block.iter().enumerate() {
-            *self.current_location.inst_mut() = Some(idx);
-
-            // // Allocate space for all declared variables
-            // for decl in self.liveliness.declarations_at(self.current_location) {
-            //     let dest = self.allocate_register()?;
-            //     self.values
-            //         .insert(decl, Operand::Register(dest))
-            //         .debug_unwrap_none();
-            // }
-
-            self.assemble_inst(inst)?;
-        }
-
-        *self.current_location.inst_mut() = None;
-        self.assemble_terminator(block.terminator(), next_block)?;
-
-        Ok(())
-    }
-
-    fn assemble_inst(&mut self, inst: &Instruction) -> AsmResult<()> {
-        self.add_comment(inst.pretty_print(PrettyConfig::minimal()));
-
-        match inst {
-            Instruction::Store(store) => self.assemble_store(store),
-            Instruction::Assign(assign) => self.assemble_assign(assign),
-            Instruction::Output(output) => self.assemble_output(output),
-        }
-    }
-
-    #[allow(dead_code)]
-    fn add(&mut self, lhs: AsmRegister64, rhs: i32) -> AsmResult<()> {
-        if rhs == 0 {
-            Ok(())
-        } else if rhs == 1 {
-            self.asm.inc(lhs)
-        } else {
-            self.asm.add(lhs, rhs)
-        }
-    }
-
-    fn assemble_store(&mut self, store: &Store) -> AsmResult<()> {
-        let ptr = match self.get_value(store.ptr()) {
-            Operand::Byte(byte) => Operand::Uint(byte as u32),
-            Operand::Bool(bool) => Operand::Uint(bool as u32),
-            operand => operand,
-        };
-        let value = match self.get_value(store.value()) {
-            Operand::Byte(byte) => Operand::Uint(byte as u32),
-            Operand::Bool(bool) => Operand::Uint(bool as u32),
-            operand => operand,
-        };
-
-        match (ptr, value) {
-            (Operand::Uint(ptr), Operand::Uint(value)) => {
-                let temp = self.allocate_register()?;
-                let tape_ptr = self.tape_start_ptr();
-                self.asm.mov(temp, tape_ptr)?;
-
-                self.asm.mov(byte_ptr(temp + ptr), value)?;
-
-                self.deallocate_register(temp);
-            }
-
-            (Operand::Uint(ptr), Operand::Stack(value)) => {
-                let temp1 = self.allocate_register()?;
-                let temp2 = self.allocate_register()?;
-
-                let tape_ptr = self.tape_start_ptr();
-                self.asm.mov(temp1, tape_ptr)?;
-
-                let value = self.stack_offset(value);
-                self.asm.mov(temp2, value)?;
-
-                self.asm.mov(byte_ptr(temp1 + ptr), temp2)?;
-
-                self.deallocate_register(temp2);
-                self.deallocate_register(temp1);
-            }
-
-            (Operand::Uint(ptr), Operand::Register(value)) => {
-                let temp = self.allocate_register()?;
-                let tape_ptr = self.tape_start_ptr();
-                self.asm.mov(temp, tape_ptr)?;
-
-                self.asm.mov(byte_ptr(temp + ptr), value)?;
-
-                self.deallocate_register(temp);
-            }
-
-            (Operand::Stack(ptr), Operand::Uint(value)) => {
-                let temp = self.allocate_register()?;
-                let tape_ptr = self.tape_start_ptr();
-                self.asm.mov(temp, tape_ptr)?;
-
-                let ptr = self.stack_offset(ptr);
-                self.asm.add(temp, ptr)?;
-                self.asm.mov(byte_ptr(temp), value)?;
-
-                self.deallocate_register(temp);
-            }
-            (Operand::Stack(ptr), Operand::Stack(value)) => {
-                let temp1 = self.allocate_register()?;
-                let temp2 = self.allocate_register()?;
-                let tape_ptr = self.tape_start_ptr();
-                self.asm.mov(temp1, tape_ptr)?;
-
-                let (ptr, value) = (self.stack_offset(ptr), self.stack_offset(value));
-                self.asm.add(temp1, ptr)?;
-                self.asm.mov(temp2, value)?;
-                self.asm.mov(byte_ptr(temp1), temp2)?;
-
-                self.deallocate_register(temp1);
-                self.deallocate_register(temp2);
-            }
-            (Operand::Stack(ptr), Operand::Register(value)) => {
-                let temp = self.allocate_register()?;
-                let tape_ptr = self.tape_start_ptr();
-                self.asm.mov(temp, tape_ptr)?;
-
-                let ptr = self.stack_offset(ptr);
-                self.asm.add(temp, ptr)?;
-                self.asm.mov(byte_ptr(temp), value)?;
-
-                self.deallocate_register(temp);
-            }
-
-            (Operand::Register(ptr), Operand::Uint(value)) => {
-                let temp = self.allocate_register()?;
-                let tape_ptr = self.tape_start_ptr();
-                self.asm.mov(temp, tape_ptr)?;
-
-                self.asm.add(temp, ptr)?;
-                self.asm.mov(byte_ptr(temp), value)?;
-
-                self.deallocate_register(temp);
-            }
-            (Operand::Register(ptr), Operand::Stack(value)) => {
-                let temp1 = self.allocate_register()?;
-                let temp2 = self.allocate_register()?;
-                let tape_ptr = self.tape_start_ptr();
-                self.asm.mov(temp1, tape_ptr)?;
-
-                self.asm.add(temp1, ptr)?;
-                let value = self.stack_offset(value);
-                self.asm.mov(temp2, value)?;
-                self.asm.mov(byte_ptr(temp1), temp2)?;
-
-                self.deallocate_register(temp1);
-                self.deallocate_register(temp2);
-            }
-            (Operand::Register(ptr), Operand::Register(value)) => {
-                let temp = self.allocate_register()?;
-                let tape_ptr = self.tape_start_ptr();
-                self.asm.mov(temp, tape_ptr)?;
-
-                self.asm.add(temp, ptr)?;
-                self.asm.mov(byte_ptr(temp), value)?;
-
-                self.deallocate_register(temp);
-            }
-
-            // We removed Byte and Bool from the possible operand types
-            (Operand::Byte(_) | Operand::Bool(_), _) | (_, Operand::Byte(_) | Operand::Bool(_)) => {
-                unreachable!()
-            }
-        }
-
-        Ok(())
-    }
-
-    fn assemble_assign(&mut self, assign: &Assign) -> AsmResult<()> {
-        let dest = match self.get_var(assign.value()) {
-            Operand::Register(dest) => dest,
-            Operand::Stack(slot) => {
-                let dest = self.allocate_register()?;
-                self.asm.mov(dest, self.stack_offset(slot))?;
-                dest
-            }
-            _ => unreachable!(),
-        };
-
-        match assign.rval() {
-            RValue::Eq(eq) => {
-                let (lhs, rhs) = (self.get_value(eq.lhs()), self.get_value(eq.rhs()));
-
-                match (lhs, rhs) {
-                    (Operand::Byte(lhs), Operand::Byte(rhs)) => {
-                        self.asm.mov(dest, lhs as i64)?;
-                        self.asm.cmp(dest, rhs as i32)?;
-                    }
-                    (Operand::Byte(lhs), Operand::Uint(rhs)) => {
-                        self.asm.mov(dest, lhs as i64)?;
-                        self.asm.cmp(dest, rhs as i32)?;
-                    }
-                    (Operand::Byte(lhs), Operand::Bool(rhs)) => {
-                        self.asm.mov(dest, lhs as i64)?;
-                        self.asm.cmp(dest, rhs as i32)?;
-                    }
-                    (Operand::Byte(lhs), Operand::Stack(rhs)) => {
-                        let rhs = self.stack_offset(rhs);
-                        self.asm.mov(dest, lhs as i64)?;
-                        self.asm.cmp(dest, rhs)?;
-                    }
-                    (Operand::Byte(lhs), Operand::Register(rhs)) => {
-                        self.asm.mov(dest, lhs as i64)?;
-                        self.asm.cmp(dest, rhs)?;
-                    }
-
-                    (Operand::Uint(_), Operand::Byte(_)) => todo!(),
-                    (Operand::Uint(_), Operand::Uint(_)) => todo!(),
-                    (Operand::Uint(_), Operand::Bool(_)) => todo!(),
-                    (Operand::Uint(_), Operand::Stack(_)) => todo!(),
-                    (Operand::Uint(_), Operand::Register(_)) => todo!(),
-
-                    (Operand::Bool(_), Operand::Byte(_)) => todo!(),
-                    (Operand::Bool(_), Operand::Uint(_)) => todo!(),
-                    (Operand::Bool(_), Operand::Bool(_)) => todo!(),
-                    (Operand::Bool(_), Operand::Stack(_)) => todo!(),
-                    (Operand::Bool(_), Operand::Register(_)) => todo!(),
-
-                    (Operand::Stack(_), Operand::Byte(_)) => todo!(),
-                    (Operand::Stack(_), Operand::Uint(_)) => todo!(),
-                    (Operand::Stack(_), Operand::Bool(_)) => todo!(),
-                    (Operand::Stack(_), Operand::Stack(_)) => todo!(),
-                    (Operand::Stack(_), Operand::Register(_)) => todo!(),
-
-                    (Operand::Register(lhs), Operand::Byte(rhs)) => {
-                        self.asm.cmp(lhs, rhs as i32)?;
-                    }
-                    (Operand::Register(lhs), Operand::Uint(rhs)) => {
-                        self.asm.cmp(lhs, rhs as i32)?;
-                    }
-                    (Operand::Register(lhs), Operand::Bool(rhs)) => {
-                        self.asm.cmp(lhs, rhs as i32)?;
-                    }
-                    (Operand::Register(lhs), Operand::Stack(rhs)) => {
-                        let rhs = self.stack_offset(rhs);
-                        self.asm.cmp(lhs, rhs)?;
-                    }
-                    (Operand::Register(lhs), Operand::Register(rhs)) => self.asm.cmp(lhs, rhs)?,
-                }
-
-                // Set al to 1 if the operands are equal
-                self.asm.setne(al)?;
-
-                // Move the comparison result from al into the allocated
-                // register with a zero sign extension
-                self.asm.movzx(dest, al)?;
-            }
-
-            // RValue::Neg(_) => todo!(),
-            RValue::Not(not) => {
-                let value = self.get_value(not.value());
-                // let dest = if let Value::Val(val) = not.value() {
-                //     match value {
-                //         Operand::Register(register)
-                //             if self.liveliness.is_last_usage(val, self.current_location) =>
-                //         {
-                //             self.regalloc.allocate_overwrite(register);
-                //             self.values.remove(&val);
-                //             register
-                //         }
-                //
-                //         _ => {
-                //             let dest = self.allocate_register()?;
-                //             self.move_to_reg(dest, value)?;
-                //             dest
-                //         }
-                //     }
-                // } else {
-                //     let dest = self.allocate_register()?;
-                //     self.move_to_reg(dest, value)?;
-                //     dest
-                // };
-
-                // Perform a *logical* not on the destination value
-                self.asm.xor(dest, 1)?;
-
-                self.values
-                    .insert(assign.value(), Operand::Register(dest))
-                    .debug_unwrap_none();
-            }
-
-            RValue::Add(add) => self.assemble_add(dest, add, assign)?,
-
-            RValue::Sub(sub) => {
-                // let dest = self.allocate_register()?;
-                let (lhs, rhs) = (self.get_value(sub.lhs()), self.get_value(sub.rhs()));
-
-                self.move_to_reg(dest, lhs)?;
-                match rhs {
-                    Operand::Byte(byte) => self.asm.sub(dest, byte as i32)?,
-                    Operand::Uint(uint) => self.asm.sub(dest, uint as i32)?,
-                    Operand::Bool(bool) => self.asm.sub(dest, bool as i32)?,
-                    Operand::Stack(slot) => {
-                        let addr = self.stack_offset(slot);
-                        self.asm.sub(dest, addr)?;
-                    }
-                    Operand::Register(reg) => self.asm.sub(dest, reg)?,
-                }
-
-                self.values
-                    .insert(assign.value(), Operand::Register(dest))
-                    .debug_unwrap_none();
-            }
-
-            // RValue::Mul(_) => todo!(),
-            RValue::Load(load) => self.assemble_load(dest, load, assign)?,
-
-            RValue::Input(input) => self.assemble_input(dest, input, assign)?,
-
-            RValue::Phi(phi) => {}
-
-            // RValue::BitNot(_) => todo!(),
-            rvalue => todo!("{:?}", rvalue),
-        }
-
-        Ok(())
-    }
-
-    fn assemble_add(&mut self, dest: AsmRegister64, add: &Add, assign: &Assign) -> AsmResult<()> {
-        let (lhs, rhs) = (self.get_value(add.lhs()), self.get_value(add.rhs()));
-
-        self.move_to_reg(dest, lhs)?;
-
-        match rhs {
-            Operand::Byte(0) | Operand::Uint(0) => {}
-            Operand::Byte(1) | Operand::Uint(1) => self.asm.inc(dest)?,
-
-            Operand::Byte(byte) => self.asm.add(dest, byte as i32)?,
-            Operand::Uint(uint) => self.asm.add(dest, uint as i32)?,
-
-            Operand::Stack(slot) => {
-                let addr = self.stack_offset(slot);
-                self.asm.add(dest, addr)?;
-            }
-
-            Operand::Register(reg) => self.asm.add(dest, reg)?,
-
-            Operand::Bool(_) => panic!("cannot add a boolean"),
-        }
-
-        // let mut dest = None;
-        //
-        // // Attempt to reuse the lhs's register if available
-        // if let Operand::Register(reg) = lhs {
-        //     if let Value::Val(val) = add.lhs() {
-        //         if self.liveliness.is_last_usage(val, self.current_location) {
-        //             self.regalloc.allocate_overwrite(reg);
-        //             self.values.remove(&val);
-        //             dest = Some((reg, rhs));
-        //         }
-        //     }
-        // }
-        //
-        // // If we couldn't reuse the lhs's register, try to reuse the rhs's
-        // if dest.is_none() {
-        //     if let Operand::Register(reg) = rhs {
-        //         if let Value::Val(val) = add.rhs() {
-        //             if self.liveliness.is_last_usage(val, self.current_location) {
-        //                 self.regalloc.allocate_overwrite(reg);
-        //                 self.values.remove(&val);
-        //                 dest = Some((reg, lhs));
-        //             }
-        //         }
-        //     }
-        // }
-        //
-        // // Currently `dest` contains one operand of the add and `operand` contains
-        // // the other
-        // let (dest, operand) = match dest {
-        //     Some(dest) => dest,
-        //     None => {
-        //         let dest = self.allocate_register()?;
-        //         self.move_to_reg(dest, lhs)?;
-        //         (dest, rhs)
-        //     }
-        // };
-        //
-        // match operand {
-        //     Operand::Byte(0) | Operand::Uint(0) => {}
-        //     Operand::Byte(1) | Operand::Uint(1) => self.asm.inc(dest)?,
-        //     Operand::Byte(byte) => self.asm.add(dest, byte as i32)?,
-        //     Operand::Uint(uint) => self.asm.add(dest, uint as i32)?,
-        //
-        //     Operand::Bool(_) => panic!("cannot add a boolean"),
-        //
-        //     Operand::Stack(slot) => {
-        //         let addr = self.stack_offset(slot);
-        //         self.asm.add(dest, addr)?;
-        //     }
-        //
-        //     Operand::Register(reg) => self.asm.add(dest, reg)?,
-        // }
-        //
-        // self.values
-        //     .insert(assign.value(), Operand::Register(dest))
-        //     .debug_unwrap_none();
-
-        Ok(())
-    }
-
-    fn assemble_load(
-        &mut self,
-        dest: AsmRegister64,
-        load: &Load,
-        assign: &Assign,
-    ) -> AsmResult<()> {
-        let ptr = self.get_value(load.ptr());
-        let dest = match ptr {
-            Operand::Byte(ptr) => {
-                // let dest = self.allocate_register()?;
-                let tape_ptr = self.tape_start_ptr();
-
-                self.asm.mov(dest, tape_ptr)?;
-                self.asm
-                    .mov(low_byte_register(dest), byte_ptr(dest + ptr as u32))?;
-
-                dest
-            }
-
-            Operand::Uint(ptr) => {
-                // let dest = self.allocate_register()?;
-                let tape_ptr = self.tape_start_ptr();
-
-                self.asm.mov(dest, tape_ptr)?;
-                self.asm
-                    .mov(low_byte_register(dest), byte_ptr(dest + ptr as u32))?;
-
-                dest
-            }
-
-            Operand::Bool(_) => panic!("cannot offset a pointer by a boolean"),
-
-            Operand::Stack(slot) => {
-                // let dest = self.allocate_register()?;
-                let tape_ptr = self.tape_start_ptr();
-                let addr = self.stack_offset(slot);
-
-                self.asm.mov(dest, tape_ptr)?;
-                self.asm.add(dest, addr)?;
-                self.asm.mov(low_byte_register(dest), byte_ptr(dest))?;
-
-                dest
-            }
-
-            Operand::Register(reg) => {
-                // let mut dest = None;
-                //
-                // // Attempt to reuse the register
-                // if let Value::Val(val) = load.ptr() {
-                //     if self.liveliness.is_last_usage(val, self.current_location) {
-                //         self.regalloc.allocate_overwrite(reg);
-                //         self.values.remove(&val);
-                //         dest = Some(reg);
-                //     }
-                // }
-                //
-                // let dest = match dest {
-                //     Some(dest) => dest,
-                //     None => self.allocate_register()?,
-                // };
-                let tape_ptr = self.tape_start_ptr();
-
-                self.asm.mov(dest, tape_ptr)?;
-                self.asm
-                    .mov(low_byte_register(dest), byte_ptr(dest + reg))?;
-
-                dest
-            }
-        };
-
-        // self.values
-        //     .insert(assign.value(), Operand::Register(dest))
-        //     .debug_unwrap_none();
-
-        Ok(())
-    }
-
-    fn assemble_input(
-        &mut self,
-        input_reg: AsmRegister64,
-        _input: &Input,
-        assign: &Assign,
-    ) -> AsmResult<()> {
-        self.has_io_functions = true;
-
-        // Move the state pointer into rcx
-        self.asm.mov(rcx, self.state_ptr())?;
-
-        // Setup the stack and save used registers
-        let (stack_padding, slots) = self.before_win64_call()?;
-
-        // Call the input function
-        type_eq::<unsafe extern "win64" fn(state: *mut State) -> u16>(ffi::input);
-        #[allow(clippy::fn_to_numeric_cast)]
-        self.asm.mov(rax, ffi::input as u64)?;
-        self.asm.call(rax)?;
-
-        // Restore saved registers and deallocate stack space
-        self.after_win64_call(stack_padding, slots)?;
-
-        // `input()` returns a u16 within the rax register where the top six bytes are garbage, the
-        // 7th byte is the input value (if the function succeeded) and the 8th byte is the status
-        // code, 1 for error and 0 for success
-
-        // // Allocate the register that'll hold the value gotten from the input
-        // let input_reg = self.allocate_register()?;
-
-        // Check if an IO error occurred
-        self.asm.cmp(low_byte_register(rax), 0)?;
-
-        // If so, jump to the io error label and exit
-        self.asm.jne(self.io_failure)?;
-
-        // Save rax to the input register
-        self.asm.mov(input_reg, rax)?;
-        // Shift right by one byte in order to keep only the input value
-        self.asm.shr(input_reg, 8)?;
-
-        // self.values
-        //     .insert(assign.value(), Operand::Register(input_reg))
-        //     .debug_unwrap_none();
-
-        Ok(())
-    }
-
-    fn assemble_output(&mut self, output: &Output) -> AsmResult<()> {
-        self.has_io_functions = true;
-
-        // Setup the stack and save used registers
-        let (stack_padding, slots) = self.before_win64_call()?;
-
-        // Move the state pointer into rcx
-        self.asm.mov(rcx, self.state_ptr() + stack_padding)?;
-
-        // Move the given byte into rdx
-        let value = self.get_value(output.value()).map_stack(|mut addr| {
-            addr.offset += stack_padding as usize;
-            addr
-        });
-        self.move_to_reg(rdx, value)?;
-
-        // Call the output function
-        type_eq::<unsafe extern "win64" fn(state: *mut State, byte: u64) -> u8>(ffi::output);
-        #[allow(clippy::fn_to_numeric_cast)]
-        self.asm.mov(rax, ffi::output as u64)?;
-        self.asm.call(rax)?;
-
-        // Restore saved registers and deallocate stack space
-        self.after_win64_call(stack_padding, slots)?;
-
-        // Check if an IO error occurred
-        self.asm.cmp(low_byte_register(rax), 0)?;
-
-        // If so, jump to the io error label and exit
-        self.asm.jne(self.io_failure)?;
-
-        Ok(())
-    }
-
-    fn assemble_terminator(
-        &mut self,
-        terminator: &Terminator,
-        next_block: Option<BlockId>,
-    ) -> AsmResult<()> {
-        self.add_comment(terminator.pretty_print(PrettyConfig::minimal()));
-
-        match terminator {
-            Terminator::Error => panic!("encountered an error terminator"),
-            Terminator::Unreachable => self.asm.ud2(),
-
-            // If the next block is the target block, we can fall into it
-            &Terminator::Jump(block) if Some(block) == next_block => Ok(()),
-            Terminator::Jump(block) => {
-                let jump_label = *self.block_labels.get(block).unwrap();
-                self.asm.jmp(jump_label)
-            }
-
-            // TODO: Deallocate stack space and whatnot
-            Terminator::Return(value) => {
-                let value = self.get_value(*value);
-                self.move_to_reg(rax, value)?;
-
-                // Deallocate the stack space for the operand, we know that this is
-                // the last usage for the value since the next instruction is a return
-                if let Operand::Stack(slot) = value {
-                    self.regalloc.free(&mut self.asm, slot)?;
-                }
-
-                // Return from the function
-                self.asm.jmp(self.epilogue)
-            }
-
-            Terminator::Branch(branch) => {
-                let cond = self.get_value(branch.condition());
-
-                // Get both block's labels
-                let (true_label, false_label) = (
-                    *self.block_labels.get(&branch.true_jump()).unwrap(),
-                    *self.block_labels.get(&branch.false_jump()).unwrap(),
-                );
-
-                // See <https://stackoverflow.com/a/54499552/9885253> for the logic behind the const-known
-                // polyfills. Since our comparisons are currently pretty dumb, everything is an `x ≡ 0` so we
-                // can just polyfill with things that non-destructively (in regards to register & stack state)
-                // set the ZF to one or zero based on the result of the comparison, ZF=1 for equal and ZF=0 for
-                // not equal
-                match cond {
-                    Operand::Byte(byte) => {
-                        self.add_comment(format!("{} ≡ 0 = {}", byte, byte == 0));
-
-                        if byte == 0 {
-                            self.asm.jmp(true_label)?;
-                        } else {
-                            self.asm.jmp(false_label)?;
-                        }
-
-                        return Ok(());
-                    }
-
-                    Operand::Uint(uint) => {
-                        self.add_comment(format!("{} ≡ 0 = {}", uint, uint == 0));
-
-                        if uint == 0 {
-                            self.asm.jmp(true_label)?;
-                        } else {
-                            self.asm.jmp(false_label)?;
-                        }
-
-                        return Ok(());
-                    }
-
-                    Operand::Bool(bool) => {
-                        self.add_comment(format!("{} = {}", bool, bool));
-
-                        if bool {
-                            self.asm.jmp(true_label)?;
-                        } else {
-                            self.asm.jmp(false_label)?;
-                        }
-
-                        return Ok(());
-                    }
-
-                    Operand::Stack(slot) => {
-                        let addr = self.stack_offset(slot);
-                        self.asm.cmp(addr, 0)?;
-                    }
-
-                    Operand::Register(reg) => self.asm.cmp(reg, 0)?,
-                }
-
-                // If the next block is the true branch's block we can fall into it
-                if Some(branch.true_jump()) == next_block {
-                    self.asm.jnz(false_label)?;
-
-                // If the next block is the false branch's block we can fall into it
-                } else if Some(branch.false_jump()) == next_block {
-                    self.asm.jz(true_label)?;
-
-                // Otherwise we have to make a jump in both the true and false cases
-                } else {
-                    // If the condition is true, jump to the true label
-                    self.asm.jz(true_label)?;
-
-                    // Otherwise unconditionally jump to the false label
-                    self.asm.jmp(false_label)?;
-                }
-
-                Ok(())
-            }
-        }
-    }
-
-    // See <https://stackoverflow.com/a/54499552/9885253>
-    #[allow(dead_code)]
-    fn set_zf_one(&mut self) -> AsmResult<()> {
-        // If we have a free register available we can xor zero it in order to set ZF=1
-        if let Some(free) = self.regalloc.peek_free_register().map(low_byte_register) {
-            self.asm.xor(free, free)?;
-
-        // Otherwise we'll compare a register against itself, which is always
-        // true and results in ZF=1
-        } else {
-            let reg = low_byte_register(self.regalloc.least_recently_used_register());
-            self.asm.cmp(reg, reg)?;
-        }
-
-        Ok(())
-    }
-
-    // See <https://stackoverflow.com/a/54499552/9885253>
-    #[allow(dead_code)]
-    fn set_zf_zero(&mut self) -> AsmResult<()> {
-        // If we have a free register available we can use `or %reg, -1` to set ZF=0
-        if let Some(free) = self.regalloc.peek_free_register().map(low_byte_register) {
-            self.asm.or(free, -1)?;
-
-        // Otherwise we'll test rsp against itself, rsp is known to be non-zero
-        } else {
-            self.asm.test(rsp, rsp)?;
-        }
-
-        Ok(())
-    }
-
-    /// Create labels for each basic block
-    fn create_block_labels(&mut self, blocks: &Blocks) {
-        for block in blocks {
-            let label = self.create_label();
-            self.block_labels
-                .insert(block.id(), label)
-                .debug_unwrap_none();
-        }
-    }
-
-    fn move_to_reg(&mut self, dest: AsmRegister64, value: Operand) -> AsmResult<()> {
-        match value {
-            Operand::Byte(byte) => self.asm.mov(dest, byte as i64),
-            Operand::Uint(uint) => self.asm.mov(dest, uint as i64),
-            Operand::Bool(bool) => self.asm.mov(dest, bool as i64),
-            Operand::Stack(slot) => {
-                let ptr = self.stack_offset(slot);
-                self.asm.mov(dest, ptr)
-            }
-            // If the source and destination registers are the same, do nothing
-            Operand::Register(src) if src == dest => Ok(()),
-            Operand::Register(src) => self.asm.mov(dest, src),
-        }
-    }
-
-    #[track_caller]
-    fn get_value(&mut self, value: Value) -> Operand {
-        match value {
-            Value::Byte(byte) => Operand::Byte(byte),
-            Value::Uint(uint) => Operand::Uint(uint),
-            Value::Bool(bool) => Operand::Bool(bool),
-            Value::Val(var) => match self.values.get(&var).copied() {
-                Some(operand) => operand,
-                None => panic!(
-                    "attempted to get the value of {:?}, but {} couldn't be found",
-                    value, var,
-                ),
-            },
-        }
-    }
-
-    #[track_caller]
-    #[allow(dead_code)]
-    fn get_var(&self, var: ValId) -> Operand {
-        match self.values.get(&var) {
-            Some(&operand) => operand,
-            None => panic!(
-                "attempted to get the value of {}, but it couldn't be found",
-                var,
-            ),
-        }
-    }
-
-    /// Create the IO failure block
-    // FIXME: Needs to deallocate all of the stack space from any given failure point
-    //        as well as restore callee sided registers
-    #[allow(clippy::fn_to_numeric_cast)]
-    fn build_io_failure(&mut self) -> AsmResult<()> {
-        self.set_label(self.io_failure);
-        self.named_label(".IO_FAILURE");
-
-        // Move the state pointer into the rcx register
-        self.asm.mov(rcx, self.state_ptr())?;
-
-        // The "most correct" method would be to call `self.after_win64_call()`
-        // before the function call and `self.before_win64_call()` after we call
-        // it, however it doesn't actually matter since we never use any variables
-        // from in this code path, io failures diverge from the perspective of
-        // the function. Instead, what we do is allocate the stack space for the
-        // called function and align the stack before the function call and then
-        // deallocate that space afterwards.
-
-        // Allocate the required space by subtracting from rsp
-        let stack_padding = self.regalloc.align_for_call() as i32;
-        self.asm.sub(rsp, stack_padding)?;
-
-        // Call the io error function
-        type_eq::<unsafe extern "win64" fn(*mut State) -> bool>(ffi::io_error_encountered);
-        self.asm.mov(rax, ffi::io_error_encountered as u64)?;
-        self.asm.call(rax)?;
-
-        // Deallocate the stack space allocated for the function call
-        self.asm.add(rsp, stack_padding)?;
-
-        // Move the return code into rax
-        self.asm.mov(rax, RETURN_IO_FAILURE)?;
-
-        // Return from the function
-
-        // We technically would/could jump to the epilogue directly with
-        // `self.asm.jmp(self.epilogue)?;`, but the io failure block should be
-        // positioned directly before the epilogue block, meaning we can just
-        // fall through into it. This will hold as long as `self.build_io_failure()`
-        // is called directly before `self.epilogue()`
-
-        Ok(())
-    }
-
-    /// Set up the function's prologue
-    // TODO: Save & restore callee sided registers
-    fn prologue(&mut self) -> AsmResult<()> {
-        self.named_label(".PROLOGUE");
-
-        // The function that called us must allocated 32 bytes of stack space
-        // for parameters, regardless of whether or not we actually use 4
-        // parameters
-        //
-        // Current stack state:
-        // ┌──────────┬────────────┐
-        // │ rsp + 32 │   unused   │
-        // ├──────────┼────────────┤
-        // │ rsp + 24 │   unused   │
-        // ├──────────┼────────────┤
-        // │ rsp + 16 │   unused   │
-        // ├──────────┼────────────┤
-        // │ rsp + 8  │   unused   │
-        // └──────────┴────────────┘
-
-        // rcx contains the state pointer
-        self.asm
-            .mov(self.state_ptr() - CALLEE_REGISTER_OFFSET, rcx)?;
-
-        // rdx contains the tape's start pointer
-        self.asm
-            .mov(self.tape_start_ptr() - CALLEE_REGISTER_OFFSET, rdx)?;
-
-        // r8 contains the tape's end pointer
-        self.asm
-            .mov(self.tape_end_ptr() - CALLEE_REGISTER_OFFSET, r8)?;
-
-        // Current stack state:
-        // ┌──────────┬────────────┐
-        // │ rsp + 32 │   unused   │
-        // ├──────────┼────────────┤
-        // │ rsp + 24 │  tape end  │
-        // ├──────────┼────────────┤
-        // │ rsp + 16 │ tape start │
-        // ├──────────┼────────────┤
-        // │ rsp + 8  │ state ptr  │
-        // └──────────┴────────────┘
-
-        // TODO: We get one extra stack slot from the 32 bytes allocated by the caller,
-        //       we should use it here
-        // TODO: Only push/pop the registers we actually use
-        for &register in CALLEE_SAVED_REGISTERS {
-            self.asm.push(register)?;
-        }
-
-        // C = total_callee_regs * 8
-        //
-        // Current stack state:
-        // ┌────────────────┬────────────────────────┐
-        // │  rsp + C + 32  │         unused         │
-        // ├────────────────┼────────────────────────┤
-        // │  rsp + C + 24  │        tape end        │
-        // ├────────────────┼────────────────────────┤
-        // │  rsp + C + 16  │       tape start       │
-        // ├────────────────┼────────────────────────┤
-        // │  rsp + C + 8   │        state ptr       │
-        // ├────────────────┼────────────────────────┤
-        // │ rsp + C .. rsp │ non-volatile registers │
-        // └────────────────┴────────────────────────┘
-
-        Ok(())
-    }
-
-    // Expects that rax contains the function return code
-    fn epilogue(&mut self) -> AsmResult<()> {
-        self.set_label(self.epilogue);
-        self.named_label(".EPILOGUE");
-
-        for &register in CALLEE_SAVED_REGISTERS.iter().rev() {
-            self.asm.pop(register)?;
-        }
-
-        self.asm.ret()?;
-
-        Ok(())
-    }
-
-    /// Get a pointer to the `*mut State` stored on the stack
-    fn state_ptr(&self) -> AsmMemoryOperand {
-        qword_ptr(rsp + 8 + CALLEE_REGISTER_OFFSET + self.regalloc.virtual_rsp())
-    }
-
-    /// Get a pointer to the `*mut u8` stored on the stack
-    fn tape_start_ptr(&self) -> AsmMemoryOperand {
-        qword_ptr(rsp + 16 + CALLEE_REGISTER_OFFSET + self.regalloc.virtual_rsp())
-    }
-
-    /// Get a pointer to the `*const u8` stored on the stack
-    fn tape_end_ptr(&self) -> AsmMemoryOperand {
-        qword_ptr(rsp + 24 + CALLEE_REGISTER_OFFSET + self.regalloc.virtual_rsp())
-    }
-
-    fn stack_offset(&self, slot: StackSlot) -> AsmMemoryOperand {
-        qword_ptr(rsp + self.regalloc.slot_offset(slot))
-    }
-
-    // /// Push a register's value to the stack
-    // fn push(&mut self, register: AsmRegister64) -> AsmResult<StackSlot> {
-    //     let slot = StackSlot::new(self.regalloc.virtual_rsp(), 8);
-    //
-    //     self.asm.push(register)?;
-    //     self.regalloc.stack.virtual_rsp += 8;
-    //
-    //     Ok(slot)
-    // }
-
-    fn allocate_register(&mut self) -> AsmResult<AsmRegister64> {
-        let (register, spilled) = self.regalloc.allocate(&mut self.asm, true)?;
-
-        // Spill the spilled register to the stack
-        if let Some(spilled) = spilled {
-            self.spill_register(register, spilled);
-        }
-
-        Ok(register)
-    }
-
-    #[allow(dead_code)]
-    fn allocate_specific(&mut self, register: AsmRegister64) -> AsmResult<AsmRegister64> {
-        let (register, spilled) = self
-            .regalloc
-            .allocate_specific(&mut self.asm, register, true)?;
-
-        // Spill the spilled register to the stack
-        if let Some(spilled) = spilled {
-            self.spill_register(register, spilled);
-        }
-
-        Ok(register)
-    }
-
-    #[allow(dead_code)]
-    fn allocate_specific_clobbered(&mut self, register: AsmRegister64) -> AsmResult<AsmRegister64> {
-        let (register, spilled) =
-            self.regalloc
-                .allocate_specific(&mut self.asm, register, false)?;
-
-        // Spill the spilled register to the stack
-        if let Some(spilled) = spilled {
-            self.spill_register(register, spilled);
-        }
-
-        Ok(register)
-    }
-
-    fn spill_register(&mut self, register: AsmRegister64, spilled: StackSlot) {
-        let mut replaced_old = false;
-        for value in self.values.values_mut() {
-            if *value == Operand::Register(register) {
-                *value = Operand::Stack(spilled);
-                replaced_old = true;
-
-                break;
-            }
-        }
-
-        debug_assert!(replaced_old);
-    }
-
-    fn deallocate_register(&mut self, register: AsmRegister64) {
-        self.regalloc.deallocate(register);
-    }
-
-    #[allow(dead_code)]
-    fn infinite_loop(&mut self) -> AsmResult<()> {
-        // Add a nop to avoid having multiple labels for an instruction
-        self.asm.nop()?;
-
-        self.add_comment("infinite loop");
-
-        let label = self.asm.create_label();
-        self.set_label(label);
-        self.asm.jmp(label)?;
-
-        Ok(())
-    }
-
-    /// Saves all currently used registers and allocates 32 bytes of stack for the called function
-    /// as well as aligning the stack to 16 bytes. Returns the total extra stack space that was allocated
-    /// for both the parameters and alignment padding
-    fn before_win64_call(&mut self) -> AsmResult<(i32, Vec<(AsmRegister64, StackSlot)>)> {
-        let mut slots = Vec::new();
-
-        let registers: Vec<_> = self.regalloc.used_volatile_registers().collect();
-        for register in registers {
-            let slot = self.regalloc.push(&mut self.asm, register)?;
-            slots.push((register, slot));
-
-            tracing::debug!(
-                "pushed register {:?} to slot {:?} before win64 call",
-                register,
-                slot,
-            );
-        }
-
-        let stack_padding = self.regalloc.align_for_call() as i32;
-
-        // Allocate the required space by subtracting from rsp
-        self.asm.sub(rsp, stack_padding)?;
-
-        Ok((stack_padding, slots))
-    }
-
-    /// Restores all saved registers and deallocates the space that was allocated for the called function
-    fn after_win64_call(
-        &mut self,
-        stack_padding: i32,
-        slots: Vec<(AsmRegister64, StackSlot)>,
-    ) -> AsmResult<()> {
-        // Deallocate the stack space we allocated for both the function arguments
-        // and the padding required to align the stack to 16 bytes
-        self.asm.add(rsp, stack_padding)?;
-
-        // Pop all used registers from the stack
-        for (register, slot) in slots.into_iter().rev() {
-            self.regalloc.pop(&mut self.asm, slot, register)?;
-            tracing::debug!(
-                "popped register {:?} from slot {:?} after win64 call",
-                register,
-                slot,
-            );
-        }
-
-        // Remove all clobbered registers
-        let registers: Vec<_> = self.regalloc.clobbered_registers().collect();
-        for clobbered in registers {
-            self.regalloc.deallocate(clobbered);
-            tracing::debug!("deallocated clobbered register {:?}", clobbered);
-        }
-
-        Ok(())
-    }
-
-    fn add_comment<C>(&mut self, comment: C)
-    where
-        C: ToString,
-    {
-        let idx = self.asm.instructions().len();
-        self.comments
-            .entry(idx)
-            .or_insert_with(|| Vec::with_capacity(1))
-            .push(comment.to_string());
-    }
-
-    fn create_label(&mut self) -> CodeLabel {
-        self.asm.create_label()
-    }
-
-    #[track_caller]
-    fn named_label<N>(&mut self, name: N)
-    where
-        N: Into<Cow<'static, str>>,
-    {
-        self.named_labels
-            .insert(self.asm.instructions().len(), name.into())
-            .debug_unwrap_none();
-    }
-
-    #[track_caller]
-    fn set_label(&mut self, mut label: CodeLabel) {
-        self.asm.set_label(&mut label).unwrap();
-    }
-}
-
-fn type_eq<T>(_: T) {}
-
-#[allow(non_upper_case_globals)]
-fn low_byte_register(register: AsmRegister64) -> AsmRegister8 {
-    match register {
-        rax => al,
-        rbx => bl,
-        rcx => cl,
-        rdx => dl,
-        rsp => spl,
-        rbp => bpl,
-        rsi => sil,
-        rdi => dil,
-        r8 => r8b,
-        r9 => r9b,
-        r10 => r10b,
-        r11 => r11b,
-        r12 => r12b,
-        r13 => r13b,
-        r14 => r14b,
-        r15 => r15b,
-        _ => unreachable!(),
-    }
-}
-*/

@@ -5,6 +5,7 @@ use crate::{
     },
     passes::Pass,
     utils::{AssertNone, HashMap, HashSet},
+    values::Ptr,
 };
 
 /// Loop invariant code motion
@@ -342,7 +343,7 @@ impl Pass for Licm {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _value: Ptr) {
         if self.within_theta {
             self.invariant_exprs.insert(int.value());
         }
@@ -393,11 +394,11 @@ impl Default for Licm {
 
 test_opts! {
     move_constants_from_theta,
-    passes = [Licm::new()],
+    passes = |_| bvec![Licm::new()],
     output = [],
-    |graph, effect| {
+    |graph, effect, tape_len| {
         graph.theta([], [], effect, |graph, effect, _invariant, _variant| {
-            graph.int(20);
+            graph.int(Ptr::new(20, tape_len));
             let bool = graph.bool(false);
 
             ThetaData::new([], bool.value(), effect)

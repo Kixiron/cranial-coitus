@@ -104,16 +104,19 @@ impl BlockBuilder {
     where
         V: Into<Value>,
     {
-        self.values.insert(var, value.into()).debug_unwrap_none();
+        let value = value.into();
+        self.values.insert(var, value).debug_unwrap_none();
     }
 
     /// Gets the current block
+    #[track_caller]
     pub fn current(&mut self) -> &mut BasicBlock {
         self.current.as_mut().unwrap()
     }
 
     /// Gets the id of the current block
-    pub fn current_id(&mut self) -> BlockId {
+    #[track_caller]
+    pub fn current_block_id(&mut self) -> BlockId {
         self.current().id()
     }
 
@@ -123,8 +126,8 @@ impl BlockBuilder {
         match value {
             CirValue::Var(var) => *self.values.get(&var).unwrap(),
             CirValue::Const(constant) => match constant {
-                Const::Int(uint) => Value::Uint(uint),
-                Const::U8(byte) => Value::Byte(byte),
+                Const::Ptr(uint) => Value::TapePtr(uint),
+                Const::Cell(byte) => Value::U8(byte),
                 Const::Bool(bool) => Value::Bool(bool),
             },
             CirValue::Missing => unreachable!(),

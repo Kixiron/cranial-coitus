@@ -4,25 +4,28 @@ use crate::{
     ir::{IrBuilder, Pretty, PrettyConfig, Value, VarId},
     passes::{utils::ConstantStore, Pass},
     utils::{self, AssertNone, HashMap},
+    values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
 
 pub struct SymbolicEval {
     changed: bool,
-    tape: Vec<Option<u8>>,
+    tape: Vec<Option<Cell>>,
+    tape_len: u16,
     constants: ConstantStore,
     evaluated_outputs: usize,
     evaluated_thetas: usize,
 }
 
 impl SymbolicEval {
-    pub fn new(tape_len: usize) -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
             changed: false,
-            tape: vec![Some(0); tape_len],
-            constants: ConstantStore::new(),
+            tape: vec![Some(Cell::zero()); tape_len as usize],
+            constants: ConstantStore::new(tape_len),
             evaluated_outputs: 0,
             evaluated_thetas: 0,
+            tape_len,
         }
     }
 
@@ -38,14 +41,13 @@ impl SymbolicEval {
 
     fn zero_tape(&mut self) {
         for cell in &mut self.tape {
-            *cell = Some(0);
+            *cell = Some(Cell::zero());
         }
     }
 
     fn try_evaluate_theta(&mut self, graph: &mut Rvsdg, theta: &Theta) -> Option<OutputPort> {
-        let tape_len = self.tape.len();
-
         // We don't currently accept variant inputs
+        // TODO: .has_variant_inputs()
         if theta.variant_inputs_len() != 0 {
             tracing::trace!(
                 theta = ?theta.node(),
@@ -96,8 +98,12 @@ impl SymbolicEval {
             return None;
         }
 
-        let mut machine =
-            Machine::new(100_000_000, tape_len, || unreachable!(), |_| unreachable!());
+        let mut machine = Machine::new(
+            100_000_000,
+            self.tape_len,
+            || unreachable!(),
+            |_| unreachable!(),
+        );
         // Give the machine our current tape state
         machine.tape = self.tape.clone();
 
@@ -144,14 +150,15 @@ impl SymbolicEval {
                 for (output, param) in theta.output_pairs() {
                     let source = theta.body().input_source(param.input());
 
-                    let value = *machine
+                    let value = machine
                         .values
                         .last()
                         .unwrap()
                         .get(&VarId::new(source))
-                        .unwrap();
+                        .unwrap()
+                        .into_ptr(self.tape_len);
 
-                    let int = graph.int(value.convert_to_u32().unwrap());
+                    let int = graph.int(value);
                     self.constants.add(output, value);
                     graph.rewire_dependents(output, int.value());
 
@@ -161,6 +168,7 @@ impl SymbolicEval {
                 let input_effect = theta.input_effect().unwrap();
                 let mut last_effect = graph.input_source(input_effect);
 
+                // FIXME: I have no idea what this is doing anymore
                 let mut created_values = BTreeMap::new();
                 for (cell, (old, new)) in self
                     .tape
@@ -171,23 +179,23 @@ impl SymbolicEval {
                 {
                     if let (Some(old), Some(new)) = (old, new) {
                         if old != new {
-                            let ptr = *created_values
-                                .entry(cell as u32)
-                                .or_insert_with(|| graph.int(cell as u32).value());
+                            let ptr = *created_values.entry(cell as u16).or_insert_with(|| {
+                                graph.int(Ptr::new(cell as u16, self.tape_len)).value()
+                            });
                             let value = *created_values
-                                .entry(new as u32)
-                                .or_insert_with(|| graph.int(new as u32).value());
+                                .entry(new.into_inner() as u16)
+                                .or_insert_with(|| graph.int(new.into_ptr(self.tape_len)).value());
 
                             let store = graph.store(ptr, value, last_effect);
                             last_effect = store.output_effect();
                         }
                     } else if let Some(value) = new {
-                        let ptr = *created_values
-                            .entry(cell as u32)
-                            .or_insert_with(|| graph.int(cell as u32).value());
+                        let ptr = *created_values.entry(cell as u16).or_insert_with(|| {
+                            graph.int(Ptr::new(cell as u16, self.tape_len)).value()
+                        });
                         let value = *created_values
-                            .entry(value as u32)
-                            .or_insert_with(|| graph.int(value as u32).value());
+                            .entry(value.into_inner() as u16)
+                            .or_insert_with(|| graph.int(value.into_ptr(self.tape_len)).value());
 
                         let store = graph.store(ptr, value, last_effect);
                         last_effect = store.output_effect();
@@ -237,28 +245,23 @@ impl Pass for SymbolicEval {
         self.constants.add(bool.value(), value);
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         self.constants.add(int.value(), value);
     }
 
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
-        let ptr = self
-            .constants
-            .u32(graph.input_source(store.ptr()))
-            .map(|ptr| ptr.rem_euclid(self.tape.len() as u32) as usize);
-
-        if let Some(ptr) = ptr {
-            self.tape[ptr] = self.constants.u8(graph.input_source(store.value()));
+        if let Some(ptr) = self.constants.ptr(graph.input_source(store.ptr())) {
+            self.tape[ptr] = self
+                .constants
+                .cell(graph.input_source(store.value()))
+                .map(Cell::into);
         } else {
             self.clear_tape();
         }
     }
 
     fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
-        let ptr = self
-            .constants
-            .u32(graph.input_source(load.ptr()))
-            .map(|ptr| ptr.rem_euclid(self.tape.len() as u32) as usize);
+        let ptr = self.constants.ptr(graph.input_source(load.ptr()));
 
         if let Some(value) = ptr.and_then(|ptr| self.tape[ptr]) {
             // let int = graph.int(value as i32);
@@ -292,6 +295,7 @@ impl Pass for SymbolicEval {
 
             let mut changed = false;
             let mut visitor = Self::new(0);
+            visitor.tape_len = self.tape_len;
 
             visitor.tape = self.tape.clone();
             self.constants
@@ -321,6 +325,8 @@ impl Pass for SymbolicEval {
 
         let mut changed = false;
         let (mut true_visitor, mut false_visitor) = (Self::new(0), Self::new(0));
+        true_visitor.tape_len = self.tape_len;
+        false_visitor.tape_len = self.tape_len;
 
         true_visitor.tape = self.tape.clone();
         false_visitor.tape = self.tape.clone();

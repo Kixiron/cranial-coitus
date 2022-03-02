@@ -1,4 +1,7 @@
-use crate::graph::{Add, InputPort, Mul, NodeExt, NodeId, OutputPort, Sub};
+use crate::{
+    graph::{Add, InputPort, Mul, NodeExt, NodeId, OutputPort, Sub},
+    values::Ptr,
+};
 
 // TODO: Eq?
 pub trait BinOp {
@@ -6,7 +9,7 @@ pub trait BinOp {
 
     fn symbol() -> &'static str;
 
-    fn combine(lhs: u32, rhs: u32) -> u32;
+    fn combine(lhs: Ptr, rhs: Ptr) -> Ptr;
 
     fn node(&self) -> NodeId;
 
@@ -30,7 +33,7 @@ impl BinOp for Add {
         "+"
     }
 
-    fn combine(lhs: u32, rhs: u32) -> u32 {
+    fn combine(lhs: Ptr, rhs: Ptr) -> Ptr {
         lhs + rhs
     }
 
@@ -68,7 +71,7 @@ impl BinOp for Sub {
         "-"
     }
 
-    fn combine(lhs: u32, rhs: u32) -> u32 {
+    fn combine(lhs: Ptr, rhs: Ptr) -> Ptr {
         lhs - rhs
     }
 
@@ -106,7 +109,7 @@ impl BinOp for Mul {
         "*"
     }
 
-    fn combine(lhs: u32, rhs: u32) -> u32 {
+    fn combine(lhs: Ptr, rhs: Ptr) -> Ptr {
         lhs * rhs
     }
 

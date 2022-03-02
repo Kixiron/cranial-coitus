@@ -6,6 +6,7 @@ use crate::{
     ir::Const,
     passes::Pass,
     utils::{AssertNone, HashMap},
+    values::Ptr,
 };
 use std::collections::BTreeMap;
 
@@ -17,18 +18,21 @@ enum Candidate {
 
 pub struct AddSubLoop {
     changed: bool,
+    // FIXME: ConstantStore
     values: BTreeMap<OutputPort, Const>,
     add_loops_removed: usize,
     sub_loops_removed: usize,
+    tape_len: u16,
 }
 
 impl AddSubLoop {
-    pub fn new() -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
             values: BTreeMap::new(),
             changed: false,
             add_loops_removed: 0,
             sub_loops_removed: 0,
+            tape_len,
         }
     }
 
@@ -113,8 +117,7 @@ impl AddSubLoop {
         let is = |src, expected| {
             values
                 .get(&src)
-                .and_then(|val| val.convert_to_u32())
-                .map_or(false, |val| val == expected)
+                .map_or(false, |value| value.into_ptr(self.tape_len) == expected)
         };
 
         let start = theta.start_node();
@@ -248,14 +251,15 @@ impl Pass for AddSubLoop {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         let replaced = self.values.insert(int.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
+        debug_assert!(replaced.is_none() || replaced == Some(Const::Ptr(value)));
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
-        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) =
+            (Self::new(self.tape_len), Self::new(self.tape_len));
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -289,7 +293,7 @@ impl Pass for AddSubLoop {
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
-        let mut visitor = Self::new();
+        let mut visitor = Self::new(self.tape_len);
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -371,7 +375,7 @@ impl Pass for AddSubLoop {
             let store_sum_diff = graph.store(acc_ptr, sum_diff, acc_val.output_effect());
 
             // Unconditionally store 0 to the counter cell
-            let zero = graph.int(0);
+            let zero = graph.int(Ptr::zero(self.tape_len));
             let zero_counter =
                 graph.store(counter_ptr, zero.value(), store_sum_diff.output_effect());
 
@@ -426,12 +430,6 @@ impl Pass for AddSubLoop {
     }
 }
 
-impl Default for AddSubLoop {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::passes::{
@@ -439,32 +437,31 @@ mod tests {
         UnobservedStore, ZeroLoop,
     };
 
-    const TAPE_LEN: usize = 100;
-
     test_opts! {
         // ```bf
         // y[-x+y]x
         // ```
         addition_motif_one,
-        passes = [
-            Dce::new(),
-            UnobservedStore::new(),
-            ConstFolding::new(),
-            AssociativeOps::new(),
-            ZeroLoop::new(),
-            Mem2Reg::new(TAPE_LEN),
-            AddSubLoop::new(),
-            Dce::new(),
-            ElimConstGamma::new(),
-            ConstFolding::new(),
-            ExprDedup::new(),
-        ],
-        tape_size = TAPE_LEN,
+        passes = |tape_len| -> Vec<Box<dyn Pass + 'static>> {
+            bvec![
+                Dce::new(),
+                UnobservedStore::new(tape_len),
+                ConstFolding::new(tape_len),
+                AssociativeOps::new(tape_len),
+                ZeroLoop::new(tape_len),
+                Mem2Reg::new(tape_len),
+                AddSubLoop::new(tape_len),
+                Dce::new(),
+                ElimConstGamma::new(),
+                ConstFolding::new(tape_len),
+                ExprDedup::new(),
+            ]
+        },
         input = [10, 20],
         output = [0, 30],
-        |graph, mut effect| {
-            let y_ptr = graph.int(0).value();
-            let x_ptr = graph.int(1).value();
+        |graph, mut effect, tape_len| {
+            let y_ptr = graph.int(Ptr::zero(tape_len)).value();
+            let x_ptr = graph.int(Ptr::one(tape_len)).value();
 
             // Get and store the y value
             let y_input = graph.input(effect);
@@ -479,7 +476,7 @@ mod tests {
             effect = store.output_effect();
 
             // Compile the loop
-            let (x_ptr, mut effect) = compile_brainfuck_into("[->+<]>", graph, y_ptr, effect);
+            let (x_ptr, mut effect) = compile_brainfuck_into("[->+<]>", graph, y_ptr, effect, tape_len);
 
             // Print the y value
             let y_value = graph.load(y_ptr, effect);

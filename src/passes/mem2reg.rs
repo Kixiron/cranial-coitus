@@ -6,13 +6,16 @@ use crate::{
     ir::Const,
     passes::Pass,
     utils::{AssertNone, HashMap},
+    values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
 
 /// Evaluates constant loads within the program
 pub struct Mem2Reg {
+    // FIXME: ConstantStore
     values: BTreeMap<OutputPort, Place>,
     tape: Vec<Place>,
+    tape_len: u16,
     changed: bool,
     constant_loads_elided: usize,
     loads_elided: usize,
@@ -23,10 +26,11 @@ pub struct Mem2Reg {
 
 // TODO: Propagate port places into subgraphs by adding input ports
 impl Mem2Reg {
-    pub fn new(tape_len: usize) -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
             values: BTreeMap::new(),
-            tape: vec![Place::Const(Const::Int(0)); tape_len],
+            tape: vec![Place::Const(Const::Cell(Cell::zero())); tape_len as usize],
+            tape_len,
             changed: false,
             constant_loads_elided: 0,
             loads_elided: 0,
@@ -36,10 +40,11 @@ impl Mem2Reg {
         }
     }
 
-    pub fn unknown(tape_len: usize) -> Self {
+    pub fn unknown(tape_len: u16) -> Self {
         Self {
             values: BTreeMap::new(),
-            tape: vec![Place::Unknown; tape_len],
+            tape: vec![Place::Unknown; tape_len as usize],
+            tape_len,
             changed: false,
             constant_loads_elided: 0,
             loads_elided: 0,
@@ -80,41 +85,39 @@ impl Pass for Mem2Reg {
         self.changed = false;
 
         for cell in &mut self.tape {
-            *cell = Place::Const(Const::Int(0));
+            *cell = Place::Const(Const::Cell(Cell::zero()));
         }
     }
 
     fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
         let (ptr, source, _) = graph.get_input(load.ptr());
-        let ptr = ptr
-            .as_int()
-            .map(|(_, ptr)| ptr)
-            .or_else(|| self.values.get(&source).and_then(Place::convert_to_u32));
+        let ptr = ptr.as_int().map(|(_, ptr)| ptr).or_else(|| {
+            self.values
+                .get(&source)
+                .and_then(|place| place.as_ptr(self.tape_len))
+        });
 
         if let Some(offset) = ptr {
-            let offset = offset.rem_euclid(self.tape.len() as u32) as usize;
-
             let mut done = false;
             if let Place::Const(value) = &self.tape[offset] {
-                if let Some(value) = value.convert_to_u32() {
-                    tracing::debug!(
-                        "replacing load from {} with value {:#04X}: {:?}",
-                        offset,
-                        value,
-                        load,
-                    );
+                let value = value.into_ptr(self.tape_len);
+                tracing::debug!(
+                    "replacing load from {} with value {:#04X}: {:?}",
+                    offset,
+                    value,
+                    load,
+                );
 
-                    let int = graph.int(value);
-                    self.values.insert(int.value(), value.into());
+                let int = graph.int(value);
+                self.values.insert(int.value(), value.into());
 
-                    graph.splice_ports(load.input_effect(), load.output_effect());
-                    graph.rewire_dependents(load.output_value(), int.value());
-                    graph.remove_node(load.node());
+                graph.splice_ports(load.input_effect(), load.output_effect());
+                graph.rewire_dependents(load.output_value(), int.value());
+                graph.remove_node(load.node());
 
-                    self.changed();
-                    done = true;
-                    self.constant_loads_elided += 1;
-                }
+                self.changed();
+                done = true;
+                self.constant_loads_elided += 1;
             }
 
             if !done {
@@ -139,19 +142,18 @@ impl Pass for Mem2Reg {
 
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
         let (ptr, source, _) = graph.get_input(store.ptr());
-        let ptr = ptr
-            .as_int()
-            .map(|(_, ptr)| ptr)
-            .or_else(|| self.values.get(&source).and_then(Place::convert_to_u32));
+        let ptr = ptr.as_int().map(|(_, ptr)| ptr).or_else(|| {
+            self.values
+                .get(&source)
+                .and_then(|place| place.as_ptr(self.tape_len))
+        });
 
         if let Some(offset) = ptr {
-            let offset = offset.rem_euclid(self.tape.len() as u32) as usize;
-
             let (stored_value, output_port, _) = graph.get_input(store.value());
             let stored_value = stored_value.as_int().map(|(_, value)| value).or_else(|| {
                 self.values
                     .get(&output_port)
-                    .and_then(Place::convert_to_u32)
+                    .and_then(|place| place.as_ptr(self.tape_len))
             });
 
             if let Some(value) = stored_value {
@@ -176,7 +178,7 @@ impl Pass for Mem2Reg {
                 }
             }
 
-            match (self.tape[offset].convert_to_u32(), stored_value) {
+            match (self.tape[offset].as_ptr(self.tape_len), stored_value) {
                 (Some(old), Some(new)) if old == new => {
                     tracing::debug!("removing identical store {:?}", store);
 
@@ -264,7 +266,7 @@ impl Pass for Mem2Reg {
         debug_assert!(replaced.is_none() || replaced == Some(value.into()));
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         let replaced = self.values.insert(int.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(value.into()));
     }
@@ -292,11 +294,11 @@ impl Pass for Mem2Reg {
         let (mut true_visitor, mut false_visitor) = (
             Self {
                 tape: tape.clone(),
-                ..Self::unknown(self.tape.len())
+                ..Self::unknown(self.tape_len)
             },
             Self {
                 tape,
-                ..Self::unknown(self.tape.len())
+                ..Self::unknown(self.tape_len)
             },
         );
 
@@ -392,7 +394,7 @@ impl Pass for Mem2Reg {
 
         let mut visitor = Self {
             tape,
-            ..Self::unknown(self.tape.len())
+            ..Self::unknown(self.tape_len)
         };
 
         // For each input into the theta region, if the input value is a known constant
@@ -448,9 +450,9 @@ enum Place {
 }
 
 impl Place {
-    pub fn convert_to_u32(&self) -> Option<u32> {
+    pub fn as_ptr(&self, tape_len: u16) -> Option<Ptr> {
         if let Self::Const(constant) = self {
-            constant.as_u32()
+            constant.as_ptr()
         } else {
             None
         }
@@ -464,9 +466,21 @@ impl Place {
     }
 }
 
-impl From<u32> for Place {
-    fn from(int: u32) -> Self {
-        Self::Const(Const::Int(int))
+impl From<Ptr> for Place {
+    fn from(ptr: Ptr) -> Self {
+        Self::Const(Const::Ptr(ptr))
+    }
+}
+
+impl From<Cell> for Place {
+    fn from(cell: Cell) -> Self {
+        Self::Const(Const::Cell(cell))
+    }
+}
+
+impl From<u8> for Place {
+    fn from(byte: u8) -> Self {
+        Self::Const(Const::Cell(Cell::new(byte)))
     }
 }
 

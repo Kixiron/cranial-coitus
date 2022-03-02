@@ -3,19 +3,22 @@ use crate::{
         Add, Bool, Gamma, InputParam, InputPort, Int, Neg, NodeExt, OutputPort, Rvsdg, Sub, Theta,
     },
     passes::{utils::ConstantStore, Pass},
+    values::Ptr,
 };
 
 /// Folds arithmetic operations together
 pub struct FoldArithmetic {
     values: ConstantStore,
     changed: bool,
+    tape_len: u16,
 }
 
 impl FoldArithmetic {
-    pub fn new() -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
-            values: ConstantStore::new(),
+            values: ConstantStore::new(tape_len),
             changed: false,
+            tape_len,
         }
     }
 
@@ -23,9 +26,9 @@ impl FoldArithmetic {
         self.changed = true;
     }
 
-    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (OutputPort, Option<u32>) {
+    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (OutputPort, Option<Ptr>) {
         let source = graph.input_source(input);
-        let value = self.values.u32(source);
+        let value = self.values.ptr(source);
 
         (source, value)
     }
@@ -46,7 +49,7 @@ impl Pass for FoldArithmetic {
         self.changed = false;
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         self.values.add(int.value(), value);
     }
 
@@ -184,7 +187,7 @@ impl Pass for FoldArithmetic {
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
-        let mut visitor = Self::new();
+        let mut visitor = Self::new(self.tape_len);
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -206,7 +209,8 @@ impl Pass for FoldArithmetic {
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
-        let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
+        let (mut truthy_visitor, mut falsy_visitor) =
+            (Self::new(self.tape_len), Self::new(self.tape_len));
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -265,11 +269,5 @@ impl Pass for FoldArithmetic {
             graph.replace_node(gamma.node(), gamma);
             self.changed();
         }
-    }
-}
-
-impl Default for FoldArithmetic {
-    fn default() -> Self {
-        Self::new()
     }
 }

@@ -10,7 +10,7 @@ pub struct Args {
 
     /// The length of the program tape
     #[clap(long, default_value = "30000")]
-    pub cells: u16,
+    pub tape_len: u16,
 
     /// The maximum number of optimization iterations
     #[clap(long)]
@@ -91,7 +91,7 @@ pub struct Debug {
 
     /// The length of the program tape
     #[clap(long, default_value = "30000")]
-    pub cells: u16,
+    pub tape_len: u16,
 
     /// The maximum number of optimization iterations
     #[clap(long)]

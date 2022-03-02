@@ -1,6 +1,7 @@
 use crate::{
     graph::{GammaData, OutputPort, Rvsdg, ThetaData},
     parse::Token,
+    values::Ptr,
 };
 
 pub fn lower_tokens(
@@ -8,8 +9,13 @@ pub fn lower_tokens(
     mut ptr: OutputPort,
     mut effect: OutputPort,
     tokens: &[Token],
+    tape_len: u16,
 ) -> (OutputPort, OutputPort) {
-    let (zero, one) = (graph.int(0).value(), graph.int(1).value());
+    // FIXME: Byte node
+    let (zero, one) = (
+        graph.int(Ptr::zero(tape_len)).value(),
+        graph.int(Ptr::one(tape_len)).value(),
+    );
 
     for token in tokens {
         match token {
@@ -101,9 +107,11 @@ pub fn lower_tokens(
                             effect,
                             |graph, effect, _invariant_inputs, variant_inputs| {
                                 let [ptr]: [OutputPort; 1] = variant_inputs.try_into().unwrap();
-                                let (ptr, effect) = lower_tokens(graph, ptr, effect, body);
+                                let (ptr, effect) =
+                                    lower_tokens(graph, ptr, effect, body, tape_len);
 
-                                let zero = graph.int(0);
+                                // FIXME: Byte node
+                                let zero = graph.int(Ptr::zero(tape_len));
                                 let load = graph.load(ptr, effect);
                                 let condition = graph.neq(load.output_value(), zero.value());
 

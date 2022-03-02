@@ -41,29 +41,30 @@ use crate::{
         Not, Output, OutputParam, Rvsdg, Start, Store, Sub, Theta,
     },
     utils::{HashMap, HashSet},
+    values::Ptr,
 };
 use std::collections::VecDeque;
 
 // TODO: Genetic algorithm for pass ordering
 //       https://kunalspathak.github.io/2021-07-22-Genetic-Algorithms-In-LSRA/
-pub fn default_passes(cells: usize) -> Vec<Box<dyn Pass>> {
+pub fn default_passes(tape_len: u16) -> Vec<Box<dyn Pass>> {
     bvec![
-        UnobservedStore::new(),
-        ConstFolding::new(),
-        FoldArithmetic::new(),
-        AssociativeOps::new(),
-        ZeroLoop::new(),
-        Mem2Reg::new(cells),
-        AddSubLoop::new(),
-        ShiftCell::new(),
+        UnobservedStore::new(tape_len),
+        ConstFolding::new(tape_len),
+        FoldArithmetic::new(tape_len),
+        AssociativeOps::new(tape_len),
+        ZeroLoop::new(tape_len),
+        Mem2Reg::new(tape_len),
+        AddSubLoop::new(tape_len),
+        ShiftCell::new(tape_len),
         Dce::new(),
-        Dataflow::new(cells),
+        Dataflow::new(tape_len),
         ElimConstGamma::new(),
-        ConstFolding::new(),
-        SquareCell::new(),
-        SymbolicEval::new(cells),
+        ConstFolding::new(tape_len),
+        SquareCell::new(tape_len),
+        SymbolicEval::new(tape_len),
         Licm::new(),
-        DuplicateCell::new(),
+        DuplicateCell::new(tape_len),
         ExprDedup::new(),
         Dce::new(),
         Canonicalize::new(),
@@ -263,7 +264,7 @@ pub trait Pass {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, _int: Int, _value: u32) {}
+    fn visit_int(&mut self, _graph: &mut Rvsdg, _int: Int, _value: Ptr) {}
     fn visit_bool(&mut self, _graph: &mut Rvsdg, _bool: Bool, _value: bool) {}
     fn visit_add(&mut self, _graph: &mut Rvsdg, _add: Add) {}
     fn visit_sub(&mut self, _graph: &mut Rvsdg, _sub: Sub) {}
@@ -297,13 +298,13 @@ test_opts! {
     //     v7 := out v2
     // } while { v6 }
     memchr_loop,
-    passes = [ZeroLoop::new()],
+    passes = |tape_len| bvec![ZeroLoop::new(tape_len)],
     output = [0],
-    |graph, mut effect| {
-        let mut ptr = graph.int(0).value();
+    |graph, mut effect, tape_len| {
+        let mut ptr = graph.int(Ptr::zero(tape_len)).value();
 
         // Store a non-zero value to the current cell
-        let not_zero = graph.int(255).value();
+        let not_zero = graph.int(Ptr::new(255, tape_len)).value();
         let store = graph.store(ptr, not_zero, effect);
         effect = store.output_effect();
 
@@ -311,8 +312,8 @@ test_opts! {
         let theta = graph.theta([], [ptr], effect, |graph, mut effect, _invariant, variant| {
             let ptr = variant[0];
 
-            let zero = graph.int(0).value();
-            let four = graph.int(4).value();
+            let zero = graph.int(Ptr::zero(tape_len)).value();
+            let four = graph.int(Ptr::new(4, tape_len)).value();
 
             let add = graph.add(ptr, four);
             let load = graph.load(add.value(), effect);

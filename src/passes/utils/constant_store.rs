@@ -1,18 +1,21 @@
 use crate::{
     graph::{Gamma, InputParam, OutputPort, Rvsdg, Theta},
     ir::Const,
+    values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct ConstantStore {
     values: BTreeMap<OutputPort, Const>,
+    tape_len: u16,
 }
 
 impl ConstantStore {
-    pub fn new() -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
             values: BTreeMap::new(),
+            tape_len,
         }
     }
 
@@ -37,12 +40,18 @@ impl ConstantStore {
         self.values.get(&source).copied()
     }
 
-    pub fn u32(&self, source: OutputPort) -> Option<u32> {
-        self.values.get(&source).and_then(Const::convert_to_u32)
+    pub fn ptr(&self, source: OutputPort) -> Option<Ptr> {
+        self.values
+            .get(&source)
+            .map(|value| value.into_ptr(self.tape_len))
     }
 
-    pub fn u8(&self, source: OutputPort) -> Option<u8> {
-        self.values.get(&source).and_then(Const::convert_to_u8)
+    pub fn ptr_is_zero(&self, source: OutputPort) -> bool {
+        self.ptr(source).map_or(false, Ptr::is_zero)
+    }
+
+    pub fn cell(&self, source: OutputPort) -> Option<Cell> {
+        self.values.get(&source).map(Const::into_cell)
     }
 
     pub fn bool(&self, source: OutputPort) -> Option<bool> {

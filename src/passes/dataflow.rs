@@ -6,6 +6,7 @@ use crate::{
     ir::Const,
     passes::Pass,
     utils::{AssertNone, HashMap},
+    values::{Cell, Ptr},
 };
 use ranges::Ranges;
 use std::fmt::{self, Debug, Display};
@@ -17,15 +18,23 @@ pub struct Dataflow {
     // TODO: Use ConstantStore
     constants: HashMap<OutputPort, Const>,
     tape: Vec<(Domain, Option<Const>)>,
+    tape_len: u16,
 }
 
 impl Dataflow {
-    pub fn new(cells: usize) -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
             changed: false,
             facts: HashMap::with_hasher(Default::default()),
             constants: HashMap::with_hasher(Default::default()),
-            tape: vec![(Domain::exact_u8(0), Some(Const::U8(0))); cells],
+            tape: vec![
+                (
+                    Domain::exact_cell(Cell::zero(), tape_len),
+                    Some(Const::Cell(Cell::zero()))
+                );
+                tape_len as usize
+            ],
+            tape_len,
         }
     }
 
@@ -75,7 +84,10 @@ impl Pass for Dataflow {
         self.constants.clear();
 
         for cell in &mut self.tape {
-            *cell = (Domain::exact_u8(0), Some(0u32.into()));
+            *cell = (
+                Domain::exact_cell(Cell::zero(), self.tape_len),
+                Some(Cell::zero().into()),
+            );
         }
     }
 
@@ -84,11 +96,11 @@ impl Pass for Dataflow {
         let (mut true_visitor, mut false_visitor) = (
             Self {
                 tape: self.tape.clone(),
-                ..Self::new(self.tape.len())
+                ..Self::new(self.tape_len)
             },
             Self {
                 tape: self.tape.clone(),
-                ..Self::new(self.tape.len())
+                ..Self::new(self.tape_len)
             },
         );
 
@@ -138,14 +150,14 @@ impl Pass for Dataflow {
             let entry = true_visitor.facts.entry(source);
             if is_zero {
                 entry
-                    .and_modify(|facts| *facts = Domain::exact_u8(0))
-                    .or_insert_with(|| Domain::exact_u8(0));
+                    .and_modify(|facts| *facts = Domain::exact_cell(Cell::zero(), self.tape_len))
+                    .or_insert_with(|| Domain::exact_cell(Cell::zero(), self.tape_len));
             } else {
                 entry
-                    .and_modify(|domain| domain.remove(0))
+                    .and_modify(|domain| domain.remove_cell(Cell::zero()))
                     .or_insert_with(|| {
-                        let mut domain = Domain::unbounded_u8();
-                        domain.remove(0);
+                        let mut domain = Domain::unbounded_u8(self.tape_len);
+                        domain.remove_cell(Cell::zero());
                         domain
                     });
             }
@@ -161,14 +173,14 @@ impl Pass for Dataflow {
             let entry = false_visitor.facts.entry(source);
             if is_zero {
                 entry
-                    .and_modify(|facts| *facts = Domain::exact_u8(0))
-                    .or_insert_with(|| Domain::exact_u8(0));
+                    .and_modify(|facts| *facts = Domain::exact_cell(Cell::zero(), self.tape_len))
+                    .or_insert_with(|| Domain::exact_cell(Cell::zero(), self.tape_len));
             } else {
                 entry
-                    .and_modify(|domain| domain.remove(0))
+                    .and_modify(|domain| domain.remove_cell(Cell::zero()))
                     .or_insert_with(|| {
-                        let mut domain = Domain::unbounded_u8();
-                        domain.remove(0);
+                        let mut domain = Domain::unbounded_u8(self.tape_len);
+                        domain.remove_cell(Cell::zero());
                         domain
                     });
             }
@@ -270,7 +282,7 @@ impl Pass for Dataflow {
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
         // FIXME: Some tape values can be preserved within the loop
-        let mut visitor = Self::new(self.tape.len());
+        let mut visitor = Self::new(self.tape_len);
 
         for (input, param) in theta.invariant_input_pairs() {
             let source = graph.input_source(input);
@@ -325,8 +337,10 @@ impl Pass for Dataflow {
 
                         self.facts
                             .entry(output)
-                            .and_modify(|domain| *domain = Domain::exact_u8(0))
-                            .or_insert_with(|| Domain::exact_u8(0));
+                            .and_modify(|domain| {
+                                *domain = Domain::exact_cell(Cell::zero(), self.tape_len)
+                            })
+                            .or_insert_with(|| Domain::exact_cell(Cell::zero(), self.tape_len));
                     }
 
                     // If the value was loaded from an address, propagate that info to stores
@@ -360,11 +374,11 @@ impl Pass for Dataflow {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         self.facts
             .entry(int.value())
-            .and_modify(|facts| *facts = Domain::exact_u32(value))
-            .or_insert_with(|| Domain::exact_u32(value));
+            .and_modify(|facts| *facts = Domain::exact_ptr(value))
+            .or_insert_with(|| Domain::exact_ptr(value));
     }
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
@@ -427,34 +441,32 @@ impl Pass for Dataflow {
         if let Some(ptr) = self
             .constants
             .get(&graph.input_source(store.ptr()))
-            .and_then(Const::convert_to_u32)
+            .map(|value| value.into_ptr(self.tape_len))
         {
             let value_src = graph.input_source(store.value());
             let value_facts = self.facts.get(&value_src).cloned();
             let value_consts = self.constants.get(&value_src).cloned();
 
-            let ptr = ptr.rem_euclid(self.tape.len() as u32) as usize;
             self.tape[ptr] = (
-                value_facts.unwrap_or_else(Domain::unbounded_u8),
+                value_facts.unwrap_or_else(|| Domain::unbounded_u8(self.tape_len)),
                 value_consts,
             );
         } else {
             for cell in &mut self.tape {
-                *cell = (Domain::unbounded_u8(), None);
+                *cell = (Domain::unbounded_u8(self.tape_len), None);
             }
         }
     }
 
     fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
         // Use an unknown byte value as the baseline loaded value
-        let mut facts = Domain::unbounded_u8();
+        let mut facts = Domain::unbounded_u8(self.tape_len);
 
         if let Some(ptr) = self
             .constants
             .get(&graph.input_source(load.ptr()))
-            .and_then(Const::convert_to_u32)
+            .map(|value| value.into_ptr(self.tape_len))
         {
-            let ptr = ptr.rem_euclid(self.tape.len() as u32) as usize;
             let (loaded_facts, consts) = self.tape[ptr].clone();
             facts = loaded_facts;
 
@@ -469,60 +481,76 @@ impl Pass for Dataflow {
     fn visit_input(&mut self, _graph: &mut Rvsdg, input: Input) {
         // Use an unknown byte value as the input value
         self.facts
-            .insert(input.output_value(), Domain::unbounded_u8());
+            .insert(input.output_value(), Domain::unbounded_u8(self.tape_len));
     }
 }
 
 #[derive(Clone, PartialEq)]
 pub struct Domain {
-    values: Ranges<u32>,
+    values: Ranges<u16>,
+    tape_len: u16,
 }
 
 impl Domain {
-    pub fn unbounded_i32() -> Self {
+    pub fn unbounded_ptr(tape_len: u16) -> Self {
         Self {
             values: Ranges::full(),
+            tape_len,
         }
     }
 
-    pub fn unbounded_u8() -> Self {
+    pub fn unbounded_u8(tape_len: u16) -> Self {
         Self {
-            values: Ranges::from(u8::MIN as u32..=u8::MAX as u32),
+            values: Ranges::from(u8::MIN as u16..=u8::MAX as u16),
+            tape_len,
         }
     }
 
-    pub fn exact_u32(value: u32) -> Self {
+    pub fn exact_ptr(value: Ptr) -> Self {
         Self {
-            values: Ranges::from(value..=value),
+            values: Ranges::from(value.value()..=value.value()),
+            tape_len: value.tape_len(),
         }
     }
 
-    pub fn exact_u8(value: u8) -> Self {
+    pub fn exact_cell(value: Cell, tape_len: u16) -> Self {
         Self {
-            values: Ranges::from(value as u32..=value as u32),
+            values: Ranges::from(value.into_inner() as u16..=value.into_inner() as u16),
+            tape_len,
         }
     }
 
     pub fn join(&self, other: &Self) -> Self {
+        debug_assert_eq!(self.tape_len, other.tape_len);
+
         Self {
             values: self.values.clone().intersect(other.values.clone()),
+            tape_len: self.tape_len,
         }
     }
 
-    pub fn remove(&mut self, value: u32) {
-        self.values.remove(value);
+    pub fn remove(&mut self, value: Ptr) {
+        debug_assert_eq!(self.tape_len, value.tape_len());
+        self.values.remove(value.value());
+    }
+
+    pub fn remove_cell(&mut self, value: Cell) {
+        self.values.remove(value.into_inner() as u16);
     }
 
     pub fn exactly_zero(&self) -> bool {
-        self.exact_value() == Some(0)
+        self.exact_value().map_or(false, Ptr::is_zero)
     }
 
-    pub fn exact_value(&self) -> Option<u32> {
+    pub fn exact_value(&self) -> Option<Ptr> {
         if self.values.len() == 1 {
             let range = self.values.as_slice()[0];
 
             if range.into_iter().count() == 1 {
-                range.into_iter().next()
+                range
+                    .into_iter()
+                    .next()
+                    .map(|value| Ptr::new(value, self.tape_len))
             } else {
                 None
             }
@@ -532,10 +560,14 @@ impl Domain {
     }
 
     pub fn overlaps(&self, other: &Self) -> bool {
+        debug_assert_eq!(self.tape_len, other.tape_len);
+
         self.join(other).values.is_empty()
     }
 
     pub fn is_disjoint(&self, other: &Self) -> bool {
+        debug_assert_eq!(self.tape_len, other.tape_len);
+
         self.values
             .clone()
             .difference(other.values.clone())

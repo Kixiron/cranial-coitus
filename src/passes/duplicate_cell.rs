@@ -5,6 +5,7 @@ use crate::{
     ir::Const,
     passes::{utils::BinOp, Pass},
     utils::{AssertNone, HashMap},
+    values::Ptr,
 };
 use tinyvec::{tiny_vec, TinyVec};
 
@@ -13,14 +14,16 @@ pub struct DuplicateCell {
     // TODO: Use ConstantStore
     values: HashMap<OutputPort, Const>,
     duplicates_removed: usize,
+    tape_len: u16,
 }
 
 impl DuplicateCell {
-    pub fn new() -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
             values: HashMap::with_hasher(Default::default()),
             changed: false,
             duplicates_removed: 0,
+            tape_len,
         }
     }
 
@@ -34,7 +37,7 @@ impl DuplicateCell {
         theta: &mut Theta,
     ) -> (bool, Option<(DuplicateCandidate, Self)>) {
         let mut changed = false;
-        let mut visitor = Self::new();
+        let mut visitor = Self::new(self.tape_len);
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -78,8 +81,7 @@ impl DuplicateCell {
             visitor
                 .values
                 .get(&output)
-                .and_then(Const::convert_to_u32)
-                .map(|int| graph.int(int).value())
+                .map(|value| graph.int(value.into_ptr(self.tape_len)).value())
                 .or_else(|| {
                     theta
                         .invariant_input_pairs()
@@ -93,8 +95,7 @@ impl DuplicateCell {
                         .and_then(|output| {
                             self.values
                                 .get(&output)
-                                .and_then(Const::convert_to_u32)
-                                .map(|int| graph.int(int).value())
+                                .map(|value| graph.int(value.into_ptr(self.tape_len)).value())
                                 .or_else(|| {
                                     gamma.inputs().iter().zip(gamma.input_params()).find_map(
                                         |(&port, &[_, input])| {
@@ -146,7 +147,7 @@ impl DuplicateCell {
             }
 
             // Unconditionally store 0 to the source cell
-            let zero = graph.int(0);
+            let zero = graph.int(Ptr::zero(self.tape_len));
             let zero_src_cell = graph.store(src_ptr, zero.value(), last_effect);
 
             // Wire the final store into the gamma's output effect
@@ -265,7 +266,8 @@ impl DuplicateCell {
         // d1_inc := add d1_val, int 1
         // store d1_ptr, d1_inc
         // ```
-        let (d1_ptr, _, d1_effect) = self.load_op_store::<Add>(graph, values, start.effect(), 1)?;
+        let (d1_ptr, _, d1_effect) =
+            self.load_op_store::<Add>(graph, values, start.effect(), Ptr::one(self.tape_len))?;
 
         // Get the load-add-store sequence of the second duplicate cell
         // ```
@@ -273,7 +275,8 @@ impl DuplicateCell {
         // d2_inc := add d2_val, int 1
         // store d1_ptr, d2_inc
         // ```
-        let (d2_ptr, _, d2_effect) = self.load_op_store::<Add>(graph, values, d1_effect, 1)?;
+        let (d2_ptr, _, d2_effect) =
+            self.load_op_store::<Add>(graph, values, d1_effect, Ptr::one(self.tape_len))?;
 
         // Get the load-sub-store sequence of the source cell
         // ```
@@ -282,7 +285,7 @@ impl DuplicateCell {
         // store src_ptr, src_src_dec
         // ```
         let (src_ptr, src_dec, src_effect) =
-            self.load_op_store::<Sub>(graph, values, d2_effect, 1)?;
+            self.load_op_store::<Sub>(graph, values, d2_effect, Ptr::one(self.tape_len))?;
 
         // Get the end node of the theta body
         let end = theta.end_node();
@@ -309,7 +312,7 @@ impl DuplicateCell {
             src_is_zero.lhs(),
             src_is_zero.rhs(),
             src_dec,
-            0,
+            Ptr::zero(self.tape_len),
         )?;
 
         if src_ptr == d1_ptr || src_ptr == d2_ptr || d1_ptr == d2_ptr {
@@ -329,7 +332,7 @@ impl DuplicateCell {
         graph: &Rvsdg,
         values: &HashMap<OutputPort, Const>,
         last_effect: OutputPort,
-        add_value: u32,
+        add_value: Ptr,
     ) -> Option<(OutputPort, OutputPort, OutputPort)>
     where
         T: BinOp,
@@ -374,16 +377,16 @@ impl DuplicateCell {
         lhs: InputPort,
         rhs: InputPort,
         operand: OutputPort,
-        constant: u32,
+        constant: Ptr,
     ) -> Option<()> {
         let (lhs_operand, rhs_operand) = (graph.input_source(lhs), graph.input_source(rhs));
 
         if lhs_operand == operand {
-            if values.get(&rhs_operand)?.convert_to_u32()? != constant {
+            if values.get(&rhs_operand)?.into_ptr(self.tape_len) != constant {
                 return None;
             }
         } else if rhs_operand == operand {
-            if values.get(&lhs_operand)?.convert_to_u32()? != constant {
+            if values.get(&lhs_operand)?.into_ptr(self.tape_len) != constant {
                 return None;
             }
         } else {
@@ -414,14 +417,15 @@ impl Pass for DuplicateCell {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         let replaced = self.values.insert(int.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
+        debug_assert!(replaced.is_none() || replaced == Some(Const::Ptr(value)));
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
-        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) =
+            (Self::new(self.tape_len), Self::new(self.tape_len));
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -525,7 +529,7 @@ impl Pass for DuplicateCell {
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
-        let mut visitor = Self::new();
+        let mut visitor = Self::new(self.tape_len);
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -544,12 +548,6 @@ impl Pass for DuplicateCell {
             graph.replace_node(theta.node(), theta);
             self.changed();
         }
-    }
-}
-
-impl Default for DuplicateCell {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

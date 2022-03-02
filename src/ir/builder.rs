@@ -123,10 +123,10 @@ impl IrBuilder {
         match node {
             &Node::Int(int, value) => {
                 let var = VarId::new(int.value());
-                self.inst(crate::ir::Assign::new(var, Const::Int(value)));
+                self.inst(crate::ir::Assign::new(var, Const::Ptr(value)));
 
                 let value = if self.inline_constants {
-                    Const::Int(value).into()
+                    Const::Ptr(value).into()
                 } else {
                     var.into()
                 };

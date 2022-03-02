@@ -1,10 +1,12 @@
 use crate::{
     ir::{pretty_utils, Pretty, PrettyConfig},
     utils::DebugDisplay,
+    values::{Cell, Ptr},
 };
 use pretty::{DocAllocator, DocBuilder};
 use std::{
     fmt::{self, Debug, Display, Write},
+    num::Wrapping,
     ops::{Deref, DerefMut},
     slice, vec,
 };
@@ -220,6 +222,24 @@ pub enum Instruction {
     Output(Output),
 }
 
+impl Instruction {
+    pub const fn as_assign(&self) -> Option<&Assign> {
+        if let Self::Assign(assign) = self {
+            Some(assign)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_mut_assign(&mut self) -> Option<&mut Assign> {
+        if let Self::Assign(assign) = self {
+            Some(assign)
+        } else {
+            None
+        }
+    }
+}
+
 impl From<Store> for Instruction {
     fn from(store: Store) -> Self {
         Self::Store(store)
@@ -289,7 +309,6 @@ impl Pretty for Store {
 pub struct Assign {
     value: ValId,
     rval: RValue,
-    phi_targets: Vec<ValId>,
 }
 
 impl Assign {
@@ -301,7 +320,6 @@ impl Assign {
         Self {
             value,
             rval: rval.into(),
-            phi_targets: Vec::new(),
         }
     }
 
@@ -318,14 +336,6 @@ impl Assign {
     /// Get a mutable reference to the assignment's right value.
     pub fn rval_mut(&mut self) -> &mut RValue {
         &mut self.rval
-    }
-
-    pub fn phi_targets(&self) -> &[ValId] {
-        &self.phi_targets
-    }
-
-    pub fn phi_targets_mut(&mut self) -> &mut Vec<ValId> {
-        &mut self.phi_targets
     }
 }
 
@@ -387,6 +397,24 @@ pub enum RValue {
     Load(Load),
     Input(Input),
     BitNot(BitNot),
+}
+
+impl RValue {
+    pub const fn as_phi(&self) -> Option<&Phi> {
+        if let Self::Phi(phi) = self {
+            Some(phi)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_mut_phi(&mut self) -> Option<&mut Phi> {
+        if let Self::Phi(phi) = self {
+            Some(phi)
+        } else {
+            None
+        }
+    }
 }
 
 impl From<Phi> for RValue {
@@ -505,20 +533,35 @@ impl Pretty for Eq {
 #[derive(Debug, Clone)]
 pub struct Phi {
     lhs: Value,
+    lhs_src: BlockId,
     rhs: Value,
+    rhs_src: BlockId,
 }
 
 impl Phi {
-    pub const fn new(lhs: Value, rhs: Value) -> Self {
-        Self { lhs, rhs }
+    pub const fn new(lhs: Value, lhs_src: BlockId, rhs: Value, rhs_src: BlockId) -> Self {
+        Self {
+            lhs,
+            lhs_src,
+            rhs,
+            rhs_src,
+        }
     }
 
     pub const fn lhs(&self) -> Value {
         self.lhs
     }
 
+    pub const fn lhs_src(&self) -> BlockId {
+        self.lhs_src
+    }
+
     pub const fn rhs(&self) -> Value {
         self.rhs
+    }
+
+    pub const fn rhs_src(&self) -> BlockId {
+        self.rhs_src
     }
 
     /// Get a mutable reference to the phi's left hand side.
@@ -526,18 +569,18 @@ impl Phi {
         &mut self.lhs
     }
 
-    // pub fn lhs_src_mut(&mut self) -> &mut BlockId {
-    //     &mut self.lhs_src
-    // }
+    pub fn lhs_src_mut(&mut self) -> &mut BlockId {
+        &mut self.lhs_src
+    }
 
     /// Get a mutable reference to the phi's right hand side.
     pub fn rhs_mut(&mut self) -> &mut Value {
         &mut self.rhs
     }
 
-    // pub fn rhs_src_mut(&mut self) -> &mut BlockId {
-    //     &mut self.rhs_src
-    // }
+    pub fn rhs_src_mut(&mut self) -> &mut BlockId {
+        &mut self.rhs_src
+    }
 }
 
 impl Pretty for Phi {
@@ -803,7 +846,7 @@ impl Terminator {
         }
     }
 
-    pub fn as_jump_mut(&mut self) -> Option<&mut BlockId> {
+    pub fn as_mut_jump(&mut self) -> Option<&mut BlockId> {
         if let Self::Jump(target) = self {
             Some(target)
         } else {
@@ -811,7 +854,7 @@ impl Terminator {
         }
     }
 
-    pub fn as_branch_mut(&mut self) -> Option<&mut Branch> {
+    pub fn as_mut_branch(&mut self) -> Option<&mut Branch> {
         if let Self::Branch(branch) = self {
             Some(branch)
         } else {
@@ -901,15 +944,38 @@ impl Branch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Value {
-    Byte(u8),
-    Uint(u32),
+    U8(Cell),
+    U16(Wrapping<u16>),
+    TapePtr(Ptr),
     Bool(bool),
-    Val(ValId),
+    Val(ValId, Type),
 }
 
-impl From<ValId> for Value {
-    fn from(val: ValId) -> Self {
-        Self::Val(val)
+impl Value {
+    pub const fn val(value: ValId, ty: Type) -> Self {
+        Self::Val(value, ty)
+    }
+
+    pub const fn ty(self) -> Type {
+        match self {
+            Self::U8(_) => Type::U8,
+            Self::U16(_) => Type::U16,
+            Self::TapePtr(_) => Type::TapePtr,
+            Self::Bool(_) => Type::Bool,
+            Self::Val(_, ty) => ty,
+        }
+    }
+}
+
+impl From<Cell> for Value {
+    fn from(u8: Cell) -> Self {
+        Self::U8(u8)
+    }
+}
+
+impl From<(ValId, Type)> for Value {
+    fn from((value, ty): (ValId, Type)) -> Self {
+        Self::val(value, ty)
     }
 }
 
@@ -921,22 +987,30 @@ impl Pretty for Value {
         A: Clone,
     {
         match self {
-            Self::Byte(byte) => allocator
-                .text("byte")
+            Self::U8(u8) => allocator
+                .text("u8")
                 .append(allocator.space())
-                .append(allocator.text(format!("{}", byte))),
+                .append(allocator.text(format!("{}", u8))),
 
-            Self::Uint(uint) => allocator
-                .text("uint")
+            Self::U16(u16) => allocator
+                .text("u16")
                 .append(allocator.space())
-                .append(allocator.text(format!("{}", uint))),
+                .append(allocator.text(format!("{}", u16))),
+
+            Self::TapePtr(ptr) => allocator
+                .text("ptr")
+                .append(allocator.space())
+                .append(allocator.text(format!("{}", ptr))),
 
             Self::Bool(bool) => allocator
                 .text("bool")
                 .append(allocator.space())
                 .append(allocator.text(format!("{}", bool))),
 
-            Self::Val(val) => val.pretty(allocator, config),
+            Self::Val(value, ty) => ty
+                .pretty(allocator, config)
+                .append(allocator.space())
+                .append(value.pretty(allocator, config)),
         }
     }
 }
@@ -1018,5 +1092,34 @@ impl Pretty for BlockId {
         A: Clone,
     {
         allocator.text(format!("{}", self))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum Type {
+    /// A single `u8`
+    U8,
+    /// A single `u16`, unbounded with wrapping arithmetic
+    U16,
+    /// A boolean value
+    Bool,
+    /// A tape pointer, bounded from `0..tape_len`
+    TapePtr,
+}
+
+impl Pretty for Type {
+    fn pretty<'a, D, A>(&'a self, allocator: &'a D, _config: PrettyConfig) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+    {
+        match self {
+            Self::U8 => allocator.text("u8"),
+            Self::U16 => allocator.text("u16"),
+            Self::Bool => allocator.text("bool"),
+            Self::TapePtr => allocator.text("ptr"),
+        }
     }
 }

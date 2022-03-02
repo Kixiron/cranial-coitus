@@ -2,6 +2,7 @@ use crate::{
     graph::{Bool, EdgeKind, Gamma, Int, NodeExt, Rvsdg, Store, Theta},
     passes::{utils::ConstantStore, Pass},
     utils::HashMap,
+    values::Ptr,
 };
 
 /// Removes unobserved stores
@@ -18,16 +19,18 @@ pub struct UnobservedStore {
     within_gamma: bool,
     constants: ConstantStore,
     unobserved_stores_removed: usize,
+    tape_len: u16,
 }
 
 impl UnobservedStore {
-    pub fn new() -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
             changed: false,
             within_theta: false,
             within_gamma: false,
-            constants: ConstantStore::new(),
+            constants: ConstantStore::new(tape_len),
             unobserved_stores_removed: 0,
+            tape_len,
         }
     }
 
@@ -87,7 +90,7 @@ impl Pass for UnobservedStore {
     // ```
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
         let store_ptr = graph.input_source(store.ptr());
-        let store_ptr_value = self.constants.u32(store_ptr);
+        let store_ptr_value = self.constants.ptr(store_ptr);
 
         let mut last_effect = store.output_effect();
         while let Some((consumer, _, kind)) = graph.get_output(last_effect) {
@@ -109,7 +112,7 @@ impl Pass for UnobservedStore {
                 .and_then(|load| {
                     Some((
                         load.output_effect(),
-                        self.constants.u32(graph.input_source(load.ptr()))?,
+                        self.constants.ptr(graph.input_source(load.ptr()))?,
                     ))
                 })
                 .zip(store_ptr_value)
@@ -123,7 +126,7 @@ impl Pass for UnobservedStore {
                 .and_then(|consumer| {
                     Some((
                         consumer.output_effect(),
-                        self.constants.u32(graph.input_source(consumer.ptr()))?,
+                        self.constants.ptr(graph.input_source(consumer.ptr()))?,
                     ))
                 })
                 .zip(store_ptr_value)
@@ -179,7 +182,8 @@ impl Pass for UnobservedStore {
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
 
-        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) =
+            (Self::new(self.tape_len), Self::new(self.tape_len));
         true_visitor.within_gamma = true;
         false_visitor.within_gamma = true;
         true_visitor.within_theta = self.within_theta;
@@ -205,7 +209,7 @@ impl Pass for UnobservedStore {
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
 
-        let mut visitor = Self::new();
+        let mut visitor = Self::new(self.tape_len);
         visitor.within_theta = true;
         visitor.within_gamma = self.within_gamma;
 
@@ -222,17 +226,11 @@ impl Pass for UnobservedStore {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         self.constants.add(int.value(), value);
     }
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
         self.constants.add(bool.value(), value);
-    }
-}
-
-impl Default for UnobservedStore {
-    fn default() -> Self {
-        Self::new()
     }
 }

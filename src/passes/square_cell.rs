@@ -6,6 +6,7 @@ use crate::{
     ir::Const,
     passes::Pass,
     utils::{AssertNone, HashMap},
+    values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
 
@@ -102,15 +103,17 @@ use std::collections::BTreeMap;
 #[derive(Debug)]
 pub struct SquareCell {
     changed: bool,
+    tape_len: u16,
     // TODO: USe ConstantStore
     values: BTreeMap<OutputPort, Const>,
     squares_removed: usize,
 }
 
 impl SquareCell {
-    pub fn new() -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
             values: BTreeMap::new(),
+            tape_len,
             changed: false,
             squares_removed: 0,
         }
@@ -222,9 +225,10 @@ impl SquareCell {
         if !ports_match(
             graph,
             values,
+            self.tape_len,
             (temp0_minus_one.lhs(), temp0_minus_one.rhs()),
             temp0_load.output_value(),
-            1,
+            Cell::one(),
         ) {
             return None;
         }
@@ -237,9 +241,10 @@ impl SquareCell {
         if !ports_match(
             graph,
             values,
+            self.tape_len,
             (temp0_eq_zero.lhs(), temp0_eq_zero.rhs()),
             temp0_minus_one.value(),
-            0,
+            Cell::zero(),
         ) {
             return None;
         }
@@ -263,9 +268,10 @@ impl SquareCell {
         if !ports_match(
             graph,
             values,
+            self.tape_len,
             (src_plus_one.lhs(), src_plus_one.rhs()),
             src_load.output_value(),
-            1,
+            Cell::one(),
         ) {
             return None;
         }
@@ -293,8 +299,8 @@ impl SquareCell {
         if graph.input_source(zero_temp1.ptr()) != temp1_ptr
             || values
                 .get(&graph.input_source(zero_temp1.value()))
-                .and_then(Const::convert_to_u32)
-                != Some(0)
+                .map(|value| value.into_ptr(self.tape_len))
+                .map_or(false, |value| value.is_zero())
         {
             return None;
         }
@@ -307,9 +313,10 @@ impl SquareCell {
         if !ports_match(
             graph,
             values,
+            self.tape_len,
             (temp1_eq_zero.lhs(), temp0_eq_zero.rhs()),
             temp1_load.output_value(),
-            0,
+            Cell::zero(),
         ) {
             return None;
         }
@@ -399,9 +406,10 @@ impl SquareCell {
         if !ports_match(
             graph,
             values,
+            self.tape_len,
             (temp1_plus_one.lhs(), temp1_plus_one.rhs()),
             temp1_load.output_value(),
-            1,
+            Cell::one(),
         ) {
             return None;
         }
@@ -421,9 +429,10 @@ impl SquareCell {
         if !ports_match(
             graph,
             values,
+            self.tape_len,
             (src_plus_two.lhs(), src_plus_two.rhs()),
             src_load.output_value(),
-            2,
+            Cell::new(2),
         ) {
             return None;
         }
@@ -443,9 +452,10 @@ impl SquareCell {
         if !ports_match(
             graph,
             values,
+            self.tape_len,
             (temp0_minus_one.lhs(), temp0_minus_one.rhs()),
             temp0_load.output_value(),
-            1,
+            Cell::one(),
         ) {
             return None;
         }
@@ -458,9 +468,10 @@ impl SquareCell {
         if !ports_match(
             graph,
             values,
+            self.tape_len,
             (temp0_eq_zero.lhs(), temp0_eq_zero.rhs()),
             temp0_minus_one.value(),
-            0,
+            Cell::zero(),
         ) {
             return None;
         }
@@ -472,15 +483,17 @@ impl SquareCell {
 fn ports_match(
     graph: &Rvsdg,
     values: &BTreeMap<OutputPort, Const>,
+    tape_len: u16,
     (lhs, rhs): (InputPort, InputPort),
     value: OutputPort,
-    literal: u32,
+    literal: Cell,
 ) -> bool {
+    let literal = literal.into_ptr(tape_len);
     let (lhs_src, rhs_src) = (graph.input_source(lhs), graph.input_source(rhs));
 
     let (lhs_val, rhs_val) = (
-        values.get(&lhs_src).and_then(Const::convert_to_u32),
-        values.get(&rhs_src).and_then(Const::convert_to_u32),
+        values.get(&lhs_src).map(|value| value.into_ptr(tape_len)),
+        values.get(&rhs_src).map(|value| value.into_ptr(tape_len)),
     );
 
     (lhs_src == value && rhs_val == Some(literal)) || (lhs_val == Some(literal) && rhs_src == value)
@@ -517,13 +530,14 @@ impl Pass for SquareCell {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         let replaced = self.values.insert(int.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
+        debug_assert!(replaced.is_none() || replaced == Some(Const::Ptr(value)));
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
-        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) =
+            (Self::new(self.tape_len), Self::new(self.tape_len));
         let mut changed = false;
 
         // For each input into the gamma region, if the input value is a known constant
@@ -551,7 +565,7 @@ impl Pass for SquareCell {
         changed |= false_visitor.visit_graph(gamma.false_mut());
 
         if let Some(theta_id) = self.outer_gamma_is_candidate(&gamma) {
-            let mut outmost_theta_visitor = Self::new();
+            let mut outmost_theta_visitor = Self::new(self.tape_len);
             let mut outmost_theta = gamma.false_branch().to_node::<Theta>(theta_id).clone();
 
             // For each input into the theta region, if the input value is a known constant
@@ -581,7 +595,7 @@ impl Pass for SquareCell {
                 } = candidate;
 
                 let inner_gamma = outmost_theta.body().to_node::<Gamma>(inner_gamma_id);
-                let mut inner_gamma_visitor = Self::new();
+                let mut inner_gamma_visitor = Self::new(self.tape_len);
 
                 for (&input, &[_, param]) in
                     inner_gamma.inputs().iter().zip(inner_gamma.input_params())
@@ -605,7 +619,7 @@ impl Pass for SquareCell {
                     inner_gamma_visitor.inner_gamma_is_candidate(inner_gamma)
                 {
                     let inner_theta = inner_gamma.false_branch().to_node::<Theta>(inner_theta_id);
-                    let mut inner_theta_visitor = Self::new();
+                    let mut inner_theta_visitor = Self::new(self.tape_len);
 
                     for (input, param) in inner_theta.invariant_input_pairs() {
                         if let Some(constant) = inner_gamma_visitor
@@ -631,7 +645,7 @@ impl Pass for SquareCell {
                             outmost_theta_visitor
                                 .values
                                 .get(&output)
-                                .and_then(Const::convert_to_u32)
+                                .map(|value| value.into_ptr(self.tape_len))
                                 .map(|int| graph.int(int).value())
                                 .or_else(|| {
                                     outmost_theta
@@ -646,7 +660,7 @@ impl Pass for SquareCell {
                                         .and_then(|output| {
                                             self.values
                                                 .get(&output)
-                                                .and_then(Const::convert_to_u32)
+                                                .map(|value| value.into_ptr(self.tape_len))
                                                 .map(|int| graph.int(int).value())
                                                 .or_else(|| {
                                                     gamma
@@ -710,7 +724,7 @@ impl Pass for SquareCell {
                             let src_store =
                                 graph.store(src_ptr, src_squared.value(), src_load.output_effect());
 
-                            let zero = graph.int(0).value();
+                            let zero = graph.int(Ptr::zero(self.tape_len)).value();
 
                             // `store temp0_ptr, int 0`
                             let zero_temp0 =
@@ -744,7 +758,7 @@ impl Pass for SquareCell {
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
-        let mut visitor = Self::new();
+        let mut visitor = Self::new(self.tape_len);
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -763,12 +777,6 @@ impl Pass for SquareCell {
             graph.replace_node(theta.node(), theta);
             self.changed();
         }
-    }
-}
-
-impl Default for SquareCell {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -809,15 +817,14 @@ impl InnerGamma {
 
 test_opts! {
     square_input,
-    passes = [SquareCell::new()],
-    tape_size = 20,
+    passes = |tape_len| bvec![SquareCell::new(tape_len)],
     input = [10],
     output = [100],
-    |graph, effect| {
+    |graph, effect, tape_len| {
         let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/square.bf"));
 
-        let ptr = graph.int(0);
-        let (_ptr, effect) = compile_brainfuck_into(source, graph, ptr.value(), effect);
+        let ptr = graph.int(Ptr::new(0, tape_len));
+        let (_ptr, effect) = compile_brainfuck_into(source, graph, ptr.value(), effect, tape_len);
         effect
     },
 }

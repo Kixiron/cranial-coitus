@@ -5,19 +5,22 @@ use crate::{
     },
     ir::Const,
     passes::{utils::ConstantStore, Pass},
+    values::{Cell, Ptr},
 };
 
 /// Evaluates constant operations within the program
 pub struct ConstFolding {
     values: ConstantStore,
     changed: bool,
+    tape_len: u16,
 }
 
 impl ConstFolding {
-    pub fn new() -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
-            values: ConstantStore::new(),
+            values: ConstantStore::new(tape_len),
             changed: false,
+            tape_len,
         }
     }
 
@@ -25,9 +28,9 @@ impl ConstFolding {
         self.changed = true;
     }
 
-    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (OutputPort, Option<u32>) {
+    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (OutputPort, Option<Ptr>) {
         let source = graph.input_source(input);
-        let value = self.values.u32(source);
+        let value = self.values.ptr(source);
 
         (source, value)
     }
@@ -48,7 +51,7 @@ impl Pass for ConstFolding {
         self.changed = false;
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         self.values.add(int.value(), value);
     }
 
@@ -67,7 +70,7 @@ impl Pass for ConstFolding {
             // `10 + 10 => 20`
             [(_, Some(lhs)), (_, Some(rhs))] => {
                 let sum = lhs + rhs;
-                tracing::debug!(lhs, rhs, "evaluated add {:?} to {}", add, sum);
+                tracing::debug!(%lhs, %rhs, "evaluated add {:?} to {}", add, sum);
 
                 let int = graph.int(sum);
                 graph.rewire_dependents(add.value(), int.value());
@@ -80,7 +83,9 @@ impl Pass for ConstFolding {
 
             // If either side of the add is zero, we can simplify it to the non-zero value
             // `x + 0 => x`, `0 + x => x`
-            [(_, Some(0)), (value, None)] | [(value, None), (_, Some(0))] => {
+            [(_, Some(zero)), (value, None)] | [(value, None), (_, Some(zero))]
+                if zero.is_zero() =>
+            {
                 tracing::debug!(
                     "removing an addition by zero {:?} into a direct value of {:?}",
                     add,
@@ -108,13 +113,13 @@ impl Pass for ConstFolding {
                     "removing an addition by negated value into a direct value of 0",
                 );
 
-                let zero = graph.int(0);
+                let zero = graph.int(Ptr::zero(self.tape_len));
                 graph.rewire_dependents(add.value(), zero.value());
                 self.changed();
 
                 // Add the derived values to the known constants
-                self.values.add(zero.value(), 0u32);
-                self.values.add(add.value(), 0u32);
+                self.values.add(zero.value(), Ptr::zero(self.tape_len));
+                self.values.add(add.value(), Ptr::zero(self.tape_len));
             }
 
             _ => {}
@@ -131,21 +136,21 @@ impl Pass for ConstFolding {
             // If both sides of the sub are known, we can evaluate it directly
             // `10 - 10 => 20`
             [(_, Some(lhs)), (_, Some(rhs))] => {
-                let sum = lhs - rhs;
-                tracing::debug!(lhs, rhs, "evaluated sub {:?} to {}", sub, sum);
+                let difference = lhs - rhs;
+                tracing::debug!(%lhs, %rhs, "evaluated sub {:?} to {}", sub, difference);
 
-                let int = graph.int(sum);
+                let int = graph.int(difference);
                 graph.rewire_dependents(sub.value(), int.value());
                 self.changed();
 
                 // Add the derived values to the known constants
-                self.values.add(int.value(), sum);
-                self.values.add(sub.value(), sum);
+                self.values.add(int.value(), difference);
+                self.values.add(sub.value(), difference);
             }
 
             // If either side of the sub are zero, we can simplify it to the non-zero value
             // `x - 0 => x`
-            [(value, None), (_, Some(0))] => {
+            [(value, None), (_, Some(zero))] if zero.is_zero() => {
                 tracing::debug!(
                     "removing an subtraction by zero {:?} into a direct value of {:?}",
                     sub,
@@ -162,7 +167,7 @@ impl Pass for ConstFolding {
             }
 
             // `0 - x => -x`
-            [(_, Some(0)), (value, None)] => {
+            [(_, Some(zero)), (value, None)] if zero.is_zero() => {
                 tracing::debug!(
                     "removing an subtraction by zero {:?} (0 - x) into a -{:?}",
                     sub,
@@ -193,13 +198,13 @@ impl Pass for ConstFolding {
                     "removing an subtraction by negated value into a direct value of 0",
                 );
 
-                let zero = graph.int(0);
+                let zero = graph.int(Ptr::zero(self.tape_len));
                 graph.rewire_dependents(sub.value(), zero.value());
                 self.changed();
 
                 // Add the derived values to the known constants
-                self.values.add(zero.value(), 0u32);
-                self.values.add(sub.value(), 0u32);
+                self.values.add(zero.value(), Ptr::zero(self.tape_len));
+                self.values.add(sub.value(), Ptr::zero(self.tape_len));
             }
 
             _ => {}
@@ -217,7 +222,7 @@ impl Pass for ConstFolding {
             // `10 * 10 => 100`
             [(_, Some(lhs)), (_, Some(rhs))] => {
                 let product = lhs * rhs;
-                tracing::debug!(lhs, rhs, "evaluated multiply {:?} to {}", mul, product);
+                tracing::debug!(%lhs, %rhs, "evaluated multiply {:?} to {}", mul, product);
 
                 let int = graph.int(product);
                 graph.rewire_dependents(mul.value(), int.value());
@@ -230,7 +235,7 @@ impl Pass for ConstFolding {
 
             // If either side of the multiply is zero, we can remove the multiply entirely for zero
             // `x * 0 => 0`, `0 * x => 0`
-            [(zero, Some(0)), _] | [_, (zero, Some(0))] => {
+            [(zero, Some(zero_ptr)), _] | [_, (zero, Some(zero_ptr))] if zero_ptr.is_zero() => {
                 tracing::debug!(
                     zero_port = ?zero,
                     "removing an multiply by zero {:?} into a direct value of 0",
@@ -241,12 +246,12 @@ impl Pass for ConstFolding {
                 self.changed();
 
                 // Add the derived value to the known constants
-                self.values.add(mul.value(), 0u32);
+                self.values.add(mul.value(), Cell::zero());
             }
 
             // If either side of the multiply is one, we can remove the multiply entirely for the non-one value
             // `x * 1 => x`, `1 * x => x`
-            [(_, Some(1)), (value, None)] | [(value, None), (_, Some(1))] => {
+            [(_, Some(one)), (value, None)] | [(value, None), (_, Some(one))] if one == 1 => {
                 tracing::debug!(
                     "removing an multiply by one {:?} into a direct value of {:?}",
                     mul,
@@ -268,7 +273,7 @@ impl Pass for ConstFolding {
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
-        let mut visitor = Self::new();
+        let mut visitor = Self::new(self.tape_len);
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -356,9 +361,9 @@ impl Pass for ConstFolding {
             tracing::debug!("constant folding 'neg {}' to '{}'", value, !value);
 
             let inverted = match -value {
-                Const::Int(int) => graph.int(int).value(),
+                Const::Ptr(int) => graph.int(int).value(),
                 // FIXME: Do we need a byte node?
-                Const::U8(byte) => graph.int(byte as u32).value(),
+                Const::Cell(byte) => graph.int(byte.into_ptr(self.tape_len)).value(),
                 Const::Bool(bool) => graph.bool(bool).value(),
             };
             self.values.remove(neg.value());
@@ -371,7 +376,8 @@ impl Pass for ConstFolding {
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
-        let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
+        let (mut truthy_visitor, mut falsy_visitor) =
+            (Self::new(self.tape_len), Self::new(self.tape_len));
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -433,21 +439,17 @@ impl Pass for ConstFolding {
     }
 }
 
-impl Default for ConstFolding {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 // TODO: Make sure that constants are propagated into gammas and thetas
 //       as well as out of gammas
 test_opts! {
     constant_add,
-    passes = [ConstFolding::new(), Dce::new()],
+    passes = |tape_len| -> Vec<Box<dyn Pass + 'static>> {
+        bvec![ConstFolding::new(tape_len), Dce::new()]
+    },
     output = [30],
-    |graph, effect| {
-        let lhs = graph.int(10);
-        let rhs = graph.int(20);
+    |graph, effect, tape_len| {
+        let lhs = graph.int(Ptr::new(10, tape_len));
+        let rhs = graph.int(Ptr::new(20, tape_len));
         let sum = graph.add(lhs.value(), rhs.value());
 
         graph.output(sum.value(), effect).output_effect()
@@ -456,35 +458,41 @@ test_opts! {
 
 test_opts! {
     constant_mul,
-    passes = [ConstFolding::new(), Dce::new()],
+    passes = |tape_len| -> Vec<Box<dyn Pass + 'static>> {
+        bvec![ConstFolding::new(tape_len), Dce::new()]
+    },
     output = [100],
-    |graph, effect| {
-        let lhs = graph.int(10);
-        let rhs = graph.int(10);
-        let sum = graph.mul(lhs.value(), rhs.value());
+    |graph, effect, tape_len| {
+        let lhs = graph.int(Ptr::new(10, tape_len));
+        let rhs = graph.int(Ptr::new(10, tape_len));
+        let product = graph.mul(lhs.value(), rhs.value());
 
-        graph.output(sum.value(), effect).output_effect()
+        graph.output(product.value(), effect).output_effect()
     },
 }
 
 test_opts! {
     constant_sub,
-    passes = [ConstFolding::new(), Dce::new()],
+    passes = |tape_len| -> Vec<Box<dyn Pass + 'static>> {
+        bvec![ConstFolding::new(tape_len), Dce::new()]
+    },
     output = [245],
-    |graph, effect| {
-        let lhs = graph.int(10);
-        let rhs = graph.int(20);
-        let sum = graph.sub(lhs.value(), rhs.value());
+    |graph, effect, tape_len| {
+        let lhs = graph.int(Ptr::new(10, tape_len));
+        let rhs = graph.int(Ptr::new(20, tape_len));
+        let difference = graph.sub(lhs.value(), rhs.value());
 
-        graph.output(sum.value(), effect).output_effect()
+        graph.output(difference.value(), effect).output_effect()
     },
 }
 
 test_opts! {
     chained_booleans,
-    passes = [ConstFolding::new(), Dce::new()],
+    passes = |tape_len| -> Vec<Box<dyn Pass + 'static>> {
+        bvec![ConstFolding::new(tape_len), Dce::new()]
+    },
     output = [1],
-    |graph, effect| {
+    |graph, effect, _| {
         let t = graph.bool(true);
         let f = graph.bool(false);
 

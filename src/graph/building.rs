@@ -6,6 +6,7 @@ use crate::{
         ThetaData,
     },
     utils::AssertNone,
+    values::Ptr,
 };
 use std::collections::BTreeMap;
 use tinyvec::TinyVec;
@@ -43,7 +44,7 @@ impl Rvsdg {
         end
     }
 
-    pub fn int(&mut self, value: u32) -> Int {
+    pub fn int(&mut self, value: Ptr) -> Int {
         let int_id = self.next_node();
 
         let output = self.output_port(int_id, EdgeKind::Value);

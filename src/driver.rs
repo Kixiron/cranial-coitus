@@ -7,6 +7,7 @@ use crate::{
     parse::{self, Token},
     passes,
     utils::{HashSet, PerfEvent},
+    values::{Cell, Ptr},
 };
 use anyhow::{Context, Result};
 use std::{
@@ -19,16 +20,16 @@ use std::{
 
 #[tracing::instrument(skip(args))]
 pub fn debugger(args: &Args, file: &Path, start_time: Instant) -> Result<()> {
-    let cells = args.cells as usize;
+    let cells = args.tape_len as usize;
     let step_limit = args.step_limit.unwrap_or(usize::MAX);
 
     let source = fs::read_to_string(file).expect("failed to read file");
     let tokens = parse_source(file, &source);
 
-    let mut graph = build_graph(tokens);
+    let mut graph = build_graph(tokens, args.tape_len);
     run_opt_passes(
         &mut graph,
-        cells,
+        args.tape_len,
         args.iteration_limit.unwrap_or(usize::MAX),
     );
 
@@ -42,7 +43,7 @@ pub fn debugger(args: &Args, file: &Path, start_time: Instant) -> Result<()> {
 }
 
 #[tracing::instrument(skip_all)]
-pub fn run_opt_passes(graph: &mut Rvsdg, cells: usize, iteration_limit: usize) -> usize {
+pub fn run_opt_passes(graph: &mut Rvsdg, cells: u16, iteration_limit: usize) -> usize {
     let mut passes = passes::default_passes(cells);
     let (mut pass_num, mut stack, mut visited, mut buffer) = (
         1,
@@ -147,7 +148,7 @@ pub fn debugger_tui(cell_len: usize, program: &str) -> Result<()> {
 }
 
 #[tracing::instrument(skip_all)]
-pub fn build_graph<T>(tokens: T) -> Rvsdg
+pub fn build_graph<T>(tokens: T, tape_len: u16) -> Rvsdg
 where
     T: AsRef<[Token]>,
 {
@@ -162,10 +163,10 @@ where
 
     // Get the starting effect and create the initial pointer (zero)
     let effect = start.effect();
-    let ptr = graph.int(0).value();
+    let ptr = graph.int(Ptr::zero(tape_len)).value();
 
     // Lower all of the program's tokens into the graph
-    let (_ptr, effect) = lower_tokens::lower_tokens(&mut graph, ptr, effect, tokens);
+    let (_ptr, effect) = lower_tokens::lower_tokens(&mut graph, ptr, effect, tokens, tape_len);
     // Create the program's end node
     graph.end(effect);
 
@@ -200,7 +201,7 @@ pub fn parse_source(file: &Path, source: &str) -> Box<[Token]> {
 #[tracing::instrument(skip(input, output, program))]
 pub fn execute<I, O>(
     step_limit: usize,
-    cells: usize,
+    tape_len: u16,
     input: I,
     output: O,
     should_profile: bool,
@@ -215,17 +216,17 @@ where
     I: FnMut() -> u8,
     O: FnMut(u8),
 {
-    tracing::info!(step_limit, cells, "started program execution");
+    tracing::info!(step_limit, tape_len, "started program execution");
     let event = PerfEvent::new("program-execution");
 
     // Execute the given program with the given input & output functions
-    let mut machine = Machine::new(step_limit, cells, input, output);
+    let mut machine = Machine::new(step_limit, tape_len, input, output);
     let result = machine.execute(program, should_profile).map(|_| ());
 
     let elapsed = event.finish();
     tracing::info!(
         step_limit,
-        cells,
+        tape_len,
         "finished program execution in {:#?}",
         elapsed,
     );
@@ -233,7 +234,7 @@ where
     let tape = machine
         .tape
         .iter()
-        .map(|value| value.unwrap_or(0))
+        .map(|value| value.map_or(0, Cell::into_inner))
         .collect();
 
     (result, tape, machine.stats, elapsed)

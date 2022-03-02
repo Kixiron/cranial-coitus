@@ -4,6 +4,7 @@ use crate::{
         Not, Store, Sub, Theta, Value, VarId, Variance,
     },
     utils::{self, AssertNone},
+    values::{Cell, Ptr},
 };
 use std::{
     collections::BTreeMap,
@@ -20,7 +21,7 @@ pub enum EvaluationError {
 }
 
 pub struct Machine<I, O> {
-    pub tape: Vec<Option<u8>>,
+    pub tape: Vec<Option<Cell>>,
     pub values: Vec<BTreeMap<VarId, Const>>,
     pub values_idx: usize,
     input: I,
@@ -36,12 +37,12 @@ where
     I: FnMut() -> u8,
     O: FnMut(u8),
 {
-    pub fn new(step_limit: usize, length: usize, input: I, output: O) -> Self {
-        let mut values = Vec::with_capacity(64);
+    pub fn new(step_limit: usize, tape_len: u16, input: I, output: O) -> Self {
+        let mut values = Vec::with_capacity(256);
         values.push(BTreeMap::new());
 
         Self {
-            tape: vec![Some(0); length],
+            tape: vec![Some(Cell::zero()); tape_len as usize],
             values,
             values_idx: 0,
             input,
@@ -52,7 +53,8 @@ where
         }
     }
 
-    pub fn execute(&mut self, block: &mut Block, should_profile: bool) -> Result<&[Option<u8>]> {
+    #[tracing::instrument(target = "cranial_coitus::interpreter", skip_all)]
+    pub fn execute(&mut self, block: &mut Block, should_profile: bool) -> Result<&[Option<Cell>]> {
         for inst in block.iter_mut() {
             self.handle(inst, should_profile)?;
         }
@@ -155,7 +157,7 @@ where
                     panic!("expected zero args for input call")
                 }
 
-                Ok(Some(Const::U8((self.input)())))
+                Ok(Some(Const::Cell(Cell::new((self.input)()))))
             }
 
             "output" => {
@@ -164,7 +166,7 @@ where
                 let [value]: &[Value; 1] = (&*call.args)
                     .try_into()
                     .expect("expected one arg for output call");
-                let byte = self.get_byte(value)?;
+                let byte = self.get_byte(value)?.into_inner();
 
                 (self.output)(byte);
 
@@ -382,7 +384,7 @@ where
 
         self.tape[ptr]
             .ok_or(EvaluationError::UnknownCellRead)
-            .map(Const::U8)
+            .map(Const::Cell)
     }
 
     fn eq(&self, eq: &Eq) -> Result<Const> {
@@ -433,21 +435,12 @@ where
         }
     }
 
-    fn get_byte(&self, value: &Value) -> Result<u8> {
-        Ok(self
-            .get_const(value)?
-            .convert_to_u8()
-            .expect("expected a u8-convertible constant"))
+    fn get_byte(&self, value: &Value) -> Result<Cell> {
+        Ok(self.get_const(value)?.into_cell())
     }
 
-    fn get_ptr(&self, value: &Value) -> Result<usize> {
-        let ptr = self
-            .get_const(value)?
-            .convert_to_u32()
-            .expect("expected an i32-convertible constant") as usize;
-
-        // We have to wrap the pointer into the tape's address space
-        Ok(ptr.rem_euclid(self.tape.len()) as usize)
+    fn get_ptr(&self, value: &Value) -> Result<Ptr> {
+        Ok(self.get_const(value)?.into_ptr(self.tape.len() as u16))
     }
 
     fn get_bool(&self, value: &Value) -> Result<bool> {
@@ -554,22 +547,20 @@ impl Display for DisplayStats<'_> {
 
 test_opts! {
     addition_loop,
-    passes = [],
     input = [50, 24],
     output = [74, 0],
-    |graph, effect| {
-        let ptr = graph.int(0).value();
-        compile_brainfuck_into(",>,[-<+>]<.>.", graph, ptr, effect).1
+    |graph, effect, tape_len| {
+        let ptr = graph.int(Ptr::zero(tape_len)).value();
+        compile_brainfuck_into(",>,[-<+>]<.>.", graph, ptr, effect, tape_len).1
     },
 }
 
 test_opts! {
     branching,
-    passes = [],
     input = [50, 24, 10, 0],
     output = [50, 24, 10, 0],
-    |graph, effect| {
-        let ptr = graph.int(0).value();
-        compile_brainfuck_into("+[>,.]", graph, ptr, effect).1
+    |graph, effect, tape_len| {
+        let ptr = graph.int(Ptr::zero(tape_len)).value();
+        compile_brainfuck_into("+[>,.]", graph, ptr, effect, tape_len).1
     },
 }

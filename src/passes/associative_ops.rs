@@ -6,6 +6,7 @@ use crate::{
     ir::Const,
     passes::{utils::BinOp, Pass},
     utils::{AssertNone, HashMap, HashSet},
+    values::Ptr,
 };
 
 /// Fuses chained additions based on the law of associative addition
@@ -16,14 +17,16 @@ pub struct AssociativeOps {
     values: HashMap<OutputPort, Const>,
     to_be_removed: HashSet<NodeId>,
     changed: bool,
+    tape_len: u16,
 }
 
 impl AssociativeOps {
-    pub fn new() -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
             values: HashMap::with_hasher(Default::default()),
             to_be_removed: HashSet::with_hasher(Default::default()),
             changed: false,
+            tape_len,
         }
     }
 
@@ -31,12 +34,13 @@ impl AssociativeOps {
         self.changed = true;
     }
 
-    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (InputPort, Option<u32>) {
+    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (InputPort, Option<Ptr>) {
         let (operand, output, _) = graph.get_input(input);
-        let value = operand
-            .as_int()
-            .map(|(_, value)| value)
-            .or_else(|| self.values.get(&output).and_then(Const::convert_to_u32));
+        let value = operand.as_int().map(|(_, value)| value).or_else(|| {
+            self.values
+                .get(&output)
+                .map(|value| value.into_ptr(self.tape_len))
+        });
 
         (input, value)
     }
@@ -152,14 +156,15 @@ impl Pass for AssociativeOps {
         self.fold_associative_operation(graph, mul);
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: u32) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         let replaced = self.values.insert(int.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Int(value)));
+        debug_assert!(replaced.is_none() || replaced == Some(Const::Ptr(value)));
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
-        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) =
+            (Self::new(self.tape_len), Self::new(self.tape_len));
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -193,7 +198,7 @@ impl Pass for AssociativeOps {
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
-        let mut visitor = Self::new();
+        let mut visitor = Self::new(self.tape_len);
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -213,12 +218,6 @@ impl Pass for AssociativeOps {
             graph.replace_node(theta.node(), theta);
             self.changed();
         }
-    }
-}
-
-impl Default for AssociativeOps {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

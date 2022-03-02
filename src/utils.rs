@@ -127,6 +127,7 @@ pub fn compile_brainfuck_into(
     graph: &mut Rvsdg,
     ptr: OutputPort,
     effect: OutputPort,
+    tape_len: u16,
 ) -> (OutputPort, OutputPort) {
     let parsing_start = Instant::now();
 
@@ -146,7 +147,7 @@ pub fn compile_brainfuck_into(
         tracing::info!("started building rvsdg");
         let graph_building_start = Instant::now();
 
-        let (ptr, effect) = lower_tokens::lower_tokens(graph, ptr, effect, &tokens);
+        let (ptr, effect) = lower_tokens::lower_tokens(graph, ptr, effect, &tokens, tape_len);
 
         let elapsed = graph_building_start.elapsed();
         tracing::info!("finished building rvsdg in {:#?}", elapsed);
@@ -426,9 +427,9 @@ macro_rules! replace_expr {
 macro_rules! test_opts {
     (
         $name:ident,
-        $(default_passes = $default_passes:expr,)?
-        $(passes = [$($pass:expr),* $(,)?],)?
-        $(tape_size = $tape_size:expr,)?
+        $(use_default_passes = $use_default_passes:expr,)?
+        $(passes = $passes:expr,)?
+        $(tape_len = $tape_len:expr,)?
         $(step_limit = $step_limit:expr,)?
         $(input = [$($input:expr),* $(,)?],)?
         output = $output:expr,
@@ -443,30 +444,33 @@ macro_rules! test_opts {
                 ir::{IrBuilder, Pretty, PrettyConfig},
                 passes::{Pass, Dce},
                 utils::{compile_brainfuck_into, HashSet},
+                values::{Cell, Ptr},
             };
             use std::collections::VecDeque;
 
             $crate::utils::set_logger();
 
-            let tape_size: usize = $crate::test_opts!(@tape_size $($tape_size)?);
+            let tape_len: u16 = $crate::test_opts!(@tape_len $($tape_len)?);
             let step_limit: usize = $crate::test_opts!(@step_limit $($step_limit)?);
 
-            let mut passes: Vec<Box<dyn Pass>> = vec![
-                $($(Box::new($pass) as Box<dyn Pass>,)*)?
-            ];
+            let mut passes: Vec<Box<dyn Pass + 'static>> = Vec::new();
             $(
-                if $default_passes {
-                    passes = $crate::passes::default_passes(tape_size);
+                let build_passes: fn(u16) -> Vec<Box<dyn Pass + 'static>> = $passes;
+                passes.extend(build_passes(tape_len));
+            )?
+            $(
+                if $use_default_passes {
+                    passes = $crate::passes::default_passes(tape_len);
                 }
             )?
 
-            let build: fn(&mut Rvsdg, OutputPort) -> OutputPort = $build;
+            let build: fn(&mut Rvsdg, OutputPort, u16) -> OutputPort = $build;
 
             let expected_output: Vec<u8> = $output.to_vec();
 
             let mut graph = Rvsdg::new();
             let start = graph.start();
-            let effect = build(&mut graph, start.effect());
+            let effect = build(&mut graph, start.effect(), tape_len);
             graph.end(effect);
 
             let mut unoptimized_output: Vec<u8> = Vec::new();
@@ -482,7 +486,7 @@ macro_rules! test_opts {
                 let mut unoptimized_graph_ir = IrBuilder::new(false).translate(&graph);
                 let unoptimized_text = unoptimized_graph_ir.pretty_print(PrettyConfig::minimal());
 
-                let mut machine = Machine::new(step_limit, tape_size, input_func, output_func);
+                let mut machine = Machine::new(step_limit, tape_len, input_func, output_func);
                 machine
                     .execute(&mut unoptimized_graph_ir, false)
                     .expect("interpreter step limit reached");
@@ -543,7 +547,7 @@ macro_rules! test_opts {
                 let mut optimized_graph_ir = IrBuilder::new(false).translate(&graph);
                 let optimized_text = optimized_graph_ir.pretty_print(PrettyConfig::minimal());
 
-                let mut machine = Machine::new(step_limit, tape_size, input_func, output_func);
+                let mut machine = Machine::new(step_limit, tape_len, input_func, output_func);
                 machine
                     .execute(&mut optimized_graph_ir, false)
                     .expect("interpreter step limit reached");
@@ -576,8 +580,8 @@ macro_rules! test_opts {
         }
     };
 
-    (@tape_size $tape_size:expr) => { $tape_size };
-    (@tape_size) => { 30_000 };
+    (@tape_len $tape_len:expr) => { $tape_len };
+    (@tape_len) => { 30_000 };
 
     (@step_limit $step_limit:expr) => { $step_limit };
     (@step_limit) => { 300_000 };

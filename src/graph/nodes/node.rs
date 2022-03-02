@@ -1,17 +1,21 @@
-use crate::graph::{
-    nodes::{
-        node_ext::{InputPortKinds, InputPorts, OutputPortKinds},
-        ops::Mul,
+use crate::{
+    graph::{
+        nodes::{
+            node_ext::{InputPortKinds, InputPorts, OutputPortKinds},
+            ops::Mul,
+        },
+        Add, Bool, EdgeDescriptor, End, Eq, Gamma, Input, InputParam, InputPort, Int, Load, Neg,
+        NodeExt, NodeId, Not, Output, OutputParam, OutputPort, Start, Store, Sub, Theta,
     },
-    Add, Bool, EdgeDescriptor, End, Eq, Gamma, Input, InputParam, InputPort, Int, Load, Neg,
-    NodeExt, NodeId, Not, Output, OutputParam, OutputPort, Start, Store, Sub, Theta,
+    values::Ptr,
 };
 use tinyvec::TinyVec;
 
 // TODO: derive_more?
+// TODO: Byte node?
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
-    Int(Int, u32),
+    Int(Int, Ptr),
     Bool(Bool, bool),
     Add(Add),
     Sub(Sub),
@@ -262,7 +266,7 @@ impl Node {
         matches!(self, Self::Gamma(..))
     }
 
-    pub const fn as_int(&self) -> Option<(Int, u32)> {
+    pub const fn as_int(&self) -> Option<(Int, Ptr)> {
         if let Self::Int(int, val) = *self {
             Some((int, val))
         } else {
@@ -316,7 +320,7 @@ impl Node {
 
     #[track_caller]
     #[allow(dead_code)]
-    pub fn to_int_value(&self) -> u32 {
+    pub fn to_int_value(&self) -> Ptr {
         if let Self::Int(_, int) = *self {
             int
         } else {

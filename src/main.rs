@@ -26,6 +26,7 @@ mod passes;
 mod patterns;
 mod tests;
 mod union_find;
+mod values;
 
 use crate::{
     args::{Args, Command},
@@ -34,6 +35,7 @@ use crate::{
     ir::{IrBuilder, Pretty, PrettyConfig},
     jit::Jit,
     utils::{HashSet, PerfEvent},
+    values::Ptr,
 };
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -78,7 +80,6 @@ fn debug(
     no_step_limit: bool,
     start_time: Instant,
 ) -> Result<()> {
-    let cells = args.cells as usize;
     let step_limit = if no_step_limit {
         usize::MAX
     } else {
@@ -92,7 +93,7 @@ fn debug(
 
     // Parse the input program and turn it into a graph
     let tokens = driver::parse_source(file, &source);
-    let mut graph = driver::build_graph(&tokens);
+    let mut graph = driver::build_graph(&tokens, args.tape_len);
 
     // Sequentialize the input program
     let (mut input_program, input_program_ir) = driver::sequentialize_graph(
@@ -108,12 +109,13 @@ fn debug(
     validate(&graph);
 
     let _: Result<Result<()>, _> = panic::catch_unwind(|| {
-        let (jit, assembly) = Jit::new(cells).compile(&input_program)?;
-        fs::write(dump_dir.join("input.asm"), assembly)?;
+        let (jit, clif, ssa) = Jit::new(args.tape_len).compile(&input_program)?;
+        fs::write(dump_dir.join("input.clif"), clif)?;
+        fs::write(dump_dir.join("input.ssa"), ssa)?;
 
-        // let mut tape = vec![0x00; cells];
-        // // Safety: Decidedly not safe in the slightest
-        // unsafe { jit.execute(&mut tape)? };
+        let mut tape = vec![0x00; args.tape_len as usize];
+        // Safety: Decidedly not safe in the slightest
+        unsafe { jit.execute(&mut tape)? };
 
         Ok(())
     });
@@ -131,8 +133,14 @@ fn debug(
         let mut output_vec = Vec::new();
         let output = driver::array_output(&mut output_vec);
 
-        let (result, tape, stats, execution_duration) =
-            driver::execute(step_limit, cells, input, output, false, &mut input_program);
+        let (result, tape, stats, execution_duration) = driver::execute(
+            step_limit,
+            args.tape_len,
+            input,
+            output,
+            false,
+            &mut input_program,
+        );
 
         // FIXME: Utility function
         let input_str = String::from_utf8_lossy(&input_vec);
@@ -201,7 +209,7 @@ fn debug(
     let mut evolution = BufWriter::new(File::create(dump_dir.join("evolution.diff")).unwrap());
     write!(&mut evolution, ">>>>> input\n{}", input_program_ir).unwrap();
 
-    let mut passes = passes::default_passes(args.cells as usize);
+    let mut passes = passes::default_passes(args.tape_len);
     let (mut pass_num, mut stack, mut visited, mut buffer, mut previous_program_ir) = (
         1,
         VecDeque::new(),
@@ -388,8 +396,14 @@ fn debug(
         let mut output_vec = Vec::new();
         let output = driver::array_output(&mut output_vec);
 
-        let (result, tape, stats, execution_duration) =
-            driver::execute(step_limit, cells, input, output, true, &mut output_program);
+        let (result, tape, stats, execution_duration) = driver::execute(
+            step_limit,
+            args.tape_len,
+            input,
+            output,
+            true,
+            &mut output_program,
+        );
 
         let input_str = String::from_utf8_lossy(&input_vec);
         writeln!(
@@ -519,10 +533,11 @@ fn debug(
         output_program.pretty_print(PrettyConfig::instrumented(optimized_stats.instructions));
     fs::write(dump_dir.join("annotated_output.cir"), annotated_program)?;
 
-    let (jit, assembly) = Jit::new(cells).compile(&output_program)?;
-    fs::write(dump_dir.join("output.asm"), assembly)?;
+    let (jit, clif, ssa) = Jit::new(args.tape_len).compile(&output_program)?;
+    fs::write(dump_dir.join("output.clif"), clif)?;
+    fs::write(dump_dir.join("output.ssa"), ssa)?;
 
-    let mut tape = vec![0x00; cells];
+    let mut tape = vec![0x00; args.tape_len as usize];
     // Safety: It probably isn't lol, my codegen is garbage
     unsafe { jit.execute(&mut tape)? };
     println!("{:?}", utils::debug_collapse(&tape));
@@ -531,7 +546,6 @@ fn debug(
 }
 
 fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()> {
-    let cells = args.cells as usize;
     let step_limit = args.step_limit.unwrap_or(usize::MAX);
 
     let contents = fs::read_to_string(file).expect("failed to read file");
@@ -556,9 +570,10 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
         let start = graph.start();
 
         let effect = start.effect();
-        let ptr = graph.int(0).value();
+        let ptr = graph.int(Ptr::zero(args.tape_len)).value();
 
-        let (_ptr, effect) = lower_tokens::lower_tokens(&mut graph, ptr, effect, &tokens);
+        let (_ptr, effect) =
+            lower_tokens::lower_tokens(&mut graph, ptr, effect, &tokens, args.tape_len);
         graph.end(effect);
 
         let elapsed = graph_building_start.elapsed();
@@ -575,7 +590,7 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
     } else {
         driver::run_opt_passes(
             &mut graph,
-            cells,
+            args.tape_len,
             args.iteration_limit.unwrap_or(usize::MAX),
         )
     };
@@ -642,7 +657,7 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
     let input = driver::stdin_input();
     let output = driver::stdout_output();
     let (result, _, stats, execution_duration) =
-        driver::execute(step_limit, cells, input, output, true, &mut program);
+        driver::execute(step_limit, args.tape_len, input, output, true, &mut program);
 
     // FIXME: Utility function
     match result {

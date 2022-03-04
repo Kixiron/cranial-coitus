@@ -46,18 +46,18 @@ macro_rules! log_registers {
             options(pure, nostack, readonly),
         );
 
-        ::std::println!(
-            "[{}:{}:{}]: rax = {}, rcx = {}, rdx = {}, r8 = {}, r9 = {}, rsp = {}",
-            file!(),
-            line!(),
-            column!(),
-            rax_val,
-            rcx_val,
-            rdx_val,
-            r8_val,
-            r9_val,
-            rsp_val,
-        );
+        // ::std::println!(
+        //     "[{}:{}:{}]: rax = {}, rcx = {}, rdx = {}, r8 = {}, r9 = {}, rsp = {}",
+        //     file!(),
+        //     line!(),
+        //     column!(),
+        //     rax_val,
+        //     rcx_val,
+        //     rdx_val,
+        //     r8_val,
+        //     r9_val,
+        //     rsp_val,
+        // );
     }};
 }
 
@@ -65,7 +65,7 @@ macro_rules! log_registers {
 /// byte is a 1 upon IO failure and a 0 upon success
 pub(super) unsafe extern "fastcall" fn input(state: *mut State) -> u16 {
     unsafe { log_registers!() }
-    println!("state = {}", state as usize);
+    // println!("state = {}", state as usize);
 
     let (state, mut value) = (unsafe { &mut *state }, 0);
     let input_panicked = panic::catch_unwind(AssertUnwindSafe(|| {
@@ -104,8 +104,7 @@ pub(super) unsafe extern "fastcall" fn input(state: *mut State) -> u16 {
 
 pub(super) unsafe extern "fastcall" fn output(state: *mut State, byte: u8) -> bool {
     unsafe { log_registers!() }
-
-    println!("state = {}, byte = {}", state as usize, byte);
+    // println!("state = {}, byte = {}", state as usize, byte);
 
     let state = unsafe { &mut *state };
     panic::catch_unwind(AssertUnwindSafe(|| {
@@ -132,7 +131,7 @@ pub(super) unsafe extern "fastcall" fn output(state: *mut State, byte: u8) -> bo
 
 pub(super) unsafe extern "fastcall" fn io_error_encountered(state: *mut State) -> bool {
     unsafe { log_registers!() }
-    println!("state = {}", state as usize);
+    // println!("state = {}", state as usize);
 
     let state = unsafe { &mut *state };
     let io_failure_panicked = panic::catch_unwind(AssertUnwindSafe(|| {

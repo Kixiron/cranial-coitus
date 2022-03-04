@@ -108,17 +108,32 @@ fn debug(
     // Note: This happens *after* we print out the initial graph for better debugging
     validate(&graph);
 
-    let _: Result<Result<()>, _> = panic::catch_unwind(|| {
+    let compile_attempt: Result<Result<_>, _> = panic::catch_unwind(|| {
         let (jit, clif, ssa) = Jit::new(args.tape_len).compile(&input_program)?;
         fs::write(dump_dir.join("input.clif"), clif)?;
         fs::write(dump_dir.join("input.ssa"), ssa)?;
 
         let mut tape = vec![0x00; args.tape_len as usize];
+        let start = Instant::now();
+
         // Safety: Decidedly not safe in the slightest
         unsafe { jit.execute(&mut tape)? };
 
+        let elapsed = start.elapsed();
+        println!("Unoptimized jit finished execution in {:#?}", elapsed);
+
         Ok(())
     });
+
+    match compile_attempt {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::error!("jit compilation attempt failed: {:?}", error);
+        }
+        Err(error) => {
+            tracing::error!("jit compilation attempt panicked: {:?}", error);
+        }
+    }
 
     let unoptimized_execution = if !only_final_run {
         let result_path = dump_dir.join("input-result.txt");
@@ -538,8 +553,13 @@ fn debug(
     fs::write(dump_dir.join("output.ssa"), ssa)?;
 
     let mut tape = vec![0x00; args.tape_len as usize];
+    let start = Instant::now();
+
     // Safety: It probably isn't lol, my codegen is garbage
     unsafe { jit.execute(&mut tape)? };
+
+    let elapsed = start.elapsed();
+    println!("Optimized jit finished execution in {:#?}", elapsed);
     println!("{:?}", utils::debug_collapse(&tape));
 
     Ok(())

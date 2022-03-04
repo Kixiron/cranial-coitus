@@ -240,7 +240,7 @@ where
     (result, tape, machine.stats, elapsed)
 }
 
-#[tracing::instrument(skip(graph))]
+#[tracing::instrument(level = "debug", skip_all)]
 pub fn sequentialize_graph(
     args: &Args,
     graph: &Rvsdg,

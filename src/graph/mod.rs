@@ -660,7 +660,7 @@ impl Rvsdg {
     }
 
     // FIXME: Invariant assertions and logging
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn remove_input_edges(&mut self, input: InputPort) {
         debug_assert_eq!(self.ports[&input.port()].kind, PortKind::Input);
 
@@ -700,7 +700,7 @@ impl Rvsdg {
     }
 
     // FIXME: Invariant assertions and logging
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn remove_output_edges(&mut self, output: OutputPort) {
         debug_assert_eq!(self.ports[&output.port()].kind, PortKind::Output);
 
@@ -751,7 +751,7 @@ impl Rvsdg {
         }
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn remove_input_port(&mut self, input: InputPort) {
         tracing::trace!(
             "removing input port {:?} from {:?}",
@@ -763,7 +763,7 @@ impl Rvsdg {
         self.ports.remove(&input.port());
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn remove_output_port(&mut self, output: OutputPort) {
         tracing::trace!(
             "removing output port {:?} from {:?}",
@@ -775,7 +775,7 @@ impl Rvsdg {
         self.ports.remove(&output.port());
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn remove_inputs(&mut self, node: NodeId) {
         self.forward.retain(|output, consumers| {
             consumers.retain(|(input, kind)| {
@@ -827,7 +827,7 @@ impl Rvsdg {
             .retain(|input, _| self.ports[&input.port()].parent != node);
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn remove_outputs(&mut self, node: NodeId) {
         self.forward
             .retain(|output, _| self.ports[&output.port()].parent != node);
@@ -894,7 +894,7 @@ impl Rvsdg {
 
     // FIXME: Invariant assertions & logging
     #[track_caller]
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn rewire_dependents(&mut self, old_port: OutputPort, rewire_to: OutputPort) {
         tracing::trace!(
             old = ?self.ports.get(&old_port.port()),
@@ -1048,7 +1048,7 @@ impl Rvsdg {
     }
 
     #[track_caller]
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(level = "trace", skip(self))]
     pub fn splice_ports(&mut self, input: InputPort, output: OutputPort) {
         debug_assert_eq!(self.ports[&input.port()].kind, PortKind::Input);
         debug_assert_eq!(self.ports[&output.port()].kind, PortKind::Output);

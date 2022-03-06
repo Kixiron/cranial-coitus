@@ -1,5 +1,6 @@
 use crate::jit::{ffi::State, JitFunction};
 use anyhow::{Context, Result};
+use cranelift_jit::JITModule;
 use std::{
     cmp::max,
     io::{self, Error, Write},
@@ -245,16 +246,21 @@ impl Drop for CodeBuffer {
     }
 }
 
-#[repr(transparent)]
-pub struct Executable(JitFunction);
+pub struct Executable {
+    func: JitFunction,
+    module: Option<JITModule>,
+}
 
 impl Executable {
-    pub(super) fn new(function: JitFunction) -> Self {
-        Self(function)
+    pub(super) fn new(func: JitFunction, module: JITModule) -> Self {
+        Self {
+            func,
+            module: Some(module),
+        }
     }
 
     pub unsafe fn call(&self, state: *mut State, start: *mut u8, end: *mut u8) -> u8 {
-        unsafe { (self.0)(state, start, end) }
+        unsafe { (self.func)(state, start, end) }
     }
 
     pub unsafe fn execute(&self, tape: &mut [u8]) -> Result<u8> {
@@ -277,7 +283,7 @@ impl Executable {
         .map_err(|err| anyhow::anyhow!("jitted function panicked: {:?}", err));
         let elapsed = jit_start.elapsed();
 
-        writeln!(&mut state.stdout).context("failed to write newline to stdout")?;
+        writeln!(state.stdout).context("failed to write newline to stdout")?;
         state
             .stdout
             .flush()
@@ -291,5 +297,13 @@ impl Executable {
         );
 
         jit_return
+    }
+}
+
+impl Drop for Executable {
+    fn drop(&mut self) {
+        if let Some(module) = self.module.take() {
+            unsafe { module.free_memory() };
+        }
     }
 }

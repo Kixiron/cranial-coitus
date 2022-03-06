@@ -20,45 +20,48 @@ impl<'a> State<'a> {
 
 #[allow(unused_macros)]
 macro_rules! log_registers {
-    () => {{
-        let (
-            mut rcx_val,
-            mut rdx_val,
-            mut r8_val,
-            mut r9_val,
-            mut rax_val,
-            mut rsp_val,
-        ): (u64, u64, u64, u64, u64, u64);
+    () => {
+        #[allow(unused_assignments, unused_variables)]
+        {
+            let (
+                mut rcx_val,
+                mut rdx_val,
+                mut r8_val,
+                mut r9_val,
+                mut rax_val,
+                mut rsp_val,
+            ): (u64, u64, u64, u64, u64, u64);
 
-        ::std::arch::asm!(
-            "mov {0}, rax",
-            "mov {1}, rcx",
-            "mov {2}, rdx",
-            "mov {3}, r8",
-            "mov {4}, r9",
-            "mov {5}, rsp",
-            out(reg) rax_val,
-            out(reg) rcx_val,
-            out(reg) rdx_val,
-            out(reg) r8_val,
-            out(reg) r9_val,
-            out(reg) rsp_val,
-            options(pure, nostack, readonly),
-        );
+            ::std::arch::asm!(
+                "mov {0}, rax",
+                "mov {1}, rcx",
+                "mov {2}, rdx",
+                "mov {3}, r8",
+                "mov {4}, r9",
+                "mov {5}, rsp",
+                out(reg) rax_val,
+                out(reg) rcx_val,
+                out(reg) rdx_val,
+                out(reg) r8_val,
+                out(reg) r9_val,
+                out(reg) rsp_val,
+                options(pure, nostack, readonly),
+            );
 
-        // ::std::println!(
-        //     "[{}:{}:{}]: rax = {}, rcx = {}, rdx = {}, r8 = {}, r9 = {}, rsp = {}",
-        //     file!(),
-        //     line!(),
-        //     column!(),
-        //     rax_val,
-        //     rcx_val,
-        //     rdx_val,
-        //     r8_val,
-        //     r9_val,
-        //     rsp_val,
-        // );
-    }};
+            // ::std::println!(
+            //     "[{}:{}:{}]: rax = {}, rcx = {}, rdx = {}, r8 = {}, r9 = {}, rsp = {}",
+            //     file!(),
+            //     line!(),
+            //     column!(),
+            //     rax_val,
+            //     rcx_val,
+            //     rdx_val,
+            //     r8_val,
+            //     r9_val,
+            //     rsp_val,
+            // );
+        }
+    };
 }
 
 /// Returns a `u16` where the first byte is the input value and the second
@@ -98,7 +101,7 @@ pub(super) unsafe extern "fastcall" fn input(state: *mut State) -> u16 {
         }
     };
 
-    writeln!(&mut state.stdout, "value = {}, failed = {}", value, failed).unwrap();
+    writeln!(state.stdout, "value = {}, failed = {}", value, failed).unwrap();
     u16::from_be_bytes([value, failed as u8])
 }
 
@@ -112,7 +115,7 @@ pub(super) unsafe extern "fastcall" fn output(state: *mut State, byte: u8) -> bo
             state.stdout.write_all(&[byte])
         } else {
             let escape = ascii::escape_default(byte);
-            write!(&mut state.stdout, "{}", escape)
+            write!(state.stdout, "{}", escape)
         };
 
         match write_result {

@@ -32,7 +32,7 @@ cranelift-module = "0.81.0"
     version = "1.15.0"
     default-features = false
     git = "https://github.com/icedland/iced"
-    features = ["std", "masm", "encoder", "code_asm", "instr_info"]
+    features = ["std", "masm", "decoder", "encoder", "code_asm", "instr_info"]
 
     [dependencies.tui]
     version = "0.16.0"

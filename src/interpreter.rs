@@ -163,7 +163,7 @@ where
             "output" => {
                 self.stats.output_calls += 1;
 
-                let [value]: &[Value; 1] = (&*call.args)
+                let [value]: &[Value; 1] = (*call.args)
                     .try_into()
                     .expect("expected one arg for output call");
                 let byte = self.get_byte(value)?.into_inner();

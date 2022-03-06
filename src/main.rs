@@ -109,9 +109,10 @@ fn debug(
     validate(&graph);
 
     let compile_attempt: Result<Result<_>, _> = panic::catch_unwind(|| {
-        let (jit, clif, ssa) = Jit::new(args.tape_len).compile(&input_program)?;
+        let (jit, clif, ssa, asm) = Jit::new(args.tape_len).compile(&input_program)?;
         fs::write(dump_dir.join("input.clif"), clif)?;
         fs::write(dump_dir.join("input.ssa"), ssa)?;
+        fs::write(dump_dir.join("input.asm"), asm)?;
 
         let mut tape = vec![0x00; args.tape_len as usize];
         let start = Instant::now();
@@ -160,7 +161,7 @@ fn debug(
         // FIXME: Utility function
         let input_str = String::from_utf8_lossy(&input_vec);
         writeln!(
-            &mut result_file,
+            result_file,
             "----- Input -----\n{:?}\n-----\n{:?}\n-----\n{}",
             input_vec, input_str, input_str,
         )?;
@@ -168,7 +169,7 @@ fn debug(
         // FIXME: Utility function
         let output_str = String::from_utf8_lossy(&output_vec);
         writeln!(
-            &mut result_file,
+            result_file,
             "----- Output -----\n{:?}\n-----\n{:?}\n-----\n{}",
             output_vec, output_str, output_str,
         )?;
@@ -178,7 +179,7 @@ fn debug(
         let tape = utils::debug_collapse(&tape);
 
         writeln!(
-            &mut result_file,
+            result_file,
             "----- Tape -----\n{:?}\n-----\n{:?}",
             tape, tape_chars,
         )?;
@@ -222,7 +223,7 @@ fn debug(
     };
 
     let mut evolution = BufWriter::new(File::create(dump_dir.join("evolution.diff")).unwrap());
-    write!(&mut evolution, ">>>>> input\n{}", input_program_ir).unwrap();
+    write!(evolution, ">>>>> input\n{}", input_program_ir).unwrap();
 
     let mut passes = passes::default_passes(args.tape_len);
     let (mut pass_num, mut stack, mut visited, mut buffer, mut previous_program_ir) = (
@@ -290,7 +291,7 @@ fn debug(
                     fs::write(output_file, &output_program_ir).unwrap();
 
                     write!(
-                        &mut evolution,
+                        evolution,
                         ">>>>> {}-{}.{}\n{}",
                         pass.pass_name(),
                         pass_num,
@@ -353,11 +354,11 @@ fn debug(
         );
         for (pass_name, report) in &reports {
             if !report.is_empty() {
-                writeln!(&mut report_file, "{}", pass_name)?;
+                writeln!(report_file, "{}", pass_name)?;
 
                 for (aspect, total) in report {
                     writeln!(
-                        &mut report_file,
+                        report_file,
                         "{:<padding$} : {}",
                         aspect,
                         total,
@@ -365,16 +366,16 @@ fn debug(
                     )?;
                 }
 
-                writeln!(&mut report_file)?;
+                writeln!(report_file)?;
             }
         }
 
         let no_info = reports.iter().filter(|(_, report)| report.is_empty());
         if no_info.clone().count() != 0 {
-            writeln!(&mut report_file, "No info for the following passes:")?;
+            writeln!(report_file, "No info for the following passes:")?;
 
             for (pass, _) in no_info {
-                writeln!(&mut report_file, "  - {}", pass)?;
+                writeln!(report_file, "  - {}", pass)?;
             }
         }
 
@@ -422,7 +423,7 @@ fn debug(
 
         let input_str = String::from_utf8_lossy(&input_vec);
         writeln!(
-            &mut result_file,
+            result_file,
             "----- Input -----\n{:?}\n-----\n{:?}\n-----\n{}",
             input_vec, input_str, input_str,
         )?;
@@ -430,7 +431,7 @@ fn debug(
         // FIXME: Utility function
         let output_str = String::from_utf8_lossy(&output_vec);
         writeln!(
-            &mut result_file,
+            result_file,
             "----- Output -----\n{:?}\n-----\n{:?}\n-----\n{}",
             output_vec, output_str, output_str,
         )?;
@@ -440,7 +441,7 @@ fn debug(
         let tape = utils::debug_collapse(&tape);
 
         writeln!(
-            &mut result_file,
+            result_file,
             "----- Tape -----\n{:?}\n-----\n{:?}",
             tape, tape_chars,
         )?;
@@ -525,7 +526,7 @@ fn debug(
 
     if let Some((unoptimized_stats, unoptimized_execution_duration)) = unoptimized_execution {
         writeln!(
-            &mut change,
+            change,
             "Finished unoptimized execution in {:#?}\n\
             Unoptimized execution stats:\n{}",
             unoptimized_execution_duration,
@@ -534,7 +535,7 @@ fn debug(
     }
 
     writeln!(
-        &mut change,
+        change,
         "Finished optimized execution in {:#?}\n\
         Optimized execution stats:\n{}",
         optimized_execution_duration,
@@ -548,9 +549,10 @@ fn debug(
         output_program.pretty_print(PrettyConfig::instrumented(optimized_stats.instructions));
     fs::write(dump_dir.join("annotated_output.cir"), annotated_program)?;
 
-    let (jit, clif, ssa) = Jit::new(args.tape_len).compile(&output_program)?;
+    let (jit, clif, ssa, asm) = Jit::new(args.tape_len).compile(&output_program)?;
     fs::write(dump_dir.join("output.clif"), clif)?;
     fs::write(dump_dir.join("output.ssa"), ssa)?;
+    fs::write(dump_dir.join("output.asm"), asm)?;
 
     let mut tape = vec![0x00; args.tape_len as usize];
     let start = Instant::now();

@@ -1,161 +1,115 @@
-use crate::jit::{ffi, Jit};
+use crate::jit::ffi;
 use iced_x86::{
-    FlowControl, Formatter, FormatterOptions, Instruction, MasmFormatter, SymbolResolver,
-    SymbolResult,
+    Decoder, DecoderOptions, FlowControl, Formatter, FormatterOptions, Instruction, MasmFormatter,
+    SymbolResolver, SymbolResult,
 };
-use std::{borrow::Cow, collections::BTreeMap};
+use std::collections::BTreeMap;
 
-impl Jit {
-    /// Disassembles the jit's current code
-    pub fn disassemble(&self) -> String {
-        let mut output = String::with_capacity(1024);
-        self.disassemble_into(&mut output);
-        output.shrink_to_fit();
+pub fn disassemble(code: &[u8]) -> String {
+    let mut formatter = MasmFormatter::with_options(Some(Box::new(Resolver)), None);
+    set_formatter_options(formatter.options_mut());
 
-        output
-    }
+    // Decode all instructions
+    let instructions: Vec<_> = Decoder::new(64, code, DecoderOptions::NONE)
+        .into_iter()
+        .collect();
 
-    /// Writes the jit's disassembled code to the given string
-    pub fn disassemble_into(&self, output: &mut String) {
-        let mut formatter = MasmFormatter::with_options(Some(Box::new(Resolver)), None);
-        set_formatter_options(formatter.options_mut());
+    // Collect all jump targets and label them
+    let labels = collect_jump_labels(&instructions);
 
-        // Make sure all of the named labels are valid label names
-        if cfg!(debug_assertions) {
-            for label in self.named_labels.values() {
-                assert!(is_valid_label_name(label));
-            }
-        }
+    // Format all instructions
+    let mut output = String::with_capacity(1024);
+    let (mut is_indented, mut in_jump_block) = (false, false);
 
-        // Collect all jump targets and label them
-        let mut labels = self.collect_jump_labels();
+    for (idx, inst) in instructions.iter().enumerate() {
+        let address = inst.ip();
+        let is_control_flow = matches!(
+            inst.flow_control(),
+            FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch,
+        );
 
-        // Collect the addresses of all named labels
-        for (idx, inst) in self.asm.instructions().iter().enumerate() {
-            let address = inst.ip();
-
-            if let Some(label) = labels.get_mut(&address) {
-                if let Some(named_label) = self.named_labels.get(&idx) {
-                    label.clone_from(named_label);
-                }
-            }
-        }
-
-        // Format all instructions
-        let mut is_indented = false;
-        for (idx, inst) in self.asm.instructions().iter().enumerate() {
-            let address = inst.ip();
-
-            // Create pseudo labels for points of interest
-            let mut has_named_label = false;
-            if let Some(label) = self.named_labels.get(&idx) {
-                is_indented = true;
-                has_named_label = true;
-
-                if idx != 0 {
-                    output.push('\n');
-                }
-
-                debug_assert!(is_valid_label_name(label));
-                output.push_str(label);
-                output.push_str(":\n");
-            }
-
-            // If the current address is jumped to, add a label to the output text
-            if let Some(label) = labels.get(&address).filter(|_| !has_named_label) {
-                is_indented = true;
-
-                if idx != 0 {
-                    output.push('\n');
-                }
-
-                debug_assert!(is_valid_label_name(label));
-                output.push_str(label);
-                output.push_str(":\n");
-            }
-
-            // Display any comments
-            if let Some(comments) = self.comments.get(&idx) {
-                for comment in comments {
-                    // Print each line of the comment
-                    for line in comment.split('\n') {
-                        if is_indented {
-                            output.push_str("  ");
-                        }
-
-                        output.push_str("; ");
-                        output.push_str(line);
-                        output.push('\n');
-                    }
-                }
-            }
-
-            // Indent the line if needed
-            if is_indented {
-                output.push_str("  ");
-            }
-
-            // If this is a branch instruction we want to replace the branch address with
-            // our human readable label
-            if matches!(
-                inst.flow_control(),
-                FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch,
-            ) {
-                // Use the label name if we can find it
-                if let Some(label) = labels.get(&inst.near_branch_target()) {
-                    let mnemonic = format!("{:?}", inst.mnemonic()).to_lowercase();
-                    output.push_str(&mnemonic);
-                    output.push(' ');
-
-                    debug_assert!(is_valid_label_name(label));
-                    output.push_str(label);
-
-                // Otherwise fall back to normal formatting
-                } else {
-                    tracing::warn!(
-                        "failed to get branch label for {} (address: {:#x})",
-                        inst,
-                        inst.near_branch_target(),
-                    );
-
-                    formatter.format(inst, output);
-                }
-
-            // Otherwise format the instruction into the output buffer
-            } else {
-                formatter.format(inst, output);
-            }
-
-            // Add a newline between each instruction (and a trailing one)
+        if !is_control_flow && in_jump_block {
+            in_jump_block = false;
             output.push('\n');
         }
-    }
 
-    fn collect_jump_labels(&self) -> BTreeMap<u64, Cow<'static, str>> {
-        // Collect all jump targets
-        let mut jump_targets = Vec::new();
-        for inst in self.asm.instructions() {
-            if matches!(
-                inst.flow_control(),
-                FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch,
-            ) {
-                jump_targets.push(inst.near_branch_target());
+        // If the current address is jumped to, add a label to the output text
+        if let Some(label) = labels.get(&address) {
+            is_indented = true;
+
+            if idx != 0 {
+                output.push('\n');
             }
+
+            debug_assert!(is_valid_label_name(label));
+            output.push_str(label);
+            output.push_str(":\n");
         }
 
-        // Sort and deduplicate the jump targets
-        jump_targets.sort_unstable();
-        jump_targets.dedup();
+        // Indent the line if needed
+        if is_indented {
+            output.push_str("  ");
+        }
 
-        // Name each jump target in increasing order
-        // FIXME: Allow jumps to the epilogue to use the
-        //        epilogue label & generalized named labels
-        jump_targets
-            .into_iter()
-            .enumerate()
-            .map(|(idx, address)| (address, Cow::Owned(format!(".LBL_{}", idx))))
-            .collect()
+        // If this is a branch instruction we want to replace the branch address with
+        // our human readable label
+        if is_control_flow {
+            in_jump_block = true;
+
+            // Use the label name if we can find it
+            if let Some(label) = labels.get(&inst.near_branch_target()) {
+                let mnemonic = format!("{:?}", inst.mnemonic()).to_lowercase();
+                output.push_str(&mnemonic);
+                output.push(' ');
+
+                debug_assert!(is_valid_label_name(label));
+                output.push_str(label);
+
+            // Otherwise fall back to normal formatting
+            } else {
+                tracing::warn!(
+                    "failed to get branch label for {} (address: {:#x})",
+                    inst,
+                    inst.near_branch_target(),
+                );
+
+                formatter.format(inst, &mut output);
+            }
+
+        // Otherwise format the instruction into the output buffer
+        } else {
+            formatter.format(inst, &mut output);
+        }
+
+        // Add a newline between each instruction (and a trailing one)
+        output.push('\n');
     }
+
+    output
+}
+
+fn collect_jump_labels(instructions: &[Instruction]) -> BTreeMap<u64, String> {
+    // Collect all jump targets
+    let mut jump_targets = Vec::new();
+    for inst in instructions {
+        if matches!(
+            inst.flow_control(),
+            FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch,
+        ) {
+            jump_targets.push(inst.near_branch_target());
+        }
+    }
+
+    // Sort and deduplicate the jump targets
+    jump_targets.sort_unstable();
+    jump_targets.dedup();
+
+    // Name each jump target in increasing order
+    jump_targets
+        .into_iter()
+        .enumerate()
+        .map(|(idx, address)| (address, format!(".LBL_{}", idx)))
+        .collect()
 }
 
 struct Resolver;

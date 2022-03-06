@@ -6,7 +6,7 @@ mod block_visitor;
 // mod cir_jit;
 mod cir_to_bb;
 // mod coloring;
-// mod disassemble;
+mod disassemble;
 // mod liveliness;
 mod memory;
 // mod regalloc;
@@ -34,7 +34,7 @@ use cranelift::{
 };
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataContext, Linkage, Module};
-use std::{collections::BTreeMap, mem::transmute, ops::Not};
+use std::{collections::BTreeMap, mem::transmute, ops::Not, slice};
 
 /// The function produced by jit code
 pub type JitFunction = unsafe extern "fastcall" fn(*mut State, *mut u8, *const u8) -> u8;
@@ -94,7 +94,7 @@ impl Jit {
     }
 
     /// Compile a block of CIR into an executable buffer
-    pub fn compile(&mut self, block: &Block) -> Result<(Executable, String, String)> {
+    pub fn compile(mut self, block: &Block) -> Result<(Executable, String, String, String)> {
         let ssa_ir = {
             // Translate CIR into SSA form
             let blocks = cir_to_bb::translate(block);
@@ -394,7 +394,7 @@ impl Jit {
                                         Value::U8(byte) => builder.ins().iconst(I64, byte),
                                         Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
                                         Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
-                                        Value::Bool(bool) => unreachable!(),
+                                        Value::Bool(_) => unreachable!(),
                                         Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty == I64 {
@@ -410,7 +410,7 @@ impl Jit {
                                         Value::U8(byte) => builder.ins().iconst(I64, byte),
                                         Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
                                         Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
-                                        Value::Bool(bool) => unreachable!(),
+                                        Value::Bool(_) => unreachable!(),
                                         Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty == I64 {
@@ -432,7 +432,7 @@ impl Jit {
                                         Value::U8(byte) => builder.ins().iconst(I64, byte),
                                         Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
                                         Value::TapePtr(uint) => builder.ins().iconst(I32, uint),
-                                        Value::Bool(bool) => unreachable!(),
+                                        Value::Bool(_) => unreachable!(),
                                         Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty == I64 {
@@ -448,7 +448,7 @@ impl Jit {
                                         Value::U8(byte) => builder.ins().iconst(I64, byte),
                                         Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
                                         Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
-                                        Value::Bool(bool) => unreachable!(),
+                                        Value::Bool(_) => unreachable!(),
                                         Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty == I64 {
@@ -470,7 +470,7 @@ impl Jit {
                                         Value::U8(byte) => builder.ins().iconst(I64, byte),
                                         Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
                                         Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
-                                        Value::Bool(bool) => unreachable!(),
+                                        Value::Bool(_) => unreachable!(),
                                         Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty == I64 {
@@ -486,7 +486,7 @@ impl Jit {
                                         Value::U8(byte) => builder.ins().iconst(I64, byte),
                                         Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
                                         Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
-                                        Value::Bool(bool) => unreachable!(),
+                                        Value::Bool(_) => unreachable!(),
                                         Value::Val(value, _ty) => {
                                             let (value, ty) = values[&value];
                                             if ty == I64 {
@@ -814,12 +814,8 @@ impl Jit {
             self.module
                 .declare_function("jit_entry", Linkage::Export, &self.ctx.func.signature)?;
 
-        // Define the function to jit. This finishes compilation, although
-        // there may be outstanding relocations to perform. Currently, jit
-        // cannot finish relocations until all functions to be called are
-        // defined. For this toy demo for now, we'll just finalize the
-        // function below.
-        self.module.define_function(function_id, &mut self.ctx)?;
+        // Define the function within the jit
+        let code_len = self.module.define_function(function_id, &mut self.ctx)?;
 
         // Create a formatted version of the cranelift ir we generated
         let clif_ir = format!("{}", self.ctx.func);
@@ -834,10 +830,14 @@ impl Jit {
 
         // We can now retrieve a pointer to the machine code.
         let code = self.module.get_finalized_function(function_id);
-        let function = Executable::new(unsafe { transmute::<*const u8, JitFunction>(code) });
 
-        // TODO: Disassembly of jit code
+        // Disassemble the generated instructions
+        let code_bytes = unsafe { slice::from_raw_parts(code, code_len.size as usize) };
+        let disassembly = disassemble::disassemble(code_bytes);
 
-        Ok((function, clif_ir, ssa_ir))
+        let function = unsafe { transmute::<*const u8, JitFunction>(code) };
+        let executable = Executable::new(function, self.module);
+
+        Ok((executable, clif_ir, ssa_ir, disassembly))
     }
 }

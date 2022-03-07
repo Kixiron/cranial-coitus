@@ -16,7 +16,7 @@ pub use memory::Executable;
 
 use crate::{
     ir::{Block, Pretty, PrettyConfig},
-    jit::basic_block::{Instruction, RValue, Terminator, Value},
+    jit::basic_block::{Instruction, RValue, Terminator, Type, Value},
     utils::AssertNone,
     values::{Cell, Ptr},
 };
@@ -237,6 +237,13 @@ impl Jit {
                                 Value::Bool(_) => unreachable!(),
                             };
 
+                            if !store.ptr().ty().is_ptr() {
+                                tracing::error!(
+                                    "stored to non-pointer: {}",
+                                    inst.pretty_print(PrettyConfig::minimal()),
+                                );
+                            }
+
                             match store.ptr() {
                                 // We can optimize stores with const-known offsets to use
                                 // constant offsets instead of dynamic ones
@@ -345,11 +352,12 @@ impl Jit {
                                     (phi, ty)
                                 }
 
+                                // TODO: How much does neg actually make sense? Is it even needed or generated?
                                 RValue::Neg(neg) => {
                                     let (value, ty) = match neg.value() {
                                         Value::U8(byte) => (builder.ins().iconst(I8, byte), I8),
                                         Value::U16(int) => {
-                                            (builder.ins().iconst(I16, int.not().0 as i64), I16)
+                                            (builder.ins().iconst(I16, int.0 as i64), I16)
                                         }
                                         Value::TapePtr(uint) => {
                                             (builder.ins().iconst(I32, uint), I32)
@@ -389,42 +397,144 @@ impl Jit {
                                     }
                                 },
 
+                                // FIXME: This is hell
                                 RValue::Add(add) => {
-                                    let lhs = match add.lhs() {
-                                        Value::U8(byte) => builder.ins().iconst(I64, byte),
-                                        Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
-                                        Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
-                                        Value::Bool(_) => unreachable!(),
-                                        Value::Val(value, _ty) => {
-                                            let (value, ty) = values[&value];
-                                            if ty == I64 {
-                                                value
-                                            } else if ty == I8 || ty == I32 {
-                                                builder.ins().uextend(I64, value)
-                                            } else {
-                                                panic!("{}", ty)
-                                            }
+                                    let (lhs, rhs, ty) = match add.lhs() {
+                                        Value::U8(byte) => {
+                                            let lhs = builder.ins().iconst(I8, byte);
+                                            let rhs = match add.rhs() {
+                                                Value::U8(byte) => builder.ins().iconst(I8, byte),
+                                                Value::U16(int) => builder.ins().iconst(I8, Cell::from(int)),
+                                                Value::TapePtr(uint) => builder.ins().iconst(I8, uint.into_cell()),
+                                                Value::Bool(_) => unreachable!(),
+                                                Value::Val(value, _) => {
+                                                    let (value, ty) = values[&value];
+                                                    if ty == I8 {
+                                                        value
+                                                    // TODO: Proper wrapping?
+                                                    } else if ty == I16 || ty == I32 || ty == I64 {
+                                                        builder.ins().ireduce(I8, value)
+                                                    } else {
+                                                        panic!("{}", ty)
+                                                    }
+                                                }
+                                            };
+
+                                            (lhs, rhs, I8)
+                                        },
+                                        Value::U16(int) => {
+                                            let lhs = builder.ins().iconst(I16, int.0 as i64);
+                                            let rhs = match add.rhs() {
+                                                Value::U8(byte) => builder.ins().iconst(I16, byte),
+                                                Value::U16(int) => builder.ins().iconst(I16, int.0 as i64),
+                                                Value::TapePtr(uint) => builder.ins().iconst(I16, uint),
+                                                Value::Bool(_) => unreachable!(),
+                                                Value::Val(value, _) => {
+                                                    let (value, ty) = values[&value];
+                                                    if ty == I16 {
+                                                        value
+                                                    } else if ty == I8 {
+                                                        builder.ins().uextend(I16, value)
+                                                    // TODO: Proper wrapping?
+                                                    } else if ty == I32 || ty == I64 {
+                                                        builder.ins().ireduce(I16, value)
+                                                    } else {
+                                                        panic!("{}", ty)
+                                                    }
+                                                }
+                                            };
+
+                                            (lhs, rhs, I16)
+                                        },
+                                        Value::TapePtr(uint) => {
+                                            // FIXME: Should use I16 for pointer
+                                            let lhs = builder.ins().iconst(I32, uint.value() as i64);
+                                            let rhs = match add.rhs() {
+                                                Value::U8(byte) => builder.ins().iconst(I32, byte),
+                                                Value::U16(int) => builder.ins().iconst(I32, Ptr::new(int.0, self.tape_len)),
+                                                Value::TapePtr(uint) => builder.ins().iconst(I32, uint),
+                                                Value::Bool(_) => unreachable!(),
+                                                Value::Val(value, _) => {
+                                                    let (value, ty) = values[&value];
+                                                    if ty == I32 {
+                                                        value
+                                                    // TODO: Proper wrapping for I16?
+                                                    } else if ty == I8 || ty == I16 {
+                                                        builder.ins().uextend(I32, value)
+                                                    // TODO: Proper wrapping?
+                                                    } else if ty == I64 {
+                                                        builder.ins().ireduce(I32, value)
+                                                    } else {
+                                                        panic!("{}", ty)
+                                                    }
+                                                }
+                                            };
+
+                                            (lhs, rhs, I32)
                                         }
-                                    };
-                                    let rhs = match add.rhs() {
-                                        Value::U8(byte) => builder.ins().iconst(I64, byte),
-                                        Value::U16(int) => builder.ins().iconst(I64, int.0 as i64),
-                                        Value::TapePtr(uint) => builder.ins().iconst(I64, uint),
-                                        Value::Bool(_) => unreachable!(),
-                                        Value::Val(value, _ty) => {
-                                            let (value, ty) = values[&value];
-                                            if ty == I64 {
-                                                value
-                                            } else if ty == I8 || ty == I32 {
-                                                builder.ins().uextend(I64, value)
-                                            } else {
-                                                panic!("{}", ty)
-                                            }
+                                        Value::Val(value, ty) => {
+                                            let expected_ty = match ty {
+                                                Type::U8 => I8,
+                                                Type::U16 => I16,
+                                                Type::Ptr => I32,
+                                                Type::Bool => unreachable!(),
+                                            };
+                                            let (value, clif_ty) = values[&value];
+
+                                            let lhs = match ty {
+                                                Type::U8 if clif_ty == I8 => value,
+                                                Type::U8 => builder.ins().ireduce(I8, value),
+
+                                                Type::U16 if clif_ty == I16 => value,
+                                                Type::U16 if clif_ty == I8 => builder.ins().uextend(I16, value),
+                                                Type::U16 => builder.ins().ireduce(I16, value),
+
+                                                Type::Ptr if clif_ty == I32 => value,
+                                                Type::Ptr if clif_ty == I8 || clif_ty == I16 => builder.ins().uextend(I32, value),
+                                                Type::Ptr => builder.ins().ireduce(I32, value),
+
+                                                Type::Bool => unreachable!(),
+                                            };
+
+                                            let rhs = match add.rhs() {
+                                                Value::U8(byte) => builder.ins().iconst(expected_ty, byte),
+                                                Value::U16(int) => builder.ins().iconst(
+                                                    expected_ty,
+                                                    if ty == Type::Ptr {
+                                                        Ptr::new(int.0, self.tape_len).value() as i64
+                                                    } else {
+                                                        int.0 as i64
+                                                    },
+                                                ),
+                                                Value::TapePtr(uint) => builder.ins().iconst(expected_ty, uint),
+                                                Value::Val(value, _) => {
+                                                    let (value, ty) = values[&value];
+                                                    // TODO: Proper wrapping?
+                                                    if ty == expected_ty {
+                                                        value
+                                                    } else if ty == I8 {
+                                                        builder.ins().uextend(expected_ty, value)
+                                                    } else if ty == I16 && expected_ty == I8 {
+                                                        builder.ins().ireduce(expected_ty, value)
+                                                    } else if ty == I16 || (ty == I32 && expected_ty == I64) {
+                                                        builder.ins().uextend(expected_ty, value)
+                                                    } else if ty == I32 || ty == I64 {
+                                                        builder.ins().ireduce(expected_ty, value)
+                                                    } else {
+                                                        panic!("{}", ty)
+                                                    }
+                                                }
+                                                Value::Bool(_) => unreachable!(),
+                                            };
+
+
+                                            (lhs, rhs, expected_ty)
                                         }
+                                        Value::Bool(_) => unreachable!(),
                                     };
 
                                     // TODO: Optimize to `.iadd_imm()` when either side is an immediate value
-                                    (builder.ins().iadd(lhs, rhs), I64)
+                                    (builder.ins().iadd(lhs, rhs), ty)
                                 }
 
                                 RValue::Sub(sub) => {
@@ -462,7 +572,8 @@ impl Jit {
                                     };
 
                                     // TODO: Optimize to `.isub_imm()` when either side is an immediate value
-                                    (builder.ins().isub(lhs, rhs), I64)
+                                    let sub = builder.ins().isub(lhs, rhs);
+                                    (builder.ins().ireduce(I32, sub), I32)
                                 }
 
                                 RValue::Mul(mul) => {
@@ -600,19 +711,18 @@ impl Jit {
 
                 match block.terminator() {
                     // FIXME: Block arguments
-                    Terminator::Jump(target) => {
+                    &Terminator::Jump(target) => {
                         let params: Vec<_> = {
-                            let idx = blocks
-                                .binary_search_by_key(target, |block| block.id())
-                                .unwrap();
-
-                            blocks[idx]
+                            blocks
+                                .iter()
+                                .find(|block| block.id() == target)
+                                .unwrap()
                                 .instructions()
                                 .iter()
                                 .filter_map(|inst| {
                                     inst.as_assign()
                                         .and_then(|assign| assign.rval().as_phi())
-                                        .and_then(|phi| {
+                                        .and_then(|phi| {       
                                             if phi.lhs_src() == block.id() {
                                                 Some(phi.lhs())
                                             } else if phi.rhs_src() == block.id() {
@@ -638,13 +748,20 @@ impl Jit {
                                             }
                                             Value::Bool(bool) => Some(builder.ins().bconst(B1, bool)),
                                             // FIXME: Sometimes the value doesn't exist???
-                                            Value::Val(value, _ty) => values.get(&value).map(|&(value, _)| value),
+                                            Value::Val(value, _) => values.get(&value).map(|&(value, _)| {
+                                                tracing::error!(
+                                                    "failed to find {} when making jump from {}",
+                                                    value,
+                                                    block.terminator().pretty_print(PrettyConfig::minimal()),
+                                                );
+                                                value
+                                            }),
                                         })
                                 })
                                 .collect()
                         };
 
-                        builder.ins().jump(ssa_blocks[target], &params);
+                        builder.ins().jump(ssa_blocks[&target], &params);
                     }
 
                     // FIXME: Block arguments
@@ -658,17 +775,18 @@ impl Jit {
                         };
 
                         let true_params: Vec<_> = {
-                            let idx = blocks
-                                .binary_search_by_key(&branch.true_jump(), |block| block.id())
-                                .unwrap();
-
-                            blocks[idx]
+                            blocks
+                                .iter()
+                                .find(|block| block.id() == branch.true_jump())
+                                .unwrap()
                                 .instructions()
                                 .iter()
                                 .filter_map(|inst| {
                                     inst.as_assign()
                                         .and_then(|assign| assign.rval().as_phi())
                                         .and_then(|phi| {
+                                     
+
                                             if phi.lhs_src() == block.id() {
                                                 Some(phi.lhs())
                                             } else if phi.rhs_src() == block.id() {
@@ -705,11 +823,10 @@ impl Jit {
                             .brnz(cond, ssa_blocks[&branch.true_jump()], &true_params);
 
                         let false_params: Vec<_> = {
-                            let idx = blocks
-                                .binary_search_by_key(&branch.false_jump(), |block| block.id())
-                                .unwrap();
-
-                            blocks[idx]
+                            blocks
+                                .iter()
+                                .find(|block| block.id() == branch.false_jump())
+                                .unwrap()
                                 .instructions()
                                 .iter()
                                 .filter_map(|inst| {
@@ -735,12 +852,12 @@ impl Jit {
                                             Value::U8(byte) => {
                                                 builder.ins().iconst(I8, byte)
                                             }
-                                        Value::U16(int) => builder.ins().iconst(I16, int.0 as i64),
+                                            Value::U16(int) => builder.ins().iconst(I16, int.0 as i64),
                                             Value::TapePtr(uint) => {
                                                 builder.ins().iconst(I32, uint)
                                             }
                                             Value::Bool(bool) => builder.ins().bconst(B1, bool),
-                                            Value::Val(value, _ty) => values[&value].0,
+                                            Value::Val(value, _) => values[&value].0,
                                         })
                                 })
                                 .collect()

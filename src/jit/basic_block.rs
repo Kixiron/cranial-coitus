@@ -13,12 +13,20 @@ use std::{
 
 #[derive(Debug, Clone)]
 pub struct Blocks {
+    entry: BlockId,
     blocks: Vec<BasicBlock>,
 }
 
 impl Blocks {
-    pub const fn new(blocks: Vec<BasicBlock>) -> Self {
-        Self { blocks }
+    pub const fn new(entry: BlockId, blocks: Vec<BasicBlock>) -> Self {
+        Self { entry, blocks }
+    }
+
+    pub fn entry(&self) -> &BasicBlock {
+        self.blocks
+            .iter()
+            .find(|block| block.id() == self.entry)
+            .unwrap()
     }
 
     pub fn as_slice(&self) -> &[BasicBlock] {
@@ -82,7 +90,7 @@ impl Pretty for Blocks {
             self.blocks
                 .iter()
                 .map(|block| block.pretty(allocator, config)),
-            allocator.hardline(),
+            allocator.hardline().append(allocator.hardline()),
         )
     }
 }
@@ -590,24 +598,22 @@ impl Pretty for Phi {
         D::Doc: Clone,
         A: Clone,
     {
-        // allocator.text("phi").append(allocator.space()).append(
-        //     self.lhs
-        //         .pretty(allocator, config)
-        //         .append(allocator.space())
-        //         .append(allocator.text("from"))
-        //         .append(allocator.space())
-        //         .append(self.lhs_src.pretty(allocator, config))
-        //         .append(allocator.text(","))
-        //         .append(allocator.space())
-        //         .append(self.rhs.pretty(allocator, config))
-        //         .append(allocator.space())
-        //         .append(allocator.text("from"))
-        //         .append(allocator.space())
-        //         .append(self.rhs_src.pretty(allocator, config))
-        //         .brackets(),
-        // )
+        let phi_val = |value: &'a Value, src: &'a BlockId| {
+            value
+                .pretty(allocator, config)
+                .append(allocator.text(","))
+                .append(allocator.space())
+                .append(src.pretty(allocator, config))
+                .brackets()
+        };
 
-        pretty_utils::binary("phi", &self.lhs, &self.rhs, allocator, config)
+        allocator
+            .text("phi")
+            .append(allocator.space())
+            .append(phi_val(&self.lhs, &self.lhs_src))
+            .append(allocator.text(","))
+            .append(allocator.space())
+            .append(phi_val(&self.rhs, &self.rhs_src))
     }
 }
 
@@ -960,7 +966,7 @@ impl Value {
         match self {
             Self::U8(_) => Type::U8,
             Self::U16(_) => Type::U16,
-            Self::TapePtr(_) => Type::TapePtr,
+            Self::TapePtr(_) => Type::Ptr,
             Self::Bool(_) => Type::Bool,
             Self::Val(_, ty) => ty,
         }
@@ -1039,7 +1045,7 @@ impl Debug for ValId {
 
 impl Display for ValId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_char('%')?;
+        f.write_char('v')?;
         Display::fmt(&self.0, f)
     }
 }
@@ -1105,7 +1111,16 @@ pub enum Type {
     /// A boolean value
     Bool,
     /// A tape pointer, bounded from `0..tape_len`
-    TapePtr,
+    Ptr,
+}
+
+impl Type {
+    /// Returns `true` if the type is a [`Ptr`].
+    ///
+    /// [`Ptr`]: Type::Ptr
+    pub const fn is_ptr(&self) -> bool {
+        matches!(self, Self::Ptr)
+    }
 }
 
 impl Pretty for Type {
@@ -1119,7 +1134,7 @@ impl Pretty for Type {
             Self::U8 => allocator.text("u8"),
             Self::U16 => allocator.text("u16"),
             Self::Bool => allocator.text("bool"),
-            Self::TapePtr => allocator.text("ptr"),
+            Self::Ptr => allocator.text("ptr"),
         }
     }
 }

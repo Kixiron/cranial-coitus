@@ -2,6 +2,7 @@ use crate::values::Ptr;
 use cranelift::{codegen::ir::immediates::Offset32, prelude::Imm64};
 use std::{
     fmt::{self, Debug, Display, LowerHex, UpperHex},
+    num::Wrapping,
     ops::{Add, Mul, Not, Sub},
 };
 
@@ -89,7 +90,21 @@ impl From<Ptr> for Cell {
 impl From<u8> for Cell {
     #[inline]
     fn from(byte: u8) -> Self {
-        Cell::new(byte)
+        Self::new(byte)
+    }
+}
+
+impl From<u16> for Cell {
+    #[inline]
+    fn from(int: u16) -> Self {
+        Self::new(int.rem_euclid(256) as u8)
+    }
+}
+
+impl From<Wrapping<u16>> for Cell {
+    #[inline]
+    fn from(int: Wrapping<u16>) -> Self {
+        Self::from(int.0)
     }
 }
 
@@ -328,5 +343,22 @@ impl UpperHex for Cell {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         UpperHex::fmt(&self.value, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::values::Cell;
+
+    #[test]
+    fn from_u16() {
+        let zero = 0u16;
+        assert_eq!(Cell::from(zero), Cell::zero());
+
+        let two_fifty_five = 255u16;
+        assert_eq!(Cell::from(two_fifty_five), Cell::new(255));
+
+        let two_fifty_six = 256u16;
+        assert_eq!(Cell::from(two_fifty_six), Cell::new(0));
     }
 }

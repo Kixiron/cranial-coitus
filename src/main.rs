@@ -1,4 +1,5 @@
 #![feature(
+    let_chains,
     try_blocks,
     drain_filter,
     array_windows,
@@ -34,7 +35,7 @@ use crate::{
     interpreter::EvaluationError,
     ir::{IrBuilder, Pretty, PrettyConfig},
     jit::Jit,
-    utils::{HashSet, PerfEvent},
+    utils::{HashMap, HashSet, PerfEvent},
     values::Ptr,
 };
 use anyhow::{Context, Result};
@@ -46,7 +47,7 @@ use std::{
     io::{BufWriter, Write as _},
     panic,
     path::Path,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 // TODO: Write an evaluator so that we can actually verify optimizations
@@ -226,10 +227,11 @@ fn debug(
     write!(evolution, ">>>>> input\n{}", input_program_ir).unwrap();
 
     let mut passes = passes::default_passes(args.tape_len);
-    let (mut pass_num, mut stack, mut visited, mut buffer, mut previous_program_ir) = (
+    let (mut pass_stats, mut pass_num, mut stack, mut visited, mut buffer, mut previous_program_ir) = (
+        HashMap::with_capacity_and_hasher(passes.len(), Default::default()),
         1,
         VecDeque::new(),
-        HashSet::with_hasher(Default::default()),
+        HashSet::default(),
         Vec::new(),
         input_program_ir.clone(),
     );
@@ -248,9 +250,18 @@ fn debug(
                 );
 
                 let event = PerfEvent::new(pass.pass_name());
-                changed |=
+                let pass_made_changes =
                     pass.visit_graph_inner(&mut graph, &mut stack, &mut visited, &mut buffer);
                 let elapsed = event.finish();
+
+                changed |= pass_made_changes;
+
+                // Update the pass stats
+                let (activations, duration) = pass_stats
+                    .entry(pass.pass_name().to_owned())
+                    .or_insert((0, Duration::ZERO));
+                *activations += pass_made_changes as usize;
+                *duration += elapsed;
 
                 tracing::info!(
                     "finished running {} in {:#?} (pass #{}.{}, {})",
@@ -274,21 +285,17 @@ fn debug(
                 let diff = utils::diff_ir(&previous_program_ir, &output_program_ir);
 
                 if !diff.is_empty() {
-                    let input_file = dump_dir.join(format!(
-                        "{}-{}.{}.input.cir",
-                        pass.pass_name(),
-                        pass_num,
-                        pass_idx,
-                    ));
-                    fs::write(input_file, &previous_program_ir).unwrap();
+                    let pass_dir = dump_dir.join(pass.pass_name());
+                    fs::create_dir_all(&pass_dir)?;
 
-                    let output_file = dump_dir.join(format!(
-                        "{}-{}.{}.cir",
-                        pass.pass_name(),
-                        pass_num,
-                        pass_idx,
-                    ));
-                    fs::write(output_file, &output_program_ir).unwrap();
+                    let input_file = pass_dir.join(format!("{}.{}.input.cir", pass_num, pass_idx));
+                    fs::write(input_file, &previous_program_ir)?;
+
+                    let output_file = pass_dir.join(format!("{}.{}.cir", pass_num, pass_idx));
+                    fs::write(output_file, &output_program_ir)?;
+
+                    let diff_file = pass_dir.join(format!("{}.{}.diff", pass_num, pass_idx));
+                    fs::write(diff_file, &diff)?;
 
                     write!(
                         evolution,
@@ -297,16 +304,7 @@ fn debug(
                         pass_num,
                         pass_idx,
                         diff,
-                    )
-                    .unwrap();
-
-                    let diff_file = dump_dir.join(format!(
-                        "{}-{}.{}.diff",
-                        pass.pass_name(),
-                        pass_num,
-                        pass_idx,
-                    ));
-                    fs::write(diff_file, diff).unwrap();
+                    )?;
                 }
 
                 previous_program_ir = output_program_ir;
@@ -353,9 +351,25 @@ fn debug(
                 .context("failed to create report file")?,
         );
         for (pass_name, report) in &reports {
-            if !report.is_empty() {
-                writeln!(report_file, "{}", pass_name)?;
+            writeln!(report_file, "{}", pass_name)?;
 
+            let (activations, duration) = pass_stats.get(pass_name).copied().unwrap_or_default();
+            writeln!(
+                report_file,
+                "{:<padding$} : {}",
+                "activations",
+                activations,
+                padding = max_len,
+            )?;
+            writeln!(
+                report_file,
+                "{:<padding$} : {:#?}",
+                "duration",
+                duration,
+                padding = max_len,
+            )?;
+
+            if !report.is_empty() {
                 for (aspect, total) in report {
                     writeln!(
                         report_file,
@@ -365,9 +379,9 @@ fn debug(
                         padding = max_len,
                     )?;
                 }
-
-                writeln!(report_file)?;
             }
+
+            writeln!(report_file)?;
         }
 
         let no_info = reports.iter().filter(|(_, report)| report.is_empty());

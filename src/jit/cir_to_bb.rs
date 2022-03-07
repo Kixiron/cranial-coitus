@@ -1,3 +1,8 @@
+use petgraph::{
+    visit::{DfsPostOrder, Walker},
+    Graph,
+};
+
 use crate::{
     ir::{
         AssignTag, Block as CirBlock, Expr as CirExpr, Instruction as CirInstruction, Pretty,
@@ -27,11 +32,78 @@ pub fn translate(block: &CirBlock) -> Blocks {
         .set_terminator(Terminator::Return(Value::U8(RETURN_SUCCESS)));
     builder.finalize();
 
-    // Run a few really basic optimization passes to clean up from codegen
-    remove_noop_jumps(&mut builder);
+    // // Run a few really basic optimization passes to clean up from codegen
+    // remove_noop_jumps(&mut builder);
 
     // TODO: Intelligent block ordering
-    let blocks = Blocks::new(builder.into_blocks());
+    let mut blocks = builder.into_blocks();
+    let entry = blocks[0].id();
+
+    // Sort the blocks in topological order
+    let blocks = {
+        let mut graph = Graph::new();
+
+        let mut nodes = BTreeMap::new();
+        for block in &blocks {
+            nodes
+                .insert(block.id(), graph.add_node(block.id()))
+                .debug_unwrap_none();
+        }
+
+        for block in &blocks {
+            let current = nodes[&block.id()];
+
+            for inst in block.instructions() {
+                if let Instruction::Assign(assign) = inst
+                    && let RValue::Phi(phi) = assign.rval()
+                {
+                    let lhs_src = nodes[&phi.lhs_src()];
+                    graph.add_edge(lhs_src, current, ());
+
+                    let rhs_src = nodes[&phi.rhs_src()];
+                    graph.add_edge(rhs_src, current, ());
+                }
+            }
+
+            match block.terminator() {
+                Terminator::Jump(target) => {
+                    let dest = nodes[target];
+                    graph.add_edge(current, dest, ());
+                }
+
+                Terminator::Branch(branch) => {
+                    let true_dest = nodes[&branch.true_jump()];
+                    graph.add_edge(current, true_dest, ());
+
+                    let false_dest = nodes[&branch.false_jump()];
+                    graph.add_edge(current, false_dest, ());
+                }
+
+                Terminator::Error | Terminator::Unreachable | Terminator::Return(_) => {}
+            }
+        }
+
+        let mut block_ordering: Vec<_> = DfsPostOrder::new(&graph, nodes[&entry])
+            .iter(&graph)
+            .map(|x| graph[x])
+            .collect();
+        block_ordering.reverse();
+
+        block_ordering
+            .into_iter()
+            .map(|block_id| {
+                let idx = blocks
+                    .iter()
+                    .position(|block| block.id() == block_id)
+                    .unwrap();
+
+                blocks.remove(idx)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let blocks = Blocks::new(entry, blocks);
+
     tracing::debug!(
         "produced ssa ir: {}",
         blocks.pretty_print(PrettyConfig::minimal()),
@@ -44,13 +116,13 @@ fn remove_noop_jumps(builder: &mut BlockBuilder) {
     let blocks: Vec<_> = builder.blocks.keys().copied().collect();
     for block in blocks {
         let mut should_collapse = None;
-        // if let Some(block) = builder.blocks.get(&block) {
-        //     if block.instructions().is_empty() {
-        //         if let Some(target) = block.terminator().as_jump() {
-        //             should_collapse = Some((block.id(), target, builder.entry() == block.id()));
-        //         }
-        //     }
-        // }
+        if let Some(block) = builder.blocks.get(&block) {
+            if block.instructions().is_empty() {
+                if let Some(target) = block.terminator().as_jump() {
+                    should_collapse = Some((block.id(), target, builder.entry() == block.id()));
+                }
+            }
+        }
 
         if let Some((source, target, is_entry)) = should_collapse {
             // If the block is the entry point, set the entry point to the block it jumps to

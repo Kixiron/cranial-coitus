@@ -101,7 +101,6 @@ pub(super) unsafe extern "fastcall" fn input(state: *mut State) -> u16 {
         }
     };
 
-    writeln!(state.stdout, "value = {}, failed = {}", value, failed).unwrap();
     u16::from_be_bytes([value, failed as u8])
 }
 

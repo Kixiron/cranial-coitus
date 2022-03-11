@@ -631,7 +631,7 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
         )
     };
 
-    let mut program = IrBuilder::new(args.inline_constants).translate(&graph);
+    let mut program = IrBuilder::new(!args.dont_inline_constants).translate(&graph);
     let elapsed = start_time.elapsed();
 
     let output_stats = graph.stats();

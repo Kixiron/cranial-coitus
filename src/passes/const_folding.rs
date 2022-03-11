@@ -1,6 +1,6 @@
 use crate::{
     graph::{
-        Add, Bool, EdgeKind, Eq, Gamma, InputParam, InputPort, Int, Mul, Neg, NodeExt, Not,
+        Add, Bool, Byte, EdgeKind, Eq, Gamma, InputParam, InputPort, Int, Mul, Neg, NodeExt, Not,
         OutputPort, Rvsdg, Sub, Theta,
     },
     ir::Const,
@@ -53,6 +53,10 @@ impl Pass for ConstFolding {
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         self.values.add(int.value(), value);
+    }
+
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, value: Cell) {
+        self.values.add(byte.value(), value);
     }
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
@@ -279,9 +283,19 @@ impl Pass for ConstFolding {
         // then we should associate the input value with said constant
         // Note: We only propagate **invariant** inputs into the loop, propagating
         //       variant inputs requires dataflow information
-        for (input, param) in theta.invariant_input_pairs() {
+        let invariant_inputs: Vec<_> = theta.invariant_input_pairs().collect();
+        for (input, param) in invariant_inputs {
             if let Some(constant) = self.values.get(graph.input_source(input)) {
-                visitor.values.add(param.output(), constant);
+                let value = match constant {
+                    Const::Ptr(ptr) => theta.body_mut().int(ptr).value(),
+                    Const::Cell(cell) => theta.body_mut().byte(cell).value(),
+                    Const::Bool(bool) => theta.body_mut().bool(bool).value(),
+                };
+                visitor.values.add(value, constant);
+                theta.body_mut().rewire_dependents(param.output(), value);
+
+                self.changed();
+                changed = true;
             }
         }
 
@@ -379,19 +393,53 @@ impl Pass for ConstFolding {
         let (mut truthy_visitor, mut falsy_visitor) =
             (Self::new(self.tape_len), Self::new(self.tape_len));
 
+        let inputs: Vec<_> = gamma
+            .inputs()
+            .iter()
+            .copied()
+            .zip(gamma.input_params().iter().copied())
+            .collect();
+
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (&input, &[truthy_param, falsy_param]) in
-            gamma.inputs().iter().zip(gamma.input_params())
-        {
+        for (input, [truthy_param, falsy_param]) in inputs {
             let (_, output, _) = graph.get_input(input);
 
+            // If the param has a constant value, pull the constant into both bodies
+            // and allow dce to remove any redundant parameters or constants
             if let Some(constant) = self.values.get(output) {
-                let true_param = gamma.true_branch().to_node::<InputParam>(truthy_param);
-                truthy_visitor.values.add(true_param.output(), constant);
+                let (true_val, false_val) = match constant {
+                    Const::Ptr(ptr) => (
+                        gamma.true_mut().int(ptr).value(),
+                        gamma.false_mut().int(ptr).value(),
+                    ),
+                    Const::Cell(cell) => (
+                        gamma.true_mut().byte(cell).value(),
+                        gamma.false_mut().byte(cell).value(),
+                    ),
+                    Const::Bool(bool) => (
+                        gamma.true_mut().bool(bool).value(),
+                        gamma.false_mut().bool(bool).value(),
+                    ),
+                };
 
-                let false_param = gamma.false_branch().to_node::<InputParam>(falsy_param);
-                falsy_visitor.values.add(false_param.output(), constant);
+                truthy_visitor.values.add(true_val, constant);
+                falsy_visitor.values.add(false_val, constant);
+
+                let true_output = gamma
+                    .true_branch()
+                    .to_node::<InputParam>(truthy_param)
+                    .output();
+                gamma.true_mut().rewire_dependents(true_output, true_val);
+
+                let false_output = gamma
+                    .false_branch()
+                    .to_node::<InputParam>(falsy_param)
+                    .output();
+                gamma.false_mut().rewire_dependents(false_output, false_val);
+
+                self.changed();
+                changed = true;
             }
         }
 

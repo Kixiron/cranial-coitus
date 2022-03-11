@@ -1,12 +1,12 @@
 use crate::{
     graph::{
         nodes::{GammaStub, ThetaEffects, ThetaStub},
-        Add, Bool, EdgeKind, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul, Neg,
-        Node, Not, Output, OutputParam, OutputPort, Rvsdg, Start, Store, Sub, Subgraph, Theta,
+        Add, Bool, Byte, EdgeKind, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul,
+        Neg, Node, Not, Output, OutputParam, OutputPort, Rvsdg, Start, Store, Sub, Subgraph, Theta,
         ThetaData,
     },
     utils::AssertNone,
-    values::Ptr,
+    values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
 use tinyvec::TinyVec;
@@ -55,6 +55,22 @@ impl Rvsdg {
             .debug_unwrap_none();
 
         int
+    }
+
+    pub fn byte<T>(&mut self, value: T) -> Byte
+    where
+        T: Into<Cell>,
+    {
+        let byte_id = self.next_node();
+
+        let output = self.output_port(byte_id, EdgeKind::Value);
+
+        let byte = Byte::new(byte_id, output);
+        self.nodes
+            .insert(byte_id, Node::Byte(byte, value.into()))
+            .debug_unwrap_none();
+
+        byte
     }
 
     pub fn bool(&mut self, value: bool) -> Bool {

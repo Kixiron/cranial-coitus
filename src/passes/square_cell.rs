@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Add, End, Eq, Gamma, InputParam, InputPort, Int, Load, NodeExt, NodeId, Not, OutputPort,
-        Rvsdg, Start, Store, Sub, Theta,
+        Add, Byte, End, Eq, Gamma, InputParam, InputPort, Int, Load, NodeExt, NodeId, Not,
+        OutputPort, Rvsdg, Start, Store, Sub, Theta,
     },
     ir::Const,
     passes::Pass,
@@ -533,6 +533,10 @@ impl Pass for SquareCell {
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         let replaced = self.values.insert(int.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(Const::Ptr(value)));
+    }
+
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, value: Cell) {
+        self.values.insert(byte.value(), value.into());
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {

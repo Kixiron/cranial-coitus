@@ -3,19 +3,22 @@ use crate::{
         nodes::{
             node_ext::{InputPortKinds, InputPorts, OutputPortKinds},
             ops::Mul,
+            values::Byte,
         },
         Add, Bool, EdgeDescriptor, End, Eq, Gamma, Input, InputParam, InputPort, Int, Load, Neg,
         NodeExt, NodeId, Not, Output, OutputParam, OutputPort, Start, Store, Sub, Theta,
     },
-    values::Ptr,
+    values::{Cell, Ptr},
 };
 use tinyvec::TinyVec;
 
 // TODO: derive_more?
+// TODO: Type casting node(s)
 // TODO: Byte node?
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     Int(Int, Ptr),
+    Byte(Byte, Cell),
     Bool(Bool, bool),
     Add(Add),
     Sub(Sub),
@@ -39,6 +42,7 @@ impl NodeExt for Node {
     fn node(&self) -> NodeId {
         match self {
             Self::Int(int, _) => int.node(),
+            Self::Byte(byte, _) => byte.node(),
             Self::Bool(bool, _) => bool.node(),
             Self::Add(add) => add.node(),
             Self::Sub(sub) => sub.node(),
@@ -62,6 +66,7 @@ impl NodeExt for Node {
     fn input_desc(&self) -> EdgeDescriptor {
         match self {
             Self::Int(int, _) => int.input_desc(),
+            Self::Byte(byte, _) => byte.input_desc(),
             Self::Bool(bool, _) => bool.input_desc(),
             Self::Add(add) => add.input_desc(),
             Self::Sub(sub) => sub.input_desc(),
@@ -85,6 +90,7 @@ impl NodeExt for Node {
     fn all_input_ports(&self) -> InputPorts {
         match self {
             Self::Int(int, _) => int.all_input_ports(),
+            Self::Byte(byte, _) => byte.all_input_ports(),
             Self::Bool(bool, _) => bool.all_input_ports(),
             Self::Add(add) => add.all_input_ports(),
             Self::Sub(sub) => sub.all_input_ports(),
@@ -108,6 +114,7 @@ impl NodeExt for Node {
     fn all_input_port_kinds(&self) -> InputPortKinds {
         match self {
             Self::Int(int, _) => int.all_input_port_kinds(),
+            Self::Byte(byte, _) => byte.all_input_port_kinds(),
             Self::Bool(bool, _) => bool.all_input_port_kinds(),
             Self::Add(add) => add.all_input_port_kinds(),
             Self::Sub(sub) => sub.all_input_port_kinds(),
@@ -131,6 +138,7 @@ impl NodeExt for Node {
     fn update_input(&mut self, from: InputPort, to: InputPort) {
         match self {
             Self::Int(int, _) => int.update_input(from, to),
+            Self::Byte(byte, _) => byte.update_input(from, to),
             Self::Bool(bool, _) => bool.update_input(from, to),
             Self::Add(add) => add.update_input(from, to),
             Self::Sub(sub) => sub.update_input(from, to),
@@ -154,6 +162,7 @@ impl NodeExt for Node {
     fn output_desc(&self) -> EdgeDescriptor {
         match self {
             Self::Int(int, _) => int.output_desc(),
+            Self::Byte(byte, _) => byte.output_desc(),
             Self::Bool(bool, _) => bool.output_desc(),
             Self::Add(add) => add.output_desc(),
             Self::Sub(sub) => sub.output_desc(),
@@ -177,6 +186,7 @@ impl NodeExt for Node {
     fn all_output_ports(&self) -> TinyVec<[OutputPort; 4]> {
         match self {
             Self::Int(int, _) => int.all_output_ports(),
+            Self::Byte(byte, _) => byte.all_output_ports(),
             Self::Bool(bool, _) => bool.all_output_ports(),
             Self::Add(add) => add.all_output_ports(),
             Self::Sub(sub) => sub.all_output_ports(),
@@ -200,6 +210,7 @@ impl NodeExt for Node {
     fn all_output_port_kinds(&self) -> OutputPortKinds {
         match self {
             Self::Int(int, _) => int.all_output_port_kinds(),
+            Self::Byte(byte, _) => byte.all_output_port_kinds(),
             Self::Bool(bool, _) => bool.all_output_port_kinds(),
             Self::Add(add) => add.all_output_port_kinds(),
             Self::Sub(sub) => sub.all_output_port_kinds(),
@@ -223,6 +234,7 @@ impl NodeExt for Node {
     fn update_output(&mut self, from: OutputPort, to: OutputPort) {
         match self {
             Self::Int(int, _) => int.update_output(from, to),
+            Self::Byte(byte, _) => byte.update_output(from, to),
             Self::Bool(bool, _) => bool.update_output(from, to),
             Self::Add(add) => add.update_output(from, to),
             Self::Sub(sub) => sub.update_output(from, to),
@@ -245,11 +257,18 @@ impl NodeExt for Node {
 }
 
 impl Node {
-    /// Returns `true` if the node is [`Int`].
+    /// Returns `true` if the node is an [`Int`].
     ///
     /// [`Int`]: Node::Int
     pub const fn is_int(&self) -> bool {
         matches!(self, Self::Int(..))
+    }
+
+    /// Returns `true` if the node is a [`Byte`].
+    ///
+    /// [`Byte`]: Node::Byte
+    pub const fn is_byte(&self) -> bool {
+        matches!(self, Self::Byte(..))
     }
 
     /// Returns `true` if the node is a [`Theta`].
@@ -269,6 +288,14 @@ impl Node {
     pub const fn as_int(&self) -> Option<(Int, Ptr)> {
         if let Self::Int(int, val) = *self {
             Some((int, val))
+        } else {
+            None
+        }
+    }
+
+    pub const fn as_byte(&self) -> Option<(Byte, Cell)> {
+        if let Self::Byte(byte, val) = *self {
+            Some((byte, val))
         } else {
             None
         }

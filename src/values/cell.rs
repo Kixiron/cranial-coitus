@@ -101,6 +101,14 @@ impl From<u16> for Cell {
     }
 }
 
+impl From<i32> for Cell {
+    #[inline]
+    #[track_caller]
+    fn from(int: i32) -> Self {
+        Self::new(int.try_into().expect("failed to convert i32 into u8"))
+    }
+}
+
 impl From<Wrapping<u16>> for Cell {
     #[inline]
     fn from(int: Wrapping<u16>) -> Self {

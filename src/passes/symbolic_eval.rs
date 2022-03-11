@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Bool, Gamma, Int, Load, NodeExt, OutputPort, PortId, Rvsdg, Store, Theta},
+    graph::{Bool, Byte, Gamma, Int, Load, NodeExt, OutputPort, PortId, Rvsdg, Store, Theta},
     interpreter::Machine,
     ir::{IrBuilder, Pretty, PrettyConfig, Value, VarId},
     passes::{utils::ConstantStore, Pass},
@@ -247,6 +247,10 @@ impl Pass for SymbolicEval {
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         self.constants.add(int.value(), value);
+    }
+
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, value: Cell) {
+        self.constants.add(byte.value(), value);
     }
 
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {

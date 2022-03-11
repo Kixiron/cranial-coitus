@@ -37,11 +37,11 @@ pub use zero_loop::ZeroLoop;
 
 use crate::{
     graph::{
-        Add, Bool, End, Eq, Gamma, Input, InputParam, Int, Load, Mul, Neg, Node, NodeExt, NodeId,
-        Not, Output, OutputParam, Rvsdg, Start, Store, Sub, Theta,
+        Add, Bool, Byte, End, Eq, Gamma, Input, InputParam, Int, Load, Mul, Neg, Node, NodeExt,
+        NodeId, Not, Output, OutputParam, Rvsdg, Start, Store, Sub, Theta,
     },
     utils::{HashMap, HashSet},
-    values::Ptr,
+    values::{Cell, Ptr},
 };
 use std::collections::VecDeque;
 
@@ -241,6 +241,7 @@ pub trait Pass {
         if let Some(node) = graph.try_node(node_id).cloned() {
             match node {
                 Node::Int(int, value) => self.visit_int(graph, int, value),
+                Node::Byte(byte, value) => self.visit_byte(graph, byte, value),
                 Node::Bool(bool, value) => self.visit_bool(graph, bool, value),
                 Node::Add(add) => self.visit_add(graph, add),
                 Node::Sub(sub) => self.visit_sub(graph, sub),
@@ -265,6 +266,7 @@ pub trait Pass {
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, _int: Int, _value: Ptr) {}
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, _byte: Byte, _value: Cell) {}
     fn visit_bool(&mut self, _graph: &mut Rvsdg, _bool: Bool, _value: bool) {}
     fn visit_add(&mut self, _graph: &mut Rvsdg, _add: Add) {}
     fn visit_sub(&mut self, _graph: &mut Rvsdg, _sub: Sub) {}

@@ -51,7 +51,7 @@ impl ConstantStore {
     }
 
     pub fn cell(&self, source: OutputPort) -> Option<Cell> {
-        self.values.get(&source).map(Const::into_cell)
+        self.values.get(&source).copied().map(Const::into_cell)
     }
 
     pub fn bool(&self, source: OutputPort) -> Option<bool> {

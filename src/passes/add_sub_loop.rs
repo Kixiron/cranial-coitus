@@ -1,12 +1,12 @@
 use crate::{
     graph::{
-        Add, End, Eq, Gamma, InputParam, Int, Load, Node, NodeExt, Not, OutputPort, Rvsdg, Store,
-        Sub, Theta,
+        Add, Byte, End, Eq, Gamma, InputParam, Int, Load, Node, NodeExt, Not, OutputPort, Rvsdg,
+        Store, Sub, Theta,
     },
     ir::Const,
     passes::Pass,
     utils::{AssertNone, HashMap},
-    values::Ptr,
+    values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
 
@@ -252,8 +252,11 @@ impl Pass for AddSubLoop {
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
-        let replaced = self.values.insert(int.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Ptr(value)));
+        self.values.insert(int.value(), value.into());
+    }
+
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, value: Cell) {
+        self.values.insert(byte.value(), value.into());
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {

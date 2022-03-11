@@ -18,6 +18,6 @@ pub use node_ext::NodeExt;
 pub use node_id::NodeId;
 pub use ops::{Add, Eq, Mul, Neg, Not, Sub};
 pub use theta::{Theta, ThetaData, ThetaStub};
-pub use values::{Bool, Int};
+pub use values::{Bool, Byte, Int};
 
 pub(in crate::graph) use theta::ThetaEffects;

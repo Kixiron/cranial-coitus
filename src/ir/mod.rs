@@ -1377,16 +1377,16 @@ pub enum Const {
 }
 
 impl Const {
-    pub fn into_ptr(&self, tape_len: u16) -> Ptr {
-        match *self {
+    pub fn into_ptr(self, tape_len: u16) -> Ptr {
+        match self {
             Self::Ptr(ptr) => ptr,
             Self::Cell(cell) => cell.into_ptr(tape_len),
             Self::Bool(_) => unreachable!(),
         }
     }
 
-    pub fn into_cell(&self) -> Cell {
-        match *self {
+    pub fn into_cell(self) -> Cell {
+        match self {
             Self::Ptr(ptr) => ptr.into_cell(),
             Self::Cell(cell) => cell,
             Self::Bool(_) => unreachable!(),

@@ -1,11 +1,11 @@
 use crate::{
     graph::{
-        Add, Bool, EdgeKind, Eq, Gamma, InputPort, Int, Neg, Node, NodeExt, NodeId, Not,
+        Add, Bool, Byte, EdgeKind, Eq, Gamma, InputPort, Int, Neg, Node, NodeExt, NodeId, Not,
         OutputParam, OutputPort, Rvsdg, Theta,
     },
     passes::Pass,
     utils::{AssertNone, HashMap, HashSet},
-    values::Ptr,
+    values::{Cell, Ptr},
 };
 
 /// Loop invariant code motion
@@ -211,16 +211,18 @@ impl Pass for Licm {
         let mut visitor = Self::new().within_theta(true);
         changed |= visitor.visit_graph(theta.body_mut());
 
-        // Pull out any constants that are within the loop body
-        let pulled_constants =
-            self.pull_out_constants(graph, theta.body_mut(), &visitor.invariant_exprs);
-        for (constant, param) in pulled_constants {
-            let port = graph.input_port(theta.node(), EdgeKind::Value);
-            graph.add_value_edge(constant, port);
-
-            theta.add_invariant_input_raw(port, param);
-            changed = true;
-        }
+        // FIXME: Pull out nodes that depend on constant values without unconditionally
+        //        pulling all constant values out of the loop body
+        // // Pull out any constants that are within the loop body
+        // let pulled_constants =
+        //     self.pull_out_constants(graph, theta.body_mut(), &visitor.invariant_exprs);
+        // for (constant, param) in pulled_constants {
+        //     let port = graph.input_port(theta.node(), EdgeKind::Value);
+        //     graph.add_value_edge(constant, port);
+        //
+        //     theta.add_invariant_input_raw(port, param);
+        //     changed = true;
+        // }
 
         // If a variant input is a constant, make it invariant
         let outputs: Vec<_> = theta.output_pairs().collect();
@@ -343,13 +345,19 @@ impl Pass for Licm {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _value: Ptr) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _: Ptr) {
         if self.within_theta {
             self.invariant_exprs.insert(int.value());
         }
     }
 
-    fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, _value: bool) {
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, _: Cell) {
+        if self.within_theta {
+            self.invariant_exprs.insert(byte.value());
+        }
+    }
+
+    fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, _: bool) {
         if self.within_theta {
             self.invariant_exprs.insert(bool.value());
         }

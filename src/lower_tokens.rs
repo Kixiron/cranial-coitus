@@ -12,10 +12,7 @@ pub fn lower_tokens(
     tape_len: u16,
 ) -> (OutputPort, OutputPort) {
     // FIXME: Byte node
-    let (zero, one) = (
-        graph.int(Ptr::zero(tape_len)).value(),
-        graph.int(Ptr::one(tape_len)).value(),
-    );
+    let (zero, one) = (graph.byte(0).value(), graph.byte(1).value());
 
     for token in tokens {
         match token {

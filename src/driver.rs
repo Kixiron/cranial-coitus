@@ -33,7 +33,7 @@ pub fn debugger(args: &Args, file: &Path, start_time: Instant) -> Result<()> {
         args.iteration_limit.unwrap_or(usize::MAX),
     );
 
-    let ir = IrBuilder::new(args.inline_constants)
+    let ir = IrBuilder::new(!args.dont_inline_constants)
         .translate(&graph)
         .pretty_print(PrettyConfig::minimal());
 
@@ -252,7 +252,7 @@ pub fn sequentialize_graph(
         tracing::debug!("started sequentializing graph");
         let event = PerfEvent::new("sequentializing-graph");
 
-        let sequential_code = IrBuilder::new(args.inline_constants).translate(graph);
+        let sequential_code = IrBuilder::new(!args.dont_inline_constants).translate(graph);
 
         let elapsed = event.finish();
         tracing::debug!("finished sequentializing graph in {:#?}", elapsed);

@@ -1,9 +1,10 @@
 use crate::{
     graph::{
-        Add, Bool, Gamma, InputParam, InputPort, Int, Neg, NodeExt, OutputPort, Rvsdg, Sub, Theta,
+        Add, Bool, Byte, Gamma, InputParam, InputPort, Int, Neg, NodeExt, OutputPort, Rvsdg, Sub,
+        Theta,
     },
     passes::{utils::ConstantStore, Pass},
-    values::Ptr,
+    values::{Cell, Ptr},
 };
 
 /// Folds arithmetic operations together
@@ -51,6 +52,10 @@ impl Pass for FoldArithmetic {
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         self.values.add(int.value(), value);
+    }
+
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, value: Cell) {
+        self.values.add(byte.value(), value);
     }
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {

@@ -1,20 +1,20 @@
 use crate::{
     graph::{
-        Add, Gamma, InputParam, InputPort, Int, Mul, Node, NodeExt, NodeId, OutputPort, Rvsdg,
-        Theta,
+        Add, Byte, Gamma, InputParam, InputPort, Int, Mul, Node, NodeExt, NodeId, Rvsdg, Theta,
     },
-    ir::Const,
-    passes::{utils::BinOp, Pass},
-    utils::{AssertNone, HashMap, HashSet},
-    values::Ptr,
+    passes::{
+        utils::{BinOp, ConstantStore},
+        Pass,
+    },
+    utils::HashSet,
+    values::{Cell, Ptr},
 };
 
 /// Fuses chained additions based on the law of associative addition
 // TODO: Equality is also associative but it's unclear whether or not
 //       that situation can actually arise within brainfuck programs
 pub struct AssociativeOps {
-    // TODO: ConstantStore
-    values: HashMap<OutputPort, Const>,
+    constants: ConstantStore,
     to_be_removed: HashSet<NodeId>,
     changed: bool,
     tape_len: u16,
@@ -23,7 +23,7 @@ pub struct AssociativeOps {
 impl AssociativeOps {
     pub fn new(tape_len: u16) -> Self {
         Self {
-            values: HashMap::with_hasher(Default::default()),
+            constants: ConstantStore::new(tape_len),
             to_be_removed: HashSet::with_hasher(Default::default()),
             changed: false,
             tape_len,
@@ -36,11 +36,10 @@ impl AssociativeOps {
 
     fn operand(&self, graph: &Rvsdg, input: InputPort) -> (InputPort, Option<Ptr>) {
         let (operand, output, _) = graph.get_input(input);
-        let value = operand.as_int().map(|(_, value)| value).or_else(|| {
-            self.values
-                .get(&output)
-                .map(|value| value.into_ptr(self.tape_len))
-        });
+        let value = operand
+            .as_int()
+            .map(|(_, value)| value)
+            .or_else(|| self.constants.ptr(output));
 
         (input, value)
     }
@@ -111,7 +110,7 @@ impl AssociativeOps {
                     );
 
                     let int = graph.int(combined);
-                    self.values.insert(int.value(), combined.into());
+                    self.constants.add(int.value(), combined);
 
                     graph.remove_input_edges(operation.lhs());
                     graph.remove_input_edges(operation.rhs());
@@ -137,7 +136,7 @@ impl Pass for AssociativeOps {
     }
 
     fn reset(&mut self) {
-        self.values.clear();
+        self.constants.clear();
         self.to_be_removed.clear();
         self.changed = false;
     }
@@ -157,8 +156,11 @@ impl Pass for AssociativeOps {
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
-        let replaced = self.values.insert(int.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Ptr(value)));
+        self.constants.add(int.value(), value);
+    }
+
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, value: Cell) {
+        self.constants.add(byte.value(), value);
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
@@ -172,18 +174,12 @@ impl Pass for AssociativeOps {
         {
             let (_, source, _) = graph.get_input(input);
 
-            if let Some(constant) = self.values.get(&source).copied() {
+            if let Some(constant) = self.constants.get(source) {
                 let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
-                true_visitor
-                    .values
-                    .insert(true_param.output(), constant)
-                    .debug_unwrap_none();
+                true_visitor.constants.add(true_param.output(), constant);
 
                 let false_param = gamma.false_branch().to_node::<InputParam>(false_param);
-                false_visitor
-                    .values
-                    .insert(false_param.output(), constant)
-                    .debug_unwrap_none();
+                false_visitor.constants.add(false_param.output(), constant);
             }
         }
 
@@ -203,11 +199,8 @@ impl Pass for AssociativeOps {
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
         for (input, param) in theta.invariant_input_pairs() {
-            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
-                visitor
-                    .values
-                    .insert(param.output(), constant)
-                    .debug_unwrap_none();
+            if let Some(constant) = self.constants.get(graph.input_source(input)) {
+                visitor.constants.add(param.output(), constant);
             }
         }
 

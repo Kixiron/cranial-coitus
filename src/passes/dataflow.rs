@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Add, Bool, Eq, Gamma, Input, InputParam, InputPort, Int, Load, NodeExt, OutputPort, Rvsdg,
-        Store, Theta,
+        Add, Bool, Byte, Eq, Gamma, Input, InputParam, InputPort, Int, Load, NodeExt, OutputPort,
+        Rvsdg, Store, Theta,
     },
     ir::Const,
     passes::Pass,
@@ -381,6 +381,13 @@ impl Pass for Dataflow {
             .or_insert_with(|| Domain::exact_ptr(value));
     }
 
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, value: Cell) {
+        self.facts
+            .entry(byte.value())
+            .and_modify(|facts| *facts = Domain::exact_cell(value, self.tape_len))
+            .or_insert_with(|| Domain::exact_cell(value, self.tape_len));
+    }
+
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
         self.constants.insert(bool.value(), value.into());
     }
@@ -561,13 +568,11 @@ impl Domain {
 
     pub fn overlaps(&self, other: &Self) -> bool {
         debug_assert_eq!(self.tape_len, other.tape_len);
-
         self.join(other).values.is_empty()
     }
 
     pub fn is_disjoint(&self, other: &Self) -> bool {
         debug_assert_eq!(self.tape_len, other.tape_len);
-
         self.values
             .clone()
             .difference(other.values.clone())

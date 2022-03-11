@@ -74,7 +74,7 @@ impl Rvsdg {
 
         let mut stats = Stats::new();
         self.for_each_transitive_node(|_node_id, node| match node {
-            Node::Int(_, _) | Node::Bool(_, _) => stats.constants += 1,
+            Node::Int(_, _) | Node::Byte(_, _) | Node::Bool(_, _) => stats.constants += 1,
             Node::Add(_)
             | Node::Sub(_)
             | Node::Mul(_)

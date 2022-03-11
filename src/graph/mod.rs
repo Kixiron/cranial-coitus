@@ -8,8 +8,8 @@ mod subgraph;
 
 pub use edge::{EdgeCount, EdgeDescriptor, EdgeKind};
 pub use nodes::{
-    Add, Bool, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul, Neg, Node, NodeExt,
-    NodeId, Not, Output, OutputParam, Start, Store, Sub, Theta, ThetaData,
+    Add, Bool, Byte, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul, Neg, Node,
+    NodeExt, NodeId, Not, Output, OutputParam, Start, Store, Sub, Theta, ThetaData,
 };
 pub use ports::{InputPort, OutputPort, Port, PortData, PortId, PortKind};
 pub use subgraph::Subgraph;

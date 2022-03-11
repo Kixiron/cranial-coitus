@@ -1,11 +1,11 @@
 use crate::{
     graph::{
-        Add, Bool, EdgeKind, End, Eq, Gamma, InputPort, Int, Load, Node, NodeExt, Not, OutputPort,
-        Rvsdg, Start, Store, Sub, Theta,
+        Add, Bool, Byte, EdgeKind, End, Eq, Gamma, InputPort, Int, Load, Node, NodeExt, Not,
+        OutputPort, Rvsdg, Start, Store, Sub, Theta,
     },
     passes::{utils::ConstantStore, Pass},
     utils::HashMap,
-    values::Ptr,
+    values::{Cell, Ptr},
 };
 
 pub struct ZeroLoop {
@@ -407,6 +407,10 @@ impl Pass for ZeroLoop {
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         self.values.add(int.value(), value);
+    }
+
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, value: Cell) {
+        self.values.add(byte.value(), value);
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {

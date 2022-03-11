@@ -133,6 +133,18 @@ impl IrBuilder {
                 self.values.insert(int.value(), value).debug_unwrap_none();
             }
 
+            &Node::Byte(byte, value) => {
+                let var = VarId::new(byte.value());
+                self.inst(crate::ir::Assign::new(var, Const::Cell(value)));
+
+                let value = if self.inline_constants {
+                    Const::Cell(value).into()
+                } else {
+                    var.into()
+                };
+                self.values.insert(byte.value(), value).debug_unwrap_none();
+            }
+
             &Node::Bool(bool, value) => {
                 let var = VarId::new(bool.value());
                 self.inst(Assign::new(var, Const::Bool(value)));

@@ -1,11 +1,11 @@
 use crate::{
     graph::{
-        Add, Bool, Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg, Start, Store,
-        Theta,
+        Add, Bool, Byte, Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg, Start,
+        Store, Theta,
     },
     passes::{utils::ConstantStore, Pass},
     utils::HashMap,
-    values::Ptr,
+    values::{Cell, Ptr},
 };
 
 #[derive(Debug)]
@@ -365,6 +365,10 @@ impl Pass for ShiftCell {
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         self.constants.add(int.value(), value);
+    }
+
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, value: Cell) {
+        self.constants.add(byte.value(), value);
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {

@@ -1,7 +1,7 @@
 use crate::{
-    graph::{Add, Bool, Eq, Int, Mul, OutputPort, Rvsdg},
+    graph::{Add, Bool, Byte, Eq, Int, Mul, OutputPort, Rvsdg},
     passes::Pass,
-    values::Ptr,
+    values::{Cell, Ptr},
 };
 use std::collections::BTreeSet;
 
@@ -45,11 +45,15 @@ impl Pass for Canonicalize {
         }
     }
 
-    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _value: Ptr) {
+    fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _: Ptr) {
         self.constants.insert(int.value());
     }
 
-    fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, _value: bool) {
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, _: Cell) {
+        self.constants.insert(byte.value());
+    }
+
+    fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, _: bool) {
         self.constants.insert(bool.value());
     }
 

@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Bool, EdgeKind, Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg, Store,
-        Theta,
+        Bool, Byte, EdgeKind, Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg,
+        Store, Theta,
     },
     ir::Const,
     passes::Pass,
@@ -271,6 +271,10 @@ impl Pass for Mem2Reg {
         debug_assert!(replaced.is_none() || replaced == Some(value.into()));
     }
 
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, value: Cell) {
+        self.values.insert(byte.value(), value.into());
+    }
+
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
 
@@ -452,7 +456,7 @@ enum Place {
 impl Place {
     pub fn as_ptr(&self, tape_len: u16) -> Option<Ptr> {
         if let Self::Const(constant) = self {
-            constant.as_ptr()
+            Some(constant.into_ptr(tape_len))
         } else {
             None
         }

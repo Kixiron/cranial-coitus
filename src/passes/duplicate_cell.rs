@@ -1,11 +1,12 @@
 use crate::{
     graph::{
-        Add, Gamma, InputParam, InputPort, Int, Node, NodeExt, OutputPort, Rvsdg, Start, Sub, Theta,
+        Add, Byte, Gamma, InputParam, InputPort, Int, Node, NodeExt, OutputPort, Rvsdg, Start, Sub,
+        Theta,
     },
     ir::Const,
     passes::{utils::BinOp, Pass},
     utils::{AssertNone, HashMap},
-    values::Ptr,
+    values::{Cell, Ptr},
 };
 use tinyvec::{tiny_vec, TinyVec};
 
@@ -420,6 +421,10 @@ impl Pass for DuplicateCell {
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
         let replaced = self.values.insert(int.value(), value.into());
         debug_assert!(replaced.is_none() || replaced == Some(Const::Ptr(value)));
+    }
+
+    fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, value: Cell) {
+        self.values.insert(byte.value(), value.into());
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {

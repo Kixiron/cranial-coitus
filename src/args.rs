@@ -27,7 +27,7 @@ pub struct Args {
     /// Whether to inline constant values or give them their own
     /// assignments in the output IR
     #[clap(long)]
-    pub inline_constants: bool,
+    pub dont_inline_constants: bool,
 }
 
 #[derive(Debug, Parser)]

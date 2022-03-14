@@ -10,7 +10,7 @@ use crate::{
     },
     jit::{
         basic_block::{
-            Add, Assign, BlockId, Blocks, Branch, Eq, Input, Instruction, Load, Mul, Neg, Not,
+            Add, Assign, BlockId, Blocks, Branch, Cmp, Input, Instruction, Load, Mul, Neg, Not,
             Output, Phi, RValue, Store, Sub, Terminator, Type, ValId, Value,
         },
         block_builder::BlockBuilder,
@@ -194,15 +194,15 @@ fn translate_inst(
         }
 
         CirInstruction::Assign(assign) => match &assign.value {
-            CirExpr::Eq(eq) => {
+            CirExpr::Cmp(cmp) => {
                 let val = builder.create_val();
 
-                let lhs = builder.get(eq.lhs);
-                let rhs = builder.get(eq.rhs);
+                let lhs = builder.get(cmp.lhs);
+                let rhs = builder.get(cmp.rhs);
                 // debug_assert_eq!(lhs.ty(), rhs.ty());
 
                 builder.assign(assign.var, (val, Type::Bool));
-                builder.push(Assign::new(val, Eq::new(lhs, rhs)));
+                builder.push(Assign::new(val, Cmp::new(lhs, rhs, cmp.op)));
             }
 
             CirExpr::Add(add) => {

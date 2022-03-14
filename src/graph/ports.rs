@@ -1,10 +1,9 @@
+use crate::graph::{EdgeKind, NodeId};
 use std::{
     cmp::Eq,
     fmt::{self, Debug, Display, Write},
     hash::Hash,
 };
-
-use crate::graph::{EdgeKind, NodeId};
 
 pub trait Port: Debug + Clone + Copy + PartialEq + Eq + Hash {
     fn port(&self) -> PortId;

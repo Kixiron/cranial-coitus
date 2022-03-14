@@ -27,17 +27,13 @@ tracing = { version = "0.1.29", features = ["release_max_level_info"] }
 cranelift = "0.81.0"
 cranelift-jit = "0.81.0"
 cranelift-module = "0.81.0"
+cranelift-native = "0.81.1"
 
     [dependencies.iced-x86]
     version = "1.15.0"
     default-features = false
     git = "https://github.com/icedland/iced"
     features = ["std", "masm", "decoder", "encoder", "code_asm", "instr_info"]
-
-    [dependencies.tui]
-    version = "0.16.0"
-    default-features = false
-    features = ["crossterm"]
 
     [dependencies.tracing-subscriber]
     version = "0.3.3"

@@ -195,6 +195,7 @@ impl Pass for Dataflow {
                     (graph.get_input(eq.lhs()), graph.get_input(eq.rhs()));
 
                 // If the left hand operand is zero
+                // FIXME: Bytes
                 if self.is_zero(lhs_src) || lhs_node.as_int().map_or(false, |(_, value)| value == 0)
                 {
                     // The left hand side is zero in both branches
@@ -206,6 +207,7 @@ impl Pass for Dataflow {
                     zero_fact_false_branch(rhs_src, true);
 
                 // If the right hand operand is zero
+                // FIXME: Bytes
                 } else if self.is_zero(rhs_src)
                     || rhs_node.as_int().map_or(false, |(_, value)| value == 0)
                 {
@@ -225,6 +227,7 @@ impl Pass for Dataflow {
                 (graph.get_input(eq.lhs()), graph.get_input(eq.rhs()));
 
             // If the left hand operand is zero
+            // FIXME: Bytes
             if self.is_zero(lhs_src) || lhs_node.as_int().map_or(false, |(_, value)| value == 0) {
                 // The left hand side is zero in both branches
                 zero_fact_true_branch(lhs_src, true);
@@ -235,6 +238,7 @@ impl Pass for Dataflow {
                 zero_fact_false_branch(rhs_src, false);
 
             // If the right hand operand is zero
+            // FIXME: Bytes
             } else if self.is_zero(rhs_src)
                 || rhs_node.as_int().map_or(false, |(_, value)| value == 0)
             {

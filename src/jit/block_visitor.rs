@@ -1,5 +1,5 @@
 use crate::jit::basic_block::{
-    Add, Assign, BasicBlock, BitNot, BlockId, Blocks, Branch, Eq, Input, Instruction, Load, Mul,
+    Add, Assign, BasicBlock, BitNot, BlockId, Blocks, Branch, Cmp, Input, Instruction, Load, Mul,
     Neg, Not, Output, Phi, RValue, Store, Sub, Terminator, ValId, Value,
 };
 
@@ -46,7 +46,7 @@ pub trait BasicBlockVisitor {
 
     fn visit_rval(&mut self, rval: &RValue, assigned_to: ValId) {
         match rval {
-            RValue::Eq(eq) => self.visit_eq(eq, assigned_to),
+            RValue::Cmp(eq) => self.visit_eq(eq, assigned_to),
             RValue::Phi(phi) => self.visit_phi(phi, assigned_to),
             RValue::Neg(neg) => self.visit_neg(neg, assigned_to),
             RValue::Not(not) => self.visit_not(not, assigned_to),
@@ -59,7 +59,7 @@ pub trait BasicBlockVisitor {
         }
     }
 
-    fn visit_eq(&mut self, eq: &Eq, _assigned_to: ValId) {
+    fn visit_eq(&mut self, eq: &Cmp, _assigned_to: ValId) {
         self.visit_value(eq.lhs());
         self.visit_value(eq.rhs());
     }

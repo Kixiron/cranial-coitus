@@ -19,6 +19,7 @@ pub struct PrettyConfig {
     /// If printed to an ansi-capable source, this will allow coloration
     pub colored: bool,
     pub show_lifetimes: bool,
+    pub hide_const_assignments: bool,
 }
 
 impl PrettyConfig {
@@ -30,6 +31,7 @@ impl PrettyConfig {
             duration_logging: false,
             colored: true,
             show_lifetimes: false,
+            hide_const_assignments: true,
         }
     }
 
@@ -41,6 +43,7 @@ impl PrettyConfig {
             duration_logging: false,
             colored: true,
             show_lifetimes: false,
+            hide_const_assignments: true,
         }
     }
 
@@ -75,7 +78,7 @@ pub trait Pretty {
         let format_start = Instant::now();
 
         let mut output = String::with_capacity(4096);
-        write!(&mut output, "{}", pretty.1.pretty(RENDER_WIDTH))
+        write!(output, "{}", pretty.1.pretty(RENDER_WIDTH))
             .expect("writing to a string should never fail");
 
         if STATIC_MAX_LEVEL >= LevelFilter::DEBUG && config.duration_logging {
@@ -145,6 +148,7 @@ pub mod pretty_utils {
     pub fn body_block<'a, D, A>(
         allocator: &'a D,
         config: PrettyConfig,
+        indent: bool,
         block: &'a [Instruction],
     ) -> DocBuilder<'a, D, A>
     where
@@ -152,26 +156,35 @@ pub mod pretty_utils {
         D::Doc: Clone,
         A: Clone,
     {
-        let instructions = block
-            .iter()
-            .filter(|inst| config.show_lifetimes || !inst.is_lifetime_end());
+        let indent_width = if indent { INDENT_WIDTH } else { 0 };
 
+        let instructions = block.iter().filter(|inst| {
+            (config.show_lifetimes || !inst.is_lifetime_end())
+                && !(config.hide_const_assignments
+                    && inst
+                        .as_assign()
+                        .map(|assign| assign.value.is_const())
+                        .unwrap_or(false))
+        });
         let total_instructions = instructions.clone().count();
 
         if total_instructions == 0 {
             allocator.nil()
         } else {
-            allocator
-                .hardline()
-                .append(
-                    allocator
-                        .intersperse(
-                            instructions.map(|inst| inst.pretty(allocator, config)),
-                            allocator.hardline(),
-                        )
-                        .indent(INDENT_WIDTH),
-                )
-                .append(allocator.hardline())
+            if indent {
+                allocator.hardline()
+            } else {
+                allocator.nil()
+            }
+            .append(
+                allocator
+                    .intersperse(
+                        instructions.map(|inst| inst.pretty(allocator, config)),
+                        allocator.hardline(),
+                    )
+                    .indent(indent_width),
+            )
+            .append(allocator.hardline())
         }
     }
 }

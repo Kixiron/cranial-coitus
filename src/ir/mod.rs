@@ -101,15 +101,7 @@ impl Pretty for Block {
         D::Doc: Clone,
         A: Clone,
     {
-        allocator
-            .intersperse(
-                self.instructions
-                    .iter()
-                    .filter(|inst| config.show_lifetimes || !inst.is_lifetime_end())
-                    .map(|inst| inst.pretty(allocator, config)),
-                allocator.hardline(),
-            )
-            .append(allocator.hardline())
+        pretty_utils::body_block(allocator, config, false, self)
     }
 }
 
@@ -163,24 +155,23 @@ impl Pretty for Instruction {
                             if config.display_effects {
                                 if let Some(prev_effect) = call.prev_effect {
                                     write!(
-                                        &mut comment,
+                                        comment,
                                         "// eff: {}, pred: {}",
                                         call.effect, prev_effect
                                     )
                                     .unwrap();
                                 } else {
-                                    write!(&mut comment, "// eff: {}, pred: ???", call.effect)
-                                        .unwrap();
+                                    write!(comment, "// eff: {}, pred: ???", call.effect).unwrap();
                                 }
                             }
 
                             if config.display_invocations && call.invocations != 0 {
-                                write!(&mut comment, ", calls: {}", call.invocations).unwrap();
+                                write!(comment, ", calls: {}", call.invocations).unwrap();
 
                                 if let Some(total_instructions) = config.total_instructions {
                                     let percentage =
                                         percent_total(total_instructions, call.invocations);
-                                    write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                                    write!(comment, " ({:.02}%)", percentage).unwrap();
                                 }
                             }
 
@@ -325,25 +316,25 @@ impl Pretty for Theta {
         if config.display_effects {
             match (self.input_effect, self.output_effect) {
                 (None, None) => {
-                    write!(&mut comment, "// node: {}, eff: ???, pred: ???", self.node)
+                    write!(comment, "// node: {}, eff: ???, pred: ???", self.node)
                 }
                 (None, Some(output_effect)) => {
                     write!(
-                        &mut comment,
+                        comment,
                         "// node: {}, eff: {}, pred: ???",
                         self.node, output_effect,
                     )
                 }
                 (Some(input_effect), None) => {
                     write!(
-                        &mut comment,
+                        comment,
                         "// node: {}, eff: ???, pred: {}",
                         self.node, input_effect,
                     )
                 }
                 (Some(input_effect), Some(output_effect)) => {
                     write!(
-                        &mut comment,
+                        comment,
                         "// node: {}, eff: {}, pred: {}",
                         self.node, output_effect, input_effect,
                     )
@@ -354,20 +345,15 @@ impl Pretty for Theta {
 
         if config.display_invocations {
             if self.loops != 0 {
-                write!(&mut comment, ", loops: {}", self.loops).unwrap();
+                write!(comment, ", loops: {}", self.loops).unwrap();
             }
 
             if self.body_inst_count != 0 {
-                write!(
-                    &mut comment,
-                    ", body instructions: {}",
-                    self.body_inst_count,
-                )
-                .unwrap();
+                write!(comment, ", body instructions: {}", self.body_inst_count,).unwrap();
 
                 if let Some(total_instructions) = config.total_instructions {
                     let percentage = percent_total(total_instructions, self.body_inst_count);
-                    write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                    write!(comment, " ({:.02}%)", percentage).unwrap();
                 }
             }
         }
@@ -380,7 +366,9 @@ impl Pretty for Theta {
         .append(allocator.text("do"))
         .append(allocator.space())
         .append(allocator.text("{"))
-        .append(pretty_utils::body_block(allocator, config, &self.body))
+        .append(pretty_utils::body_block(
+            allocator, config, true, &self.body,
+        ))
         .append(allocator.text("}"))
         .append(allocator.space())
         .append(allocator.text("while"))
@@ -497,13 +485,13 @@ impl Pretty for Gamma {
         if config.display_effects {
             if let Some(prev_effect) = self.prev_effect {
                 write!(
-                    &mut comment,
+                    comment,
                     "// node: {}, eff: {}, pred: {}",
                     self.node, self.effect, prev_effect,
                 )
             } else {
                 write!(
-                    &mut comment,
+                    comment,
                     "// node: {}, eff: {}, pred: ???",
                     self.node, self.effect,
                 )
@@ -518,7 +506,7 @@ impl Pretty for Gamma {
                 }
 
                 write!(
-                    &mut comment,
+                    comment,
                     "branches: {}",
                     self.true_branches + self.false_branches,
                 )
@@ -526,11 +514,11 @@ impl Pretty for Gamma {
             }
 
             if self.true_branches != 0 {
-                write!(&mut comment, ", true branches: {}", self.true_branches).unwrap();
+                write!(comment, ", true branches: {}", self.true_branches).unwrap();
             }
 
             if self.false_branches != 0 {
-                write!(&mut comment, ", false branches: {}", self.false_branches).unwrap();
+                write!(comment, ", false branches: {}", self.false_branches).unwrap();
             }
         }
 
@@ -547,6 +535,7 @@ impl Pretty for Gamma {
         .append(pretty_utils::body_block(
             allocator,
             config,
+            true,
             &self.true_branch,
         ))
         .append(allocator.text("}"))
@@ -557,6 +546,7 @@ impl Pretty for Gamma {
         .append(pretty_utils::body_block(
             allocator,
             config,
+            true,
             &self.false_branch,
         ))
         .append(allocator.text("}"))
@@ -737,23 +727,23 @@ impl Pretty for Assign {
                             if config.display_effects {
                                 if let Some(prev_effect) = load.prev_effect {
                                     write!(
-                                        &mut comment,
+                                        comment,
                                         "// eff: {}, pred: {}",
                                         load.effect, prev_effect,
                                     )
                                 } else {
-                                    write!(&mut comment, "// eff: {}, pred: ???", load.effect)
+                                    write!(comment, "// eff: {}, pred: ???", load.effect)
                                 }
                                 .unwrap();
                             }
 
                             if config.display_invocations && self.invocations != 0 {
-                                write!(&mut comment, ", loads: {}", self.invocations).unwrap();
+                                write!(comment, ", loads: {}", self.invocations).unwrap();
 
                                 if let Some(total_instructions) = config.total_instructions {
                                     let percentage =
                                         percent_total(total_instructions, self.invocations);
-                                    write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                                    write!(comment, " ({:.02}%)", percentage).unwrap();
                                 }
                             }
 
@@ -777,12 +767,12 @@ impl Pretty for Assign {
                             };
 
                             if call.invocations != 0 {
-                                write!(&mut comment, ", calls: {}", call.invocations).unwrap();
+                                write!(comment, ", calls: {}", call.invocations).unwrap();
 
                                 if let Some(total_instructions) = config.total_instructions {
                                     let percentage =
                                         percent_total(total_instructions, call.invocations);
-                                    write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                                    write!(comment, " ({:.02}%)", percentage).unwrap();
                                 }
                             }
 
@@ -822,7 +812,7 @@ impl Pretty for Assign {
                                         {
                                             let percentage =
                                                 percent_total(total_instructions, self.invocations);
-                                            write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                                            write!(comment, " ({:.02}%)", percentage).unwrap();
                                         }
 
                                         allocator.space().append(allocator.text(comment))
@@ -846,7 +836,7 @@ impl Pretty for Assign {
                             if let Some(total_instructions) = config.total_instructions {
                                 let percentage =
                                     percent_total(total_instructions, self.invocations);
-                                write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                                write!(comment, " ({:.02}%)", percentage).unwrap();
                             }
 
                             allocator.space().append(allocator.text(comment))
@@ -896,7 +886,7 @@ pub enum Variance {
 
 #[derive(Debug, Clone)]
 pub enum Expr {
-    Eq(Eq),
+    Cmp(Cmp),
     Add(Add),
     Sub(Sub),
     Mul(Mul),
@@ -921,6 +911,10 @@ impl Expr {
     pub const fn is_call(&self) -> bool {
         matches!(self, Self::Call(..))
     }
+
+    pub const fn is_const(&self) -> bool {
+        matches!(self, Self::Value(Value::Const(_)))
+    }
 }
 
 impl Pretty for Expr {
@@ -931,7 +925,7 @@ impl Pretty for Expr {
         A: Clone,
     {
         match self {
-            Self::Eq(eq) => eq.pretty(allocator, config),
+            Self::Cmp(cmp) => cmp.pretty(allocator, config),
             Self::Add(add) => add.pretty(allocator, config),
             Self::Sub(sub) => sub.pretty(allocator, config),
             Self::Mul(mul) => mul.pretty(allocator, config),
@@ -968,9 +962,9 @@ impl From<Neg> for Expr {
     }
 }
 
-impl From<Eq> for Expr {
-    fn from(eq: Eq) -> Self {
-        Self::Eq(eq)
+impl From<Cmp> for Expr {
+    fn from(cmp: Cmp) -> Self {
+        Self::Cmp(cmp)
     }
 }
 
@@ -1179,13 +1173,14 @@ impl Pretty for Neg {
 }
 
 #[derive(Debug, Clone)]
-pub struct Eq {
+pub struct Cmp {
     pub lhs: Value,
     pub rhs: Value,
+    pub op: CmpKind,
 }
 
-impl Eq {
-    pub fn new<L, R>(lhs: L, rhs: R) -> Self
+impl Cmp {
+    pub fn new<L, R>(lhs: L, rhs: R, op: CmpKind) -> Self
     where
         L: Into<Value>,
         R: Into<Value>,
@@ -1193,11 +1188,12 @@ impl Eq {
         Self {
             lhs: lhs.into(),
             rhs: rhs.into(),
+            op,
         }
     }
 }
 
-impl Pretty for Eq {
+impl Pretty for Cmp {
     fn pretty<'a, D, A>(&'a self, allocator: &'a D, config: PrettyConfig) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
@@ -1205,12 +1201,54 @@ impl Pretty for Eq {
         A: Clone,
     {
         allocator
-            .text("eq")
+            .text("cmp.")
+            .append(self.op.pretty(allocator, config))
             .append(allocator.space())
             .append(self.lhs.pretty(allocator, config))
             .append(allocator.text(","))
             .append(allocator.space())
             .append(self.rhs.pretty(allocator, config))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpKind {
+    Eq,
+    Neq,
+    Less,
+    Greater,
+    LessEq,
+    GreaterEq,
+}
+
+impl CmpKind {
+    pub const fn operator(&self) -> &'static str {
+        match self {
+            Self::Eq => "==",
+            Self::Neq => "!=",
+            Self::Less => "<",
+            Self::Greater => ">",
+            Self::LessEq => "<=",
+            Self::GreaterEq => ">=",
+        }
+    }
+}
+
+impl Pretty for CmpKind {
+    fn pretty<'a, D, A>(&'a self, allocator: &'a D, _config: PrettyConfig) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+    {
+        match self {
+            Self::Eq => allocator.text("eq"),
+            Self::Neq => allocator.text("neq"),
+            Self::Less => allocator.text("lt"),
+            Self::Greater => allocator.text("gt"),
+            Self::LessEq => allocator.text("le"),
+            Self::GreaterEq => allocator.text("ge"),
+        }
     }
 }
 
@@ -1296,11 +1334,11 @@ impl Pretty for Store {
                         };
 
                         if self.stores != 0 {
-                            write!(&mut comment, ", stores: {}", self.stores).unwrap();
+                            write!(comment, ", stores: {}", self.stores).unwrap();
 
                             if let Some(total_instructions) = config.total_instructions {
                                 let percentage = percent_total(total_instructions, self.stores);
-                                write!(&mut comment, " ({:.02}%)", percentage).unwrap();
+                                write!(comment, " ({:.02}%)", percentage).unwrap();
                             }
                         }
 

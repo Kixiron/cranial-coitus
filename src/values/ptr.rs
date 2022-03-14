@@ -403,7 +403,6 @@ mod tests {
         let tape_len = 400;
 
         let zero = Ptr::new(0, tape_len);
-        dbg!(zero.value());
         assert_eq!(zero.into_cell(), Cell::new(0));
 
         let two_fifty_five = Ptr::new(255, tape_len);

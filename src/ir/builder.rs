@@ -1,8 +1,8 @@
 use crate::{
     graph::{self, InputParam, InputPort, Node, NodeExt, NodeId, OutputParam, OutputPort, Rvsdg},
     ir::{
-        lifetime, Add, Assign, Block, Call, Const, EffectId, Eq, Gamma, Instruction, Load, Mul,
-        Neg, Not, Store, Sub, Theta, Value, VarId, Variance,
+        lifetime, Add, Assign, Block, Call, Cmp, CmpKind, Const, EffectId, Gamma, Instruction,
+        Load, Mul, Neg, Not, Store, Sub, Theta, Value, VarId, Variance,
     },
     utils::AssertNone,
 };
@@ -222,10 +222,28 @@ impl IrBuilder {
                     .get(&eq.rhs())
                     .cloned()
                     .unwrap_or(Value::Missing);
-                self.inst(Assign::new(var, Eq::new(lhs, rhs)));
+                self.inst(Assign::new(var, Cmp::new(lhs, rhs, CmpKind::Eq)));
 
                 self.values
                     .insert(eq.value(), var.into())
+                    .debug_unwrap_none();
+            }
+
+            Node::Neq(neq) => {
+                let var = VarId::new(neq.value());
+
+                let lhs = input_values
+                    .get(&neq.lhs())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
+                let rhs = input_values
+                    .get(&neq.rhs())
+                    .cloned()
+                    .unwrap_or(Value::Missing);
+                self.inst(Assign::new(var, Cmp::new(lhs, rhs, CmpKind::Neq)));
+
+                self.values
+                    .insert(neq.value(), var.into())
                     .debug_unwrap_none();
             }
 

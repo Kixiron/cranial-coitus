@@ -79,6 +79,7 @@ impl Rvsdg {
             | Node::Sub(_)
             | Node::Mul(_)
             | Node::Eq(_)
+            | Node::Neq(_)
             | Node::Not(_)
             | Node::Neg(_) => {
                 stats.instructions += 1;

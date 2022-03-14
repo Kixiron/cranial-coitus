@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Add, Bool, Byte, EdgeKind, Eq, Gamma, InputParam, InputPort, Int, Mul, Neg, NodeExt, Not,
-        OutputPort, Rvsdg, Sub, Theta,
+        Add, Bool, Byte, EdgeKind, Eq, Gamma, InputParam, InputPort, Int, Mul, Neg, Neq, NodeExt,
+        Not, OutputPort, Rvsdg, Sub, Theta,
     },
     ir::Const,
     passes::{utils::ConstantStore, Pass},
@@ -345,6 +345,52 @@ impl Pass for ConstFolding {
             self.values.remove(eq.value());
 
             graph.rewire_dependents(eq.value(), true_val.value());
+
+            self.changed();
+        }
+    }
+
+    fn visit_neq(&mut self, graph: &mut Rvsdg, neq: Neq) {
+        let [(lhs_source, lhs), (rhs_source, rhs)] = [
+            self.operand(graph, neq.lhs()),
+            self.operand(graph, neq.rhs()),
+        ];
+
+        // If both values are known we can statically evaluate the comparison
+        if let (Some(lhs), Some(rhs)) = (lhs, rhs) {
+            let result = lhs != rhs;
+            tracing::debug!(
+                "replaced const neq with {} ({:?} != {:?}) {:?} ({:?} == {:?})",
+                result,
+                lhs,
+                rhs,
+                neq,
+                graph.get_output(lhs_source),
+                graph.get_output(rhs_source),
+            );
+
+            let are_inequal = graph.bool(result);
+            self.values.add(are_inequal.value(), Const::Bool(result));
+            self.values.remove(neq.value());
+
+            graph.rewire_dependents(neq.value(), are_inequal.value());
+
+            self.changed();
+
+        // If the operands are equal this comparison will always be false
+        } else if lhs_source == rhs_source {
+            tracing::debug!(
+                "replaced self-inequality with false ({:?} != {:?}) {:?}",
+                lhs_source,
+                rhs_source,
+                neq,
+            );
+
+            let false_val = graph.bool(false);
+            self.values.add(false_val.value(), Const::Bool(false));
+            self.values.remove(neq.value());
+
+            graph.rewire_dependents(neq.value(), false_val.value());
 
             self.changed();
         }

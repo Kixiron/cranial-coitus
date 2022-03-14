@@ -15,32 +15,8 @@ use std::{
     fs,
     io::{self, Read, Write},
     path::Path,
-    time::{Duration, Instant},
+    time::Duration,
 };
-
-#[tracing::instrument(skip(args))]
-pub fn debugger(args: &Args, file: &Path, start_time: Instant) -> Result<()> {
-    let cells = args.tape_len as usize;
-    let step_limit = args.step_limit.unwrap_or(usize::MAX);
-
-    let source = fs::read_to_string(file).expect("failed to read file");
-    let tokens = parse_source(file, &source);
-
-    let mut graph = build_graph(tokens, args.tape_len);
-    run_opt_passes(
-        &mut graph,
-        args.tape_len,
-        args.iteration_limit.unwrap_or(usize::MAX),
-    );
-
-    let ir = IrBuilder::new(!args.dont_inline_constants)
-        .translate(&graph)
-        .pretty_print(PrettyConfig::minimal());
-
-    debugger_tui(cells, &ir)?;
-
-    Ok(())
-}
 
 #[tracing::instrument(skip_all)]
 pub fn run_opt_passes(graph: &mut Rvsdg, cells: u16, iteration_limit: usize) -> usize {
@@ -98,53 +74,6 @@ pub fn run_opt_passes(graph: &mut Rvsdg, cells: u16, iteration_limit: usize) -> 
     }
 
     pass_num
-}
-
-pub fn debugger_tui(cell_len: usize, program: &str) -> Result<()> {
-    use tui::{
-        backend::CrosstermBackend,
-        layout::{Alignment, Constraint, Direction, Layout},
-        text::Text,
-        widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
-        Terminal,
-    };
-
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend).context("failed to create terminal instance")?;
-    terminal.clear().context("failed to clear terminal")?;
-
-    terminal
-        .draw(|frame| {
-            let frame_size = frame.size();
-
-            let [tape_size, program_size]: [_; 2] = Layout::default()
-                .direction(Direction::Vertical)
-                .margin(1)
-                .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
-                .split(frame_size)
-                .try_into()
-                .expect("layout split into three chunks");
-
-            let tape = Table::new(vec![Row::new(
-                (0..20).map(|_| Cell::from("0x00")).collect::<Vec<_>>(),
-            )])
-            .widths(&[Constraint::Percentage(100)])
-            .column_spacing(0);
-            frame.render_widget(tape, tape_size);
-
-            let program = Paragraph::new(Text::raw(program))
-                .alignment(Alignment::Left)
-                .wrap(Wrap { trim: false })
-                .block(
-                    Block::default()
-                        .title_alignment(Alignment::Left)
-                        .borders(Borders::ALL),
-                );
-            frame.render_widget(program, program_size);
-        })
-        .context("failed to draw frame")?;
-
-    Ok(())
 }
 
 #[tracing::instrument(skip_all)]

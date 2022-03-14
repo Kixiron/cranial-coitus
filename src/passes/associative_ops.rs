@@ -2,6 +2,7 @@ use crate::{
     graph::{
         Add, Byte, Gamma, InputParam, InputPort, Int, Mul, Node, NodeExt, NodeId, Rvsdg, Theta,
     },
+    ir::Const,
     passes::{
         utils::{BinOp, ConstantStore},
         Pass,
@@ -34,12 +35,13 @@ impl AssociativeOps {
         self.changed = true;
     }
 
-    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (InputPort, Option<Ptr>) {
+    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (InputPort, Option<Const>) {
         let (operand, output, _) = graph.get_input(input);
         let value = operand
             .as_int()
-            .map(|(_, value)| value)
-            .or_else(|| self.constants.ptr(output));
+            .map(|(_, value)| Const::Ptr(value))
+            .or_else(|| operand.as_byte().map(|(_, byte)| Const::Cell(byte)))
+            .or_else(|| self.constants.ptr(output).map(Const::Ptr));
 
         (input, value)
     }
@@ -94,7 +96,10 @@ impl AssociativeOps {
                         op = T::symbol(),
                     );
 
-                    let combined = T::combine(known, dependency_known);
+                    let combined = T::combine(
+                        known.into_ptr(self.tape_len),
+                        dependency_known.into_ptr(self.tape_len),
+                    );
                     tracing::debug!(
                         "evaluated associative {} {:?}: (({:?}->{:?} {op} {}) {op} {}) to ({:?}->{:?} {op} {})",
                         T::name(),

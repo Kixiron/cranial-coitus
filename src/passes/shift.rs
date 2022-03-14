@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Add, Bool, Byte, Gamma, InputParam, Int, Load, Node, NodeExt, OutputPort, Rvsdg, Start,
-        Store, Theta,
+        Add, Bool, Byte, Gamma, InputParam, Int, Load, Neq, Node, NodeExt, OutputPort, Rvsdg,
+        Start, Store, Theta,
     },
     passes::{utils::ConstantStore, Pass},
     utils::HashMap,
@@ -200,8 +200,7 @@ impl ShiftCell {
     ///     store src_ptr, src_dec
     ///
     ///     // Test if the source cell is zero
-    ///     src_eq_zero := eq src_dec, int 0
-    ///     src_neq_zero := not src_eq_zero
+    ///     src_neq_zero := neq src_dec, int 0
     /// } while { src_neq_zero }
     /// ```
     ///
@@ -313,20 +312,15 @@ impl ShiftCell {
             return None;
         };
 
-        // Should be `src_neq_zero := not src_eq_zero`
-        let src_neq_zero = graph
-            .input_source_node(theta.condition().input())
-            .as_not()?;
-
-        // Should be `src_eq_zero := eq src_dec, int 0`
-        let src_eq_zero = graph.input_source_node(src_neq_zero.input()).as_eq()?;
+        // Should be `src_neq_zero := neq src_dec, int 0`
+        let src_neq_zero = graph.cast_input_source::<Neq>(theta.condition().input())?;
         let (lhs_operand, rhs_operand) = (
-            graph.input_source(src_eq_zero.lhs()),
-            graph.input_source(src_eq_zero.rhs()),
+            graph.input_source(src_neq_zero.lhs()),
+            graph.input_source(src_neq_zero.rhs()),
         );
         let (lhs_const, rhs_const) = (values.ptr(lhs_operand), values.ptr(rhs_operand));
 
-        // Make sure that one of the operands of the eq is `src_dec` and the other is a zero
+        // Make sure that one of the operands of the neq is `src_dec` and the other is a zero
         if !((lhs_operand == src_dec && matches!(rhs_const, Some(zero) if zero.is_zero()))
             || (rhs_operand == src_dec && matches!(lhs_const, Some(zero) if zero.is_zero())))
         {

@@ -135,6 +135,7 @@ impl Pass for ExprDedup {
             .find(|&(_, known)| known.as_ptr().map_or(false, |known| known == value))
         {
             let existing_const = graph.get_node(graph.port_parent(const_id));
+            // FIXME: Bytes
             let (const_id, const_value) = existing_const.as_int().map_or_else(
                 || {
                     // Input params can also produce constant values

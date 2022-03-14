@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Add, Bool, Byte, EdgeKind, End, Eq, Gamma, InputPort, Int, Load, Node, NodeExt, Not,
-        OutputPort, Rvsdg, Start, Store, Sub, Theta,
+        Add, Bool, Byte, EdgeKind, End, Eq, Gamma, InputPort, Int, Load, Node, NodeExt, OutputPort,
+        Rvsdg, Start, Store, Sub, Theta,
     },
     passes::{utils::ConstantStore, Pass},
     utils::HashMap,
@@ -39,10 +39,9 @@ impl ZeroLoop {
     /// do {
     ///   cell_value = load cell_ptr
     ///   plus_one = add cell, int 1
-    ///   store _cell_ptr, plus_one
-    ///   is_zero = eq plus_one, int 0
-    ///   not_zero = not is_zero
-    /// } while { _not_zero }
+    ///   store cell_ptr, plus_one
+    ///   not_zero = neq plus_one, int 0
+    /// } while { not_zero }
     /// ```
     ///
     /// Zero via subtraction:
@@ -52,8 +51,7 @@ impl ZeroLoop {
     ///   cell_value = load cell_ptr
     ///   minus_one = sub cell_value, int 1
     ///   store cell_ptr, minus_one
-    ///   is_zero = eq minus_one, int 0
-    ///   not_zero = not is_zero
+    ///   not_zero = neq minus_one, int 0
     /// } while { not_zero }
     /// ```
     ///
@@ -167,11 +165,10 @@ impl ZeroLoop {
             return None;
         }
 
-        let eq = graph
+        let neq = graph
             .get_outputs(value)
-            .find_map(|(node, ..)| node.as_eq())?;
-
-        let (lhs, rhs) = (graph.input_source(eq.lhs()), graph.input_source(eq.rhs()));
+            .find_map(|(node, ..)| node.as_neq())?;
+        let (lhs, rhs) = (graph.input_source(neq.lhs()), graph.input_source(neq.rhs()));
 
         // Make sure that one of the eq's operands is the added val and the other is 0
         if lhs == value {
@@ -190,10 +187,8 @@ impl ZeroLoop {
             return None;
         }
 
-        let not = graph.cast_output_dest::<Not>(eq.value())?;
-
         // Make sure the `(value ± 1) != 0` expression is the theta's condition
-        if graph.output_dest_id(not.value())? != theta.condition().node() {
+        if graph.output_dest_id(neq.value())? != theta.condition().node() {
             return None;
         }
 
@@ -235,26 +230,22 @@ impl ZeroLoop {
         gamma: &Gamma,
     ) -> Option<Result<Ptr, OutputPort>> {
         // value_is_zero = eq value, int 0
-        let eq_zero = graph.get_input(gamma.condition()).0.as_eq()?;
+        let eq_zero = graph.cast_input_source::<Eq>(gamma.condition())?;
         let [lhs, rhs] = [
-            graph.get_input(eq_zero.lhs()),
-            graph.get_input(eq_zero.rhs()),
+            graph.input_source(eq_zero.lhs()),
+            graph.input_source(eq_zero.rhs()),
         ];
 
-        let (lhs_zero, rhs_zero) = (
-            self.values.ptr_is_zero(lhs.1),
-            self.values.ptr_is_zero(rhs.1),
-        );
+        let (lhs_zero, rhs_zero) = (self.values.ptr_is_zero(lhs), self.values.ptr_is_zero(rhs));
 
         // If the eq doesn't fit the pattern of `value_is_zero = eq value, int 0` this isn't a candidate
         let value = if lhs_zero && rhs_zero || !lhs_zero && rhs_zero {
-            lhs.0
+            graph.cast_parent::<_, Load>(lhs)?
         } else if lhs_zero && !rhs_zero {
-            rhs.0
+            graph.cast_parent::<_, Load>(rhs)?
         } else {
             return None;
-        }
-        .as_load()?;
+        };
 
         let source = graph.input_source(value.ptr());
         let target_ptr = self.values.ptr(source).ok_or(source);
@@ -283,7 +274,7 @@ impl ZeroLoop {
             .cast_output_dest::<Store>(start.effect())?;
 
         // If the stored value isn't zero this isn't a candidate
-        if false_values.ptr_is_zero(gamma.false_branch().input_source(store.value())) {
+        if !false_values.ptr_is_zero(gamma.false_branch().input_source(store.value())) {
             return None;
         }
 
@@ -315,25 +306,22 @@ impl ZeroLoop {
         // value_is_zero = eq value, int 0
         let eq_zero = graph.cast_input_source::<Eq>(gamma.condition())?;
         let [lhs, rhs] = [
-            graph.get_input(eq_zero.lhs()),
-            graph.get_input(eq_zero.rhs()),
+            graph.input_source(eq_zero.lhs()),
+            graph.input_source(eq_zero.rhs()),
         ];
 
-        let (lhs_zero, rhs_zero) = (
-            self.values.ptr_is_zero(lhs.1),
-            self.values.ptr_is_zero(rhs.1),
-        );
+        let (lhs_zero, rhs_zero) = (self.values.ptr_is_zero(lhs), self.values.ptr_is_zero(rhs));
 
         // If the eq doesn't fit the pattern of `value_is_zero = eq value, int 0` this isn't a candidate
         let value = if lhs_zero && rhs_zero || !lhs_zero && rhs_zero {
-            lhs.1
+            lhs
         } else if lhs_zero && !rhs_zero {
-            rhs.1
+            rhs
         } else {
             return None;
         };
 
-        // store _ptr, _value
+        // store ptr, value
         let store = graph.cast_input_source::<Store>(gamma.effect_in())?;
         if graph.input_source(store.value()) != value {
             return None;
@@ -360,13 +348,13 @@ impl ZeroLoop {
 
         let start = gamma.false_branch().to_node::<Start>(gamma.starts()[1]);
 
-        // store _ptr, int 0
+        // store ptr, int 0
         let store = gamma
             .false_branch()
             .cast_output_dest::<Store>(start.effect())?;
 
         // If the stored value isn't zero this isn't a candidate
-        if false_values.ptr_is_zero(gamma.false_branch().input_source(store.value())) {
+        if !false_values.ptr_is_zero(gamma.false_branch().input_source(store.value())) {
             return None;
         }
 

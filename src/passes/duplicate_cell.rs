@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Add, Byte, Gamma, InputParam, InputPort, Int, Node, NodeExt, OutputPort, Rvsdg, Start, Sub,
-        Theta,
+        Add, Byte, Gamma, InputParam, InputPort, Int, Neq, Node, NodeExt, OutputPort, Rvsdg, Start,
+        Sub, Theta,
     },
     ir::Const,
     passes::{utils::BinOp, Pass},
@@ -229,9 +229,8 @@ impl DuplicateCell {
     ///     store src_ptr, src_dec
     ///
     ///     // Test if the source cell is zero
-    ///     src_is_zero := eq src_dec, int 0
-    ///     src_is_non_zero := not v87
-    /// } while { src_is_non_zero }
+    ///     src_not_zero := neq src_dec, int 0
+    /// } while { src_not_zero }
     /// ```
     ///
     /// After conversion, this should be the generated code:
@@ -297,21 +296,15 @@ impl DuplicateCell {
 
         // Get the theta's condition
         // ```
-        // src_is_zero := eq src_dec, int 0
-        // src_is_non_zero := not v87
+        // src_not_zero := neq src_dec, int 0
         // ```
         let condition = theta.condition();
-
-        // `src_is_non_zero := not v87`
-        let src_is_non_zero = graph.input_source_node(condition.input()).as_not()?;
-
-        // `src_is_zero := eq src_dec, int 0`
-        let src_is_zero = graph.input_source_node(src_is_non_zero.input()).as_eq()?;
+        let src_not_zero = graph.cast_input_source::<Neq>(condition.input())?;
         self.compare_operands(
             graph,
             values,
-            src_is_zero.lhs(),
-            src_is_zero.rhs(),
+            src_not_zero.lhs(),
+            src_not_zero.rhs(),
             src_dec,
             Ptr::zero(self.tape_len),
         )?;

@@ -1,6 +1,6 @@
 use crate::{
     graph::{
-        Add, Byte, End, Eq, Gamma, InputParam, InputPort, Int, Load, NodeExt, NodeId, Not,
+        Add, Byte, End, Eq, Gamma, InputParam, InputPort, Int, Load, Neq, NodeExt, NodeId, Not,
         OutputPort, Rvsdg, Start, Store, Sub, Theta,
     },
     ir::Const,
@@ -75,8 +75,7 @@ use std::collections::BTreeMap;
 ///         store temp1_ptr, int 0
 ///
 ///         // Keep looping while temp1's old value (now temp0's value) is non-zero
-///         temp1_eq_zero := eq temp1_val, int 0
-///         temp1_not_zero := not temp1_eq_zero
+///         temp1_not_zero := neq temp1_val, int 0
 ///     } while { temp1_not_zero }
 /// }
 ///
@@ -196,8 +195,7 @@ impl SquareCell {
     ///     store temp1_ptr, int 0
     ///
     ///     // Keep looping while temp1's old value (now temp0's value) is non-zero
-    ///     temp1_eq_zero := eq temp1_val, int 0
-    ///     temp1_not_zero := not temp1_eq_zero
+    ///     temp1_neq_zero := neq temp1_val, int 0
     /// } while { temp1_not_zero }
     /// ```
     ///
@@ -305,16 +303,13 @@ impl SquareCell {
             return None;
         }
 
-        // `temp1_not_zero := not temp1_eq_zero`
-        let temp1_not_zero = graph.cast_input_source::<Not>(theta.condition().input())?;
-
-        // `temp1_eq_zero := eq temp1_val, int 0`
-        let temp1_eq_zero = graph.cast_input_source::<Eq>(temp1_not_zero.input())?;
+        // `temp1_not_zero := neq temp1_eq_zero, int 0`
+        let temp1_not_zero = graph.cast_input_source::<Neq>(theta.condition().input())?;
         if !ports_match(
             graph,
             values,
             self.tape_len,
-            (temp1_eq_zero.lhs(), temp0_eq_zero.rhs()),
+            (temp1_not_zero.lhs(), temp1_not_zero.rhs()),
             temp1_load.output_value(),
             Cell::zero(),
         ) {
@@ -380,8 +375,7 @@ impl SquareCell {
     /// store temp0_ptr, temp0_minus_one
     ///
     /// // Keep looping while temp0 is non-zero
-    /// temp0_eq_zero := eq temp0_minus_one, int 0
-    /// temp0_not_zero := not temp0_eq_zero
+    /// temp0_not_zero := neq temp0_minus_one, int 0
     /// ```
     fn inner_theta_is_candidate(
         &self,
@@ -460,16 +454,13 @@ impl SquareCell {
             return None;
         }
 
-        // `temp0_not_zero := not temp0_eq_zero`
-        let temp0_not_zero = graph.cast_input_source::<Not>(theta.condition().input())?;
-
-        // `temp0_eq_zero := eq temp0_minus_one, int 0`
-        let temp0_eq_zero = graph.cast_input_source::<Eq>(temp0_not_zero.input())?;
+        // `temp0_not_zero := neq temp0_eq_zero, int 0`
+        let temp0_not_zero = graph.cast_input_source::<Neq>(theta.condition().input())?;
         if !ports_match(
             graph,
             values,
             self.tape_len,
-            (temp0_eq_zero.lhs(), temp0_eq_zero.rhs()),
+            (temp0_not_zero.lhs(), temp0_not_zero.rhs()),
             temp0_minus_one.value(),
             Cell::zero(),
         ) {

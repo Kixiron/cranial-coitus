@@ -8,7 +8,7 @@ mod subgraph;
 
 pub use edge::{EdgeCount, EdgeDescriptor, EdgeKind};
 pub use nodes::{
-    Add, Bool, Byte, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul, Neg, Node,
+    Add, Bool, Byte, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul, Neg, Neq, Node,
     NodeExt, NodeId, Not, Output, OutputParam, Start, Store, Sub, Theta, ThetaData,
 };
 pub use ports::{InputPort, OutputPort, Port, PortData, PortId, PortKind};
@@ -580,10 +580,24 @@ impl Rvsdg {
             .and_then(|node| node.try_into().ok())
     }
 
+    #[inline]
+    #[track_caller]
+    pub fn cast_output_consumers<'a, T>(
+        &'a self,
+        output: OutputPort,
+    ) -> impl Iterator<Item = &'a T> + Clone
+    where
+        T: 'a,
+        &'a Node: TryInto<&'a T>,
+    {
+        self.get_outputs(output)
+            .filter_map(|(node, ..)| node.try_into().ok())
+    }
+
     pub fn get_outputs(
         &self,
         output: OutputPort,
-    ) -> impl Iterator<Item = (&Node, InputPort, EdgeKind)> {
+    ) -> impl Iterator<Item = (&Node, InputPort, EdgeKind)> + Clone {
         if cfg!(debug_assertions) {
             if let Some(port_data) = self.ports.get(&output.port()) {
                 assert_eq!(port_data.kind, PortKind::Output);

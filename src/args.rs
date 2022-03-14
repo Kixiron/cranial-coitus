@@ -56,12 +56,6 @@ pub enum Command {
         #[clap(long)]
         no_step_limit: bool,
     },
-
-    /// Step through a brainfuck program
-    Debugger {
-        /// The file to run
-        file: PathBuf,
-    },
 }
 
 #[derive(Parser)]

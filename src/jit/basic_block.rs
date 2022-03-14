@@ -1,5 +1,5 @@
 use crate::{
-    ir::{pretty_utils, Pretty, PrettyConfig},
+    ir::{pretty_utils, CmpKind, Pretty, PrettyConfig},
     utils::DebugDisplay,
     values::{Cell, Ptr},
 };
@@ -10,6 +10,8 @@ use std::{
     ops::{Deref, DerefMut},
     slice, vec,
 };
+
+const COMMENT_ALIGNMENT_OFFSET: usize = 20;
 
 #[derive(Debug, Clone)]
 pub struct Blocks {
@@ -385,17 +387,51 @@ impl Pretty for Output {
         D::Doc: Clone,
         A: Clone,
     {
-        allocator
-            .text("call")
-            .append(allocator.space())
-            .append(allocator.text("output"))
-            .append(self.value.pretty(allocator, config).parens())
+        allocator.column(move |start_column| {
+            allocator
+                .text("call")
+                .append(allocator.space())
+                .append(allocator.text("output"))
+                .append(self.value.pretty(allocator, config).parens())
+                .append(allocator.column(move |column| {
+                    let char = match self.value() {
+                        Value::U8(byte) => byte.into_inner() as char,
+                        Value::U16(long) => {
+                            if let Some(char) = char::from_u32(long.0 as u32) {
+                                char
+                            } else {
+                                return allocator.nil().into_doc();
+                            }
+                        }
+                        Value::TapePtr(ptr) => {
+                            if let Some(char) = char::from_u32(ptr.value() as u32) {
+                                char
+                            } else {
+                                return allocator.nil().into_doc();
+                            }
+                        }
+                        Value::Bool(bool) => bool as u8 as char,
+                        Value::Val(..) => return allocator.nil().into_doc(),
+                    };
+                    let comment = format!("// {:?}", char);
+
+                    allocator
+                        .space()
+                        .append(
+                            allocator.text(comment).indent(
+                                COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column),
+                            ),
+                        )
+                        .into_doc()
+                }))
+                .into_doc()
+        })
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum RValue {
-    Eq(Eq),
+    Cmp(Cmp),
     Phi(Phi),
     Neg(Neg),
     Not(Not),
@@ -467,9 +503,9 @@ impl From<Neg> for RValue {
     }
 }
 
-impl From<Eq> for RValue {
-    fn from(eq: Eq) -> Self {
-        Self::Eq(eq)
+impl From<Cmp> for RValue {
+    fn from(eq: Cmp) -> Self {
+        Self::Cmp(eq)
     }
 }
 
@@ -493,7 +529,7 @@ impl Pretty for RValue {
         A: Clone,
     {
         match self {
-            Self::Eq(eq) => eq.pretty(allocator, config),
+            Self::Cmp(eq) => eq.pretty(allocator, config),
             Self::Phi(phi) => phi.pretty(allocator, config),
             Self::Neg(neg) => neg.pretty(allocator, config),
             Self::Not(not) => not.pretty(allocator, config),
@@ -508,14 +544,15 @@ impl Pretty for RValue {
 }
 
 #[derive(Debug, Clone)]
-pub struct Eq {
+pub struct Cmp {
     lhs: Value,
     rhs: Value,
+    kind: CmpKind,
 }
 
-impl Eq {
-    pub const fn new(lhs: Value, rhs: Value) -> Self {
-        Self { lhs, rhs }
+impl Cmp {
+    pub const fn new(lhs: Value, rhs: Value, kind: CmpKind) -> Self {
+        Self { lhs, rhs, kind }
     }
 
     pub const fn lhs(&self) -> Value {
@@ -525,16 +562,27 @@ impl Eq {
     pub const fn rhs(&self) -> Value {
         self.rhs
     }
+
+    pub const fn kind(&self) -> CmpKind {
+        self.kind
+    }
 }
 
-impl Pretty for Eq {
+impl Pretty for Cmp {
     fn pretty<'a, D, A>(&'a self, allocator: &'a D, config: PrettyConfig) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
         A: Clone,
     {
-        pretty_utils::binary("eq", &self.lhs, &self.rhs, allocator, config)
+        allocator
+            .text("cmp.")
+            .append(self.kind.pretty(allocator, config))
+            .append(allocator.space())
+            .append(self.lhs.pretty(allocator, config))
+            .append(allocator.text(","))
+            .append(allocator.space())
+            .append(self.rhs.pretty(allocator, config))
     }
 }
 

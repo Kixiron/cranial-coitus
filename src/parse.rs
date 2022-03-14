@@ -1,5 +1,3 @@
-use std::io::{self, Write};
-
 #[derive(Debug)]
 pub enum Token {
     IncPtr,
@@ -9,49 +7,6 @@ pub enum Token {
     Output,
     Input,
     Loop(Box<[Self]>),
-}
-
-struct CloseLoop;
-
-impl Token {
-    pub fn debug_tokens(tokens: &[Self], mut output: impl Write) {
-        let mut stack = tokens.iter().map(|token| (Ok(token), 0)).collect();
-        Self::debug_tokens_inner(&mut stack, &mut output).expect("failed to debug tokens");
-    }
-
-    fn debug_tokens_inner(
-        stack: &mut Vec<(Result<&Token, CloseLoop>, usize)>,
-        output: &mut dyn Write,
-    ) -> io::Result<()> {
-        while let Some((token, level)) = stack.pop() {
-            // Write the leading padding
-            for _ in 0..level * 2 {
-                output.write_all(b" ")?;
-            }
-
-            match token {
-                Ok(token) => match token {
-                    Token::Loop(body) => {
-                        // Start loops
-                        writeln!(output, "Loop {{")?;
-
-                        // Push all tokens from the loop onto the stack in reverse order
-                        stack.reserve(body.len() + 1);
-                        stack.push((Err(CloseLoop), level));
-                        stack.extend(body.iter().rev().map(|token| (Ok(token), level + 1)));
-                    }
-
-                    // All other token kinds just get print out alone
-                    other => writeln!(output, "{:?}", other)?,
-                },
-
-                // Close loops
-                Err(CloseLoop) => writeln!(output, "}}")?,
-            }
-        }
-
-        Ok(())
-    }
 }
 
 enum RawToken {

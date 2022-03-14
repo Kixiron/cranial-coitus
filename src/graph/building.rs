@@ -2,8 +2,8 @@ use crate::{
     graph::{
         nodes::{GammaStub, ThetaEffects, ThetaStub},
         Add, Bool, Byte, EdgeKind, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul,
-        Neg, Node, Not, Output, OutputParam, OutputPort, Rvsdg, Start, Store, Sub, Subgraph, Theta,
-        ThetaData,
+        Neg, Neq, Node, Not, Output, OutputParam, OutputPort, Rvsdg, Start, Store, Sub, Subgraph,
+        Theta, ThetaData,
     },
     utils::AssertNone,
     values::{Cell, Ptr},
@@ -660,6 +660,29 @@ impl Rvsdg {
     }
 
     #[track_caller]
+    pub fn neq(&mut self, lhs: OutputPort, rhs: OutputPort) -> Neq {
+        self.assert_value_port(lhs);
+        self.assert_value_port(rhs);
+
+        let neq_id = self.next_node();
+
+        let lhs_port = self.input_port(neq_id, EdgeKind::Value);
+        self.add_value_edge(lhs, lhs_port);
+
+        let rhs_port = self.input_port(neq_id, EdgeKind::Value);
+        self.add_value_edge(rhs, rhs_port);
+
+        let output = self.output_port(neq_id, EdgeKind::Value);
+
+        let neq = Neq::new(neq_id, lhs_port, rhs_port, output);
+        self.nodes
+            .insert(neq_id, Node::Neq(neq))
+            .debug_unwrap_none();
+
+        neq
+    }
+
+    #[track_caller]
     pub fn not(&mut self, input: OutputPort) -> Not {
         self.assert_value_port(input);
 
@@ -695,14 +718,5 @@ impl Rvsdg {
             .debug_unwrap_none();
 
         neg
-    }
-
-    #[track_caller]
-    pub fn neq(&mut self, lhs: OutputPort, rhs: OutputPort) -> Not {
-        self.assert_value_port(lhs);
-        self.assert_value_port(rhs);
-
-        let eq = self.eq(lhs, rhs);
-        self.not(eq.value())
     }
 }

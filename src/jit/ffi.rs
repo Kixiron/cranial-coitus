@@ -48,65 +48,55 @@ macro_rules! log_registers {
                 options(pure, nostack, readonly),
             );
 
-            // ::std::println!(
-            //     "[{}:{}:{}]: rax = {}, rcx = {}, rdx = {}, r8 = {}, r9 = {}, rsp = {}",
-            //     file!(),
-            //     line!(),
-            //     column!(),
-            //     rax_val,
-            //     rcx_val,
-            //     rdx_val,
-            //     r8_val,
-            //     r9_val,
-            //     rsp_val,
-            // );
+            ::std::println!(
+                "[{}:{}:{}]: rax = {}, rcx = {}, rdx = {}, r8 = {}, r9 = {}, rsp = {}",
+                file!(),
+                line!(),
+                column!(),
+                rax_val,
+                rcx_val,
+                rdx_val,
+                r8_val,
+                r9_val,
+                rsp_val,
+            );
         }
     };
 }
 
-/// Returns a `u16` where the first byte is the input value and the second
-/// byte is a 1 upon IO failure and a 0 upon success
-pub(super) unsafe extern "fastcall" fn input(state: *mut State) -> u16 {
-    unsafe { log_registers!() }
-    // println!("state = {}", state as usize);
+/// Returns a bool with the input call's status, writing to `input` if successful
+///
+/// If the function returns `true`, the contents of `input` are undefined.
+/// If the function returns `false`, the location pointed to by `input` will
+/// contain the input value
+pub(super) unsafe extern "fastcall" fn input(state: *mut State, input: *mut u8) -> bool {
+    debug_assert!(!state.is_null());
+    debug_assert!(!input.is_null());
 
-    let (state, mut value) = (unsafe { &mut *state }, 0);
-    let input_panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+    let (state, input) = unsafe { (&mut *state, &mut *input) };
+    panic::catch_unwind(AssertUnwindSafe(|| {
         // Flush stdout
-        let flush_failed = match state.stdout.flush() {
-            Ok(()) => false,
-            Err(err) => {
-                tracing::error!("failed to flush stdout while getting byte: {:?}", err);
-                true
-            }
-        };
+        if let Err(err) = state.stdout.flush() {
+            tracing::error!("failed to flush stdout while getting byte: {:?}", err);
+            return true;
+        }
 
         // Read one byte from stdin
-        let read_failed = match state.stdin.read_exact(slice::from_mut(&mut value)) {
-            Ok(()) => false,
-            Err(err) => {
-                tracing::error!("getting byte from stdin failed: {:?}", err);
-                true
-            }
-        };
-
-        read_failed || flush_failed
-    }));
-
-    let failed = match input_panicked {
-        Ok(result) => result,
-        Err(err) => {
-            tracing::error!("getting byte from stdin panicked: {:?}", err);
-            true
+        if let Err(err) = state.stdin.read_exact(slice::from_mut(input)) {
+            tracing::error!("getting byte from stdin failed: {:?}", err);
+            return true;
         }
-    };
 
-    u16::from_be_bytes([value, failed as u8])
+        false
+    }))
+    .unwrap_or_else(|err| {
+        tracing::error!("getting byte from stdin panicked: {:?}", err);
+        true
+    })
 }
 
 pub(super) unsafe extern "fastcall" fn output(state: *mut State, byte: u8) -> bool {
-    unsafe { log_registers!() }
-    // println!("state = {}, byte = {}", state as usize, byte);
+    debug_assert!(!state.is_null());
 
     let state = unsafe { &mut *state };
     panic::catch_unwind(AssertUnwindSafe(|| {
@@ -132,8 +122,7 @@ pub(super) unsafe extern "fastcall" fn output(state: *mut State, byte: u8) -> bo
 }
 
 pub(super) unsafe extern "fastcall" fn io_error_encountered(state: *mut State) -> bool {
-    unsafe { log_registers!() }
-    // println!("state = {}", state as usize);
+    debug_assert!(!state.is_null());
 
     let state = unsafe { &mut *state };
     let io_failure_panicked = panic::catch_unwind(AssertUnwindSafe(|| {

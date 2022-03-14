@@ -20,13 +20,11 @@ mod graph;
 mod interpreter;
 mod ir;
 mod jit;
-mod lattice;
 mod lower_tokens;
 mod parse;
 mod passes;
 mod patterns;
 mod tests;
-mod union_find;
 mod values;
 
 use crate::{
@@ -70,7 +68,6 @@ fn main() -> Result<()> {
             only_final_run,
             no_step_limit,
         } => debug(&args, file, only_final_run, no_step_limit, start_time),
-        Command::Debugger { file } => driver::debugger(&args, file, start_time),
     }
 }
 
@@ -110,10 +107,7 @@ fn debug(
     validate(&graph);
 
     let compile_attempt: Result<Result<_>, _> = panic::catch_unwind(|| {
-        let (jit, clif, ssa, asm) = Jit::new(args.tape_len).compile(&input_program)?;
-        fs::write(dump_dir.join("input.clif"), clif)?;
-        fs::write(dump_dir.join("input.ssa"), ssa)?;
-        fs::write(dump_dir.join("input.asm"), asm)?;
+        let jit = Jit::new(args, &dump_dir, "input").compile(&input_program)?;
 
         let mut tape = vec![0x00; args.tape_len as usize];
         let start = Instant::now();
@@ -320,7 +314,6 @@ fn debug(
     }
 
     let elapsed = start_time.elapsed();
-
     {
         let mut reports = Vec::with_capacity(passes.len());
         let mut max_len = 0;
@@ -563,10 +556,7 @@ fn debug(
         output_program.pretty_print(PrettyConfig::instrumented(optimized_stats.instructions));
     fs::write(dump_dir.join("annotated_output.cir"), annotated_program)?;
 
-    let (jit, clif, ssa, asm) = Jit::new(args.tape_len).compile(&output_program)?;
-    fs::write(dump_dir.join("output.clif"), clif)?;
-    fs::write(dump_dir.join("output.ssa"), ssa)?;
-    fs::write(dump_dir.join("output.asm"), asm)?;
+    let jit = Jit::new(args, &dump_dir, "output").compile(&output_program)?;
 
     let mut tape = vec![0x00; args.tape_len as usize];
     let start = Instant::now();

@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Add, Byte, End, Eq, Gamma, InputParam, Int, Load, Node, NodeExt, Not, OutputPort, Rvsdg,
-        Store, Sub, Theta,
+        Add, Byte, End, Gamma, InputParam, Int, Load, Neq, Node, NodeExt, OutputPort, Rvsdg, Store,
+        Sub, Theta,
     },
     ir::Const,
     passes::Pass,
@@ -59,8 +59,7 @@ impl AddSubLoop {
     ///   store acc_ptr, inc_acc
     ///
     ///   // Compare the counter's value to zero
-    ///   counter_is_zero := eq dec_counter, int 0
-    ///   counter_not_zero := not counter_is_zero
+    ///   counter_not_zero := neq dec_counter, int 0
     /// } while { counter_not_zero }
     /// ```
     ///
@@ -81,8 +80,7 @@ impl AddSubLoop {
     ///   store acc_ptr, dec_acc
     ///
     ///   // Compare the counter's value to zero
-    ///   counter_is_zero := eq dec_counter, int 0
-    ///   counter_not_zero := not counter_is_zero
+    ///   counter_not_zero := neq dec_counter, int 0
     /// } while { counter_not_zero }
     /// ```
     ///
@@ -204,23 +202,17 @@ impl AddSubLoop {
         // The output param that takes the theta's exit condition
         let cond_output = theta.condition();
 
-        // Invert the `dec_counter == 0` to make it `dec_counter != 0`
-        // counter_not_zero := not counter_is_zero
-        let cond_neg = graph.cast_source::<Not>(cond_output.input())?;
-
-        // The check if the counter's decremented value is zero
-        // counter_is_zero := eq dec_counter, int 0
-        let cond_is_zero = graph.cast_source::<Eq>(cond_neg.input())?;
-
-        let (eq_lhs_src, eq_rhs_src) = (
-            graph.get_input(cond_is_zero.lhs()).1,
-            graph.get_input(cond_is_zero.rhs()).1,
+        // counter_not_zero := neq counter_is_zero, int 0
+        let cond_not_zero = graph.cast_source::<Neq>(cond_output.input())?;
+        let (neq_lhs_src, neq_rhs_src) = (
+            graph.input_source(cond_not_zero.lhs()),
+            graph.input_source(cond_not_zero.rhs()),
         );
-        let (eq_lhs_zero, eq_rhs_zero) = (is(eq_lhs_src, 0), is(eq_rhs_src, 0));
+        let (neq_lhs_zero, neq_rhs_zero) = (is(neq_lhs_src, 0), is(neq_rhs_src, 0));
 
-        // If the eq isn't `eq dec_counter, 0` this isn't a candidate
-        if !((eq_lhs_src == dec_counter.value() && eq_rhs_zero)
-            || (eq_lhs_zero && eq_rhs_src == dec_counter.value()))
+        // If the neq isn't `neq dec_counter, 0` this isn't a candidate
+        if !((neq_lhs_src == dec_counter.value() && neq_rhs_zero)
+            || (neq_lhs_zero && neq_rhs_src == dec_counter.value()))
         {
             return None;
         }
@@ -333,17 +325,18 @@ impl Pass for AddSubLoop {
                     .input_pairs()
                     .find_map(|(port, input)| {
                         if input.output() == output {
-                            Some(graph.get_input(port).1)
+                            Some(graph.input_source(port))
                         } else {
                             None
                         }
                     })
                     .or_else(|| {
-                        theta
-                            .body()
-                            .get_node(theta.body().port_parent(output))
+                        let source = theta.body().get_node(theta.body().port_parent(output));
+
+                        source
                             .as_int()
                             .map(|(_, int)| graph.int(int).value())
+                            .or_else(|| source.as_byte().map(|(_, byte)| graph.byte(byte).value()))
                     })
                     .unwrap()
             };

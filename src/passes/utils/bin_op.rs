@@ -3,7 +3,7 @@ use crate::{
     values::Ptr,
 };
 
-// TODO: Eq?
+// TODO: Eq & Neq?
 pub trait BinOp {
     fn name() -> &'static str;
 

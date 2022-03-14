@@ -91,6 +91,7 @@ impl Pass for Mem2Reg {
 
     fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
         let (ptr, source, _) = graph.get_input(load.ptr());
+        // FIXME: Bytes
         let ptr = ptr.as_int().map(|(_, ptr)| ptr).or_else(|| {
             self.values
                 .get(&source)
@@ -142,6 +143,7 @@ impl Pass for Mem2Reg {
 
     fn visit_store(&mut self, graph: &mut Rvsdg, store: Store) {
         let (ptr, source, _) = graph.get_input(store.ptr());
+        // FIXME: Bytes
         let ptr = ptr.as_int().map(|(_, ptr)| ptr).or_else(|| {
             self.values
                 .get(&source)
@@ -150,6 +152,7 @@ impl Pass for Mem2Reg {
 
         if let Some(offset) = ptr {
             let (stored_value, output_port, _) = graph.get_input(store.value());
+            // FIXME: Bytes
             let stored_value = stored_value.as_int().map(|(_, value)| value).or_else(|| {
                 self.values
                     .get(&output_port)

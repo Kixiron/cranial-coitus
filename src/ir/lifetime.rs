@@ -1,5 +1,5 @@
 use crate::ir::{
-    Add, Assign, AssignTag, Call, Eq, Expr, Gamma, Instruction, LifetimeEnd, Load, Mul, Neg, Not,
+    Add, Assign, AssignTag, Call, Cmp, Expr, Gamma, Instruction, LifetimeEnd, Load, Mul, Neg, Not,
     Store, Sub, Theta, Value, VarId,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -62,7 +62,7 @@ fn analyze_instruction(
 
             if !tag.is_input_param() {
                 match *value {
-                    Expr::Eq(Eq { lhs, rhs }) => {
+                    Expr::Cmp(Cmp { lhs, rhs, .. }) => {
                         if let Value::Var(var) = lhs {
                             last_usage.insert(var, idx);
                         }

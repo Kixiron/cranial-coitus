@@ -1,7 +1,7 @@
 use crate::{
     ir::{
-        Add, Assign, AssignTag, Block, Call, Const, Eq, Expr, Gamma, Instruction, Load, Mul, Neg,
-        Not, Store, Sub, Theta, Value, VarId, Variance,
+        Add, Assign, AssignTag, Block, Call, Cmp, CmpKind, Const, Expr, Gamma, Instruction, Load,
+        Mul, Neg, Not, Store, Sub, Theta, Value, VarId, Variance,
     },
     utils::{self, AssertNone},
     values::{Cell, Ptr},
@@ -130,7 +130,7 @@ where
 
     fn eval(&mut self, expr: &mut Expr, should_profile: bool) -> Result<Const> {
         match expr {
-            Expr::Eq(eq) => self.eq(eq),
+            Expr::Cmp(cmp) => self.cmp(cmp),
             Expr::Add(add) => self.add(add),
             Expr::Sub(sub) => self.sub(sub),
             Expr::Mul(mul) => self.mul(mul),
@@ -387,18 +387,28 @@ where
             .map(Const::Cell)
     }
 
-    fn eq(&self, eq: &Eq) -> Result<Const> {
-        let (lhs, rhs) = (self.get_byte(&eq.lhs)?, self.get_byte(&eq.rhs)?);
+    fn cmp(&self, cmp: &Cmp) -> Result<Const> {
+        let (lhs, rhs) = (self.get_byte(&cmp.lhs)?, self.get_byte(&cmp.rhs)?);
         tracing::trace!(
-            lhs = ?self.get_const(&eq.lhs),
-            rhs = ?self.get_const(&eq.rhs),
-            "({:?} == {:?}) is {}",
+            lhs = ?self.get_const(&cmp.lhs),
+            rhs = ?self.get_const(&cmp.rhs),
+            "({:?} {} {:?}) is {}",
             lhs,
+            cmp.op.operator(),
             rhs,
             lhs == rhs,
         );
 
-        Ok(Const::Bool(lhs == rhs))
+        let result = match cmp.op {
+            CmpKind::Eq => lhs == rhs,
+            CmpKind::Neq => lhs != rhs,
+            CmpKind::Less => lhs < rhs,
+            CmpKind::Greater => lhs > rhs,
+            CmpKind::LessEq => lhs <= rhs,
+            CmpKind::GreaterEq => lhs >= rhs,
+        };
+
+        Ok(Const::Bool(result))
     }
 
     fn add(&self, add: &Add) -> Result<Const> {

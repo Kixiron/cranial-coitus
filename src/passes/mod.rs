@@ -37,8 +37,8 @@ pub use zero_loop::ZeroLoop;
 
 use crate::{
     graph::{
-        Add, Bool, Byte, End, Eq, Gamma, Input, InputParam, Int, Load, Mul, Neg, Node, NodeExt,
-        NodeId, Not, Output, OutputParam, Rvsdg, Start, Store, Sub, Theta,
+        Add, Bool, Byte, End, Eq, Gamma, Input, InputParam, Int, Load, Mul, Neg, Neq, Node,
+        NodeExt, NodeId, Not, Output, OutputParam, Rvsdg, Start, Store, Sub, Theta,
     },
     utils::{HashMap, HashSet},
     values::{Cell, Ptr},
@@ -254,6 +254,7 @@ pub trait Pass {
                 Node::Output(output) => self.visit_output(graph, output),
                 Node::Theta(theta) => self.visit_theta(graph, *theta),
                 Node::Eq(eq) => self.visit_eq(graph, eq),
+                Node::Neq(neq) => self.visit_neq(graph, neq),
                 Node::Not(not) => self.visit_not(graph, not),
                 Node::Neg(neg) => self.visit_neg(graph, neg),
                 Node::Gamma(gamma) => self.visit_gamma(graph, *gamma),
@@ -280,6 +281,7 @@ pub trait Pass {
     // TODO: Cow
     fn visit_theta(&mut self, _graph: &mut Rvsdg, _theta: Theta) {}
     fn visit_eq(&mut self, _graph: &mut Rvsdg, _eq: Eq) {}
+    fn visit_neq(&mut self, _graph: &mut Rvsdg, _neq: Neq) {}
     fn visit_not(&mut self, _graph: &mut Rvsdg, _not: Not) {}
     fn visit_neg(&mut self, _graph: &mut Rvsdg, _neg: Neg) {}
     // TODO: Cow

@@ -5,22 +5,20 @@ mod block_builder;
 mod block_visitor;
 // mod cir_jit;
 mod cir_to_bb;
-// mod coloring;
 mod disassemble;
-// mod liveliness;
 mod memory;
-// mod regalloc;
 
 pub use ffi::State;
 pub use memory::Executable;
 
 use crate::{
-    ir::{Block, Pretty, PrettyConfig},
+    args::Args,
+    ir::{Block, CmpKind, Pretty, PrettyConfig},
     jit::basic_block::{Instruction, RValue, Terminator, Type, Value},
     utils::AssertNone,
     values::{Cell, Ptr},
 };
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use cranelift::{
     codegen::{
         ir::{
@@ -30,11 +28,11 @@ use cranelift::{
         Context,
     },
     frontend::{FunctionBuilder, FunctionBuilderContext},
-    prelude::{isa::CallConv, AbiParam, IntCC, MemFlags, TrapCode},
+    prelude::{isa::CallConv, AbiParam, IntCC, MemFlags, StackSlotData, StackSlotKind, TrapCode},
 };
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataContext, Linkage, Module};
-use std::{collections::BTreeMap, mem::transmute, ops::Not, slice};
+use std::{collections::BTreeMap, fs, mem::transmute, ops::Not, path::Path, slice};
 
 /// The function produced by jit code
 pub type JitFunction = unsafe extern "fastcall" fn(*mut State, *mut u8, *const u8) -> u8;
@@ -43,7 +41,7 @@ const RETURN_SUCCESS: Cell = Cell::zero();
 
 const RETURN_IO_FAILURE: Cell = Cell::new(101);
 
-pub struct Jit {
+pub struct Jit<'a> {
     /// The function builder context, which is reused across multiple
     /// `FunctionBuilder` instances
     builder_context: FunctionBuilderContext,
@@ -62,11 +60,14 @@ pub struct Jit {
 
     /// The length of the (program/turing) tape we're targeting
     tape_len: u16,
+
+    dump_dir: &'a Path,
+    file_name: &'a str,
 }
 
-impl Jit {
+impl<'a> Jit<'a> {
     /// Create a new jit
-    pub fn new(tape_len: u16) -> Self {
+    pub fn new(args: &Args, dump_dir: &'a Path, file_name: &'a str) -> Self {
         let mut builder = JITBuilder::new(cranelift_module::default_libcall_names());
 
         // Add external functions to the module so they're accessible within
@@ -89,15 +90,27 @@ impl Jit {
             ctx,
             data_ctx: DataContext::new(),
             module,
-            tape_len,
+            tape_len: args.tape_len,
+            dump_dir,
+            file_name,
         }
     }
 
     /// Compile a block of CIR into an executable buffer
-    pub fn compile(mut self, block: &Block) -> Result<(Executable, String, String, String)> {
-        let ssa_ir = {
+    pub fn compile(mut self, block: &Block) -> Result<Executable> {
+        {
             // Translate CIR into SSA form
             let blocks = cir_to_bb::translate(block);
+
+            // Create a formatted version of the ssa ir we just generated
+            {
+                let ssa_ir = blocks.pretty_print(PrettyConfig::minimal());
+                fs::write(
+                    self.dump_dir.join(self.file_name).with_extension("ssa"),
+                    ssa_ir,
+                )
+                .context("failed to write ssa ir file")?;
+            }
 
             // We use SystemV here since it's one of the only calling conventions
             // that both Rust and Cranelift support (Rust functions must use the
@@ -130,10 +143,11 @@ impl Jit {
             // Create the input and output functions as well as the io error function
             // Note: These could be lazily initialized, but I'm not sure it really matters
             let input_function = {
-                // extern "sysv64" fn(*mut State) -> u16
+                // extern "fastcall" fn(*mut State, *mut u8) -> bool
                 let mut sig = self.module.make_signature();
                 sig.params.push(ptr_param);
-                sig.returns.push(AbiParam::new(I16));
+                sig.params.push(ptr_param);
+                sig.returns.push(AbiParam::new(B1));
                 sig.call_conv = CallConv::WindowsFastcall;
 
                 let callee = self
@@ -142,7 +156,7 @@ impl Jit {
                 self.module.declare_func_in_func(callee, builder.func)
             };
             let output_function = {
-                // extern "sysv64" fn(*mut State, u8) -> bool
+                // extern "fastcall" fn(*mut State, u8) -> bool
                 let mut sig = self.module.make_signature();
                 sig.params.push(ptr_param);
                 sig.params.push(AbiParam::new(I8));
@@ -155,7 +169,7 @@ impl Jit {
                 self.module.declare_func_in_func(callee, builder.func)
             };
             let io_error_function = {
-                // extern "sysv64" fn(*mut State) -> bool
+                // extern "fastcall" fn(*mut State) -> bool
                 let mut sig = self.module.make_signature();
                 sig.params.push(ptr_param);
                 sig.returns.push(AbiParam::new(B1));
@@ -301,8 +315,8 @@ impl Jit {
 
                         Instruction::Assign(assign) => {
                             let value = match assign.rval() {
-                                RValue::Eq(eq) => {
-                                    let lhs = match eq.lhs() {
+                                RValue::Cmp(cmp) => {
+                                    let lhs = match cmp.lhs() {
                                         Value::U8(byte) => builder.ins().iconst(I8, byte),
                                         Value::U16(int) => builder.ins().iconst(I16, int.0 as i64),
                                         Value::TapePtr(uint) => builder.ins().iconst(I8, uint),
@@ -316,7 +330,7 @@ impl Jit {
                                             }
                                         }
                                     };
-                                    let rhs = match eq.rhs() {
+                                    let rhs = match cmp.rhs() {
                                         Value::U8(byte) => builder.ins().iconst(I8, byte),
                                         Value::U16(int) => builder.ins().iconst(I16, int.0 as i64),
                                         Value::TapePtr(uint) => builder.ins().iconst(I8, uint),
@@ -331,8 +345,18 @@ impl Jit {
                                         }
                                     };
 
+                                    // Figure out what kind of comparison we're doing
+                                    let cmp_kind = match cmp.kind() {
+                                        CmpKind::Eq => IntCC::Equal,
+                                        CmpKind::Neq => IntCC::NotEqual,
+                                        CmpKind::Less => IntCC::UnsignedLessThan,
+                                        CmpKind::Greater => IntCC::UnsignedGreaterThan,
+                                        CmpKind::LessEq => IntCC::UnsignedLessThanOrEqual,
+                                        CmpKind::GreaterEq => IntCC::UnsignedGreaterThanOrEqual,
+                                    };
+
                                     // TODO: Optimize to `.icmp_imm()` when either side is an immediate value
-                                    (builder.ins().icmp(IntCC::Equal, lhs, rhs), B1)
+                                    (builder.ins().icmp(cmp_kind, lhs, rhs), B1)
                                 }
 
                                 RValue::Phi(phi) => {
@@ -404,8 +428,12 @@ impl Jit {
                                             let lhs = builder.ins().iconst(I8, byte);
                                             let rhs = match add.rhs() {
                                                 Value::U8(byte) => builder.ins().iconst(I8, byte),
-                                                Value::U16(int) => builder.ins().iconst(I8, Cell::from(int)),
-                                                Value::TapePtr(uint) => builder.ins().iconst(I8, uint.into_cell()),
+                                                Value::U16(int) => {
+                                                    builder.ins().iconst(I8, Cell::from(int))
+                                                }
+                                                Value::TapePtr(uint) => {
+                                                    builder.ins().iconst(I8, uint.into_cell())
+                                                }
                                                 Value::Bool(_) => unreachable!(),
                                                 Value::Val(value, _) => {
                                                     let (value, ty) = values[&value];
@@ -421,13 +449,17 @@ impl Jit {
                                             };
 
                                             (lhs, rhs, I8)
-                                        },
+                                        }
                                         Value::U16(int) => {
                                             let lhs = builder.ins().iconst(I16, int.0 as i64);
                                             let rhs = match add.rhs() {
                                                 Value::U8(byte) => builder.ins().iconst(I16, byte),
-                                                Value::U16(int) => builder.ins().iconst(I16, int.0 as i64),
-                                                Value::TapePtr(uint) => builder.ins().iconst(I16, uint),
+                                                Value::U16(int) => {
+                                                    builder.ins().iconst(I16, int.0 as i64)
+                                                }
+                                                Value::TapePtr(uint) => {
+                                                    builder.ins().iconst(I16, uint)
+                                                }
                                                 Value::Bool(_) => unreachable!(),
                                                 Value::Val(value, _) => {
                                                     let (value, ty) = values[&value];
@@ -445,14 +477,19 @@ impl Jit {
                                             };
 
                                             (lhs, rhs, I16)
-                                        },
+                                        }
                                         Value::TapePtr(uint) => {
                                             // FIXME: Should use I16 for pointer
-                                            let lhs = builder.ins().iconst(I32, uint.value() as i64);
+                                            let lhs =
+                                                builder.ins().iconst(I32, uint.value() as i64);
                                             let rhs = match add.rhs() {
                                                 Value::U8(byte) => builder.ins().iconst(I32, byte),
-                                                Value::U16(int) => builder.ins().iconst(I32, Ptr::new(int.0, self.tape_len)),
-                                                Value::TapePtr(uint) => builder.ins().iconst(I32, uint),
+                                                Value::U16(int) => builder
+                                                    .ins()
+                                                    .iconst(I32, Ptr::new(int.0, self.tape_len)),
+                                                Value::TapePtr(uint) => {
+                                                    builder.ins().iconst(I32, uint)
+                                                }
                                                 Value::Bool(_) => unreachable!(),
                                                 Value::Val(value, _) => {
                                                     let (value, ty) = values[&value];
@@ -486,27 +523,36 @@ impl Jit {
                                                 Type::U8 => builder.ins().ireduce(I8, value),
 
                                                 Type::U16 if clif_ty == I16 => value,
-                                                Type::U16 if clif_ty == I8 => builder.ins().uextend(I16, value),
+                                                Type::U16 if clif_ty == I8 => {
+                                                    builder.ins().uextend(I16, value)
+                                                }
                                                 Type::U16 => builder.ins().ireduce(I16, value),
 
                                                 Type::Ptr if clif_ty == I32 => value,
-                                                Type::Ptr if clif_ty == I8 || clif_ty == I16 => builder.ins().uextend(I32, value),
+                                                Type::Ptr if clif_ty == I8 || clif_ty == I16 => {
+                                                    builder.ins().uextend(I32, value)
+                                                }
                                                 Type::Ptr => builder.ins().ireduce(I32, value),
 
                                                 Type::Bool => unreachable!(),
                                             };
 
                                             let rhs = match add.rhs() {
-                                                Value::U8(byte) => builder.ins().iconst(expected_ty, byte),
+                                                Value::U8(byte) => {
+                                                    builder.ins().iconst(expected_ty, byte)
+                                                }
                                                 Value::U16(int) => builder.ins().iconst(
                                                     expected_ty,
                                                     if ty == Type::Ptr {
-                                                        Ptr::new(int.0, self.tape_len).value() as i64
+                                                        Ptr::new(int.0, self.tape_len).value()
+                                                            as i64
                                                     } else {
                                                         int.0 as i64
                                                     },
                                                 ),
-                                                Value::TapePtr(uint) => builder.ins().iconst(expected_ty, uint),
+                                                Value::TapePtr(uint) => {
+                                                    builder.ins().iconst(expected_ty, uint)
+                                                }
                                                 Value::Val(value, _) => {
                                                     let (value, ty) = values[&value];
                                                     // TODO: Proper wrapping?
@@ -516,7 +562,9 @@ impl Jit {
                                                         builder.ins().uextend(expected_ty, value)
                                                     } else if ty == I16 && expected_ty == I8 {
                                                         builder.ins().ireduce(expected_ty, value)
-                                                    } else if ty == I16 || (ty == I32 && expected_ty == I64) {
+                                                    } else if ty == I16
+                                                        || (ty == I32 && expected_ty == I64)
+                                                    {
                                                         builder.ins().uextend(expected_ty, value)
                                                     } else if ty == I32 || ty == I64 {
                                                         builder.ins().ireduce(expected_ty, value)
@@ -526,7 +574,6 @@ impl Jit {
                                                 }
                                                 Value::Bool(_) => unreachable!(),
                                             };
-
 
                                             (lhs, rhs, expected_ty)
                                         }
@@ -646,12 +693,19 @@ impl Jit {
                                     // call and associated error check
                                     let call_prelude = builder.create_block();
 
-                                    // Call the input function
-                                    let input_call = builder.ins().call(input_function, &[state]);
-                                    let input_result = builder.inst_results(input_call)[0];
+                                    // Allocate a stack slot for the input value
+                                    let input_slot = builder.create_stack_slot(StackSlotData::new(
+                                        StackSlotKind::ExplicitSlot,
+                                        1,
+                                    ));
+                                    let input_slot_addr =
+                                        builder.ins().stack_addr(ptr, input_slot, 0);
 
-                                    // Shift the input value left by 8 bits to get the error boolean
-                                    let input_failed = builder.ins().ireduce(I8, input_result);
+                                    // Call the input function
+                                    let input_call = builder
+                                        .ins()
+                                        .call(input_function, &[state, input_slot_addr]);
+                                    let input_failed = builder.inst_results(input_call)[0];
 
                                     // If the call to input failed (and therefore returned true),
                                     // branch to the io error handler
@@ -664,8 +718,10 @@ impl Jit {
                                     builder.ins().jump(call_prelude, &[]);
                                     builder.switch_to_block(call_prelude);
 
-                                    let input_result = builder.ins().ushr_imm(input_result, 8);
-                                    (builder.ins().ireduce(I8, input_result), I8)
+                                    // Load the input value written to the stack
+                                    let input_value = builder.ins().stack_load(I8, input_slot, 0);
+
+                                    (input_value, I8)
                                 }
                             };
 
@@ -722,7 +778,7 @@ impl Jit {
                                 .filter_map(|inst| {
                                     inst.as_assign()
                                         .and_then(|assign| assign.rval().as_phi())
-                                        .and_then(|phi| {       
+                                        .and_then(|phi| {
                                             if phi.lhs_src() == block.id() {
                                                 Some(phi.lhs())
                                             } else if phi.rhs_src() == block.id() {
@@ -785,8 +841,6 @@ impl Jit {
                                     inst.as_assign()
                                         .and_then(|assign| assign.rval().as_phi())
                                         .and_then(|phi| {
-                                     
-
                                             if phi.lhs_src() == block.id() {
                                                 Some(phi.lhs())
                                             } else if phi.rhs_src() == block.id() {
@@ -916,26 +970,27 @@ impl Jit {
             // FIXME: We should seal blocks as it becomes possible to since it's more efficient
             builder.seal_all_blocks();
 
-            tracing::debug!("generated cranelift ir: {}", builder.func);
+            let clif_ir = builder.func.to_string();
+            fs::write(
+                self.dump_dir.join(self.file_name).with_extension("clif"),
+                clif_ir,
+            )
+            .context("failed to write clif ir file")?;
 
             // Finalize the generated code
             builder.finalize();
-
-            // Create a formatted version of the ssa ir we generated
-            blocks.pretty_print(PrettyConfig::minimal())
-        };
+        }
 
         // Next, declare the function to jit. Functions must be declared
         // before they can be called, or defined
-        let function_id =
-            self.module
-                .declare_function("jit_entry", Linkage::Export, &self.ctx.func.signature)?;
+        let function_id = self.module.declare_function(
+            "coitus_jit",
+            Linkage::Export,
+            &self.ctx.func.signature,
+        )?;
 
         // Define the function within the jit
         let code_len = self.module.define_function(function_id, &mut self.ctx)?;
-
-        // Create a formatted version of the cranelift ir we generated
-        let clif_ir = format!("{}", self.ctx.func);
 
         // Now that compilation is finished, we can clear out the context state.
         self.module.clear_context(&mut self.ctx);
@@ -950,11 +1005,18 @@ impl Jit {
 
         // Disassemble the generated instructions
         let code_bytes = unsafe { slice::from_raw_parts(code, code_len.size as usize) };
-        let disassembly = disassemble::disassemble(code_bytes);
+        let disassembly = disassemble::disassemble(code_bytes)?;
+        fs::write(
+            self.dump_dir.join(self.file_name).with_extension("asm"),
+            disassembly,
+        )
+        .context("failed to write asm file")?;
+
+        // TODO: Assembly statistics
 
         let function = unsafe { transmute::<*const u8, JitFunction>(code) };
         let executable = Executable::new(function, self.module);
 
-        Ok((executable, clif_ir, ssa_ir, disassembly))
+        Ok(executable)
     }
 }

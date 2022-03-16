@@ -19,9 +19,10 @@ pub fn disassemble(code: &[u8]) -> Result<String> {
     };
 
     // Decode all instructions
-    let instructions: Vec<_> = Decoder::new(bitness, code, DecoderOptions::NONE)
-        .into_iter()
-        .collect();
+    let instructions: Vec<_> =
+        Decoder::with_ip(bitness, code, code.as_ptr() as u64, DecoderOptions::NONE)
+            .into_iter()
+            .collect();
 
     // Collect all jump targets and label them
     let labels = collect_jump_labels(&instructions);
@@ -135,8 +136,8 @@ impl SymbolResolver for Resolver {
         address: u64,
         _address_size: u32,
     ) -> Option<SymbolResult<'_>> {
-        let function = if address == ffi::io_error_encountered as u64 {
-            "io_error_encountered"
+        let function = if address == ffi::io_error as u64 {
+            "io_error"
         } else if address == ffi::input as u64 {
             "input"
         } else if address == ffi::output as u64 {

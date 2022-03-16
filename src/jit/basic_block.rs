@@ -1,8 +1,9 @@
 use crate::{
     ir::{pretty_utils, CmpKind, Pretty, PrettyConfig},
-    utils::DebugDisplay,
+    utils::{DebugDisplay, HashMap},
     values::{Cell, Ptr},
 };
+use petgraph::{graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use pretty::{DocAllocator, DocBuilder};
 use std::{
     fmt::{self, Debug, Display, Write},
@@ -17,11 +18,23 @@ const COMMENT_ALIGNMENT_OFFSET: usize = 20;
 pub struct Blocks {
     entry: BlockId,
     blocks: Vec<BasicBlock>,
+    cfg: Graph<BlockId, ()>,
+    nodes: HashMap<BlockId, NodeIndex>,
 }
 
 impl Blocks {
-    pub const fn new(entry: BlockId, blocks: Vec<BasicBlock>) -> Self {
-        Self { entry, blocks }
+    pub const fn new(
+        entry: BlockId,
+        blocks: Vec<BasicBlock>,
+        cfg: Graph<BlockId, ()>,
+        nodes: HashMap<BlockId, NodeIndex>,
+    ) -> Self {
+        Self {
+            entry,
+            blocks,
+            cfg,
+            nodes,
+        }
     }
 
     pub fn entry(&self) -> &BasicBlock {
@@ -29,6 +42,20 @@ impl Blocks {
             .iter()
             .find(|block| block.id() == self.entry)
             .unwrap()
+    }
+
+    pub fn incoming_jumps(&self, block: BlockId) -> impl Iterator<Item = BlockId> + '_ {
+        self.cfg
+            .edges_directed(self.nodes[&block], Direction::Incoming)
+            .into_iter()
+            .map(|edge| self.cfg[edge.source()])
+    }
+
+    pub fn outgoing_jumps(&self, block: BlockId) -> impl Iterator<Item = BlockId> + '_ {
+        self.cfg
+            .edges_directed(self.nodes[&block], Direction::Outgoing)
+            .into_iter()
+            .map(|edge| self.cfg[edge.target()])
     }
 
     pub fn as_slice(&self) -> &[BasicBlock] {

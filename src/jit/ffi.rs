@@ -121,7 +121,7 @@ pub(super) unsafe extern "fastcall" fn output(state: *mut State, byte: u8) -> bo
     })
 }
 
-pub(super) unsafe extern "fastcall" fn io_error_encountered(state: *mut State) -> bool {
+pub(super) unsafe extern "fastcall" fn io_error(state: *mut State) -> bool {
     debug_assert!(!state.is_null());
 
     let state = unsafe { &mut *state };

@@ -107,7 +107,7 @@ fn debug(
     validate(&graph);
 
     let compile_attempt: Result<Result<_>, _> = panic::catch_unwind(|| {
-        let jit = Jit::new(args, &dump_dir, "input").compile(&input_program)?;
+        let jit = Jit::new(args, &dump_dir, "input")?.compile(&input_program)?;
 
         let mut tape = vec![0x00; args.tape_len as usize];
         let start = Instant::now();
@@ -556,7 +556,7 @@ fn debug(
         output_program.pretty_print(PrettyConfig::instrumented(optimized_stats.instructions));
     fs::write(dump_dir.join("annotated_output.cir"), annotated_program)?;
 
-    let jit = Jit::new(args, &dump_dir, "output").compile(&output_program)?;
+    let jit = Jit::new(args, &dump_dir, "output")?.compile(&output_program)?;
 
     let mut tape = vec![0x00; args.tape_len as usize];
     let start = Instant::now();

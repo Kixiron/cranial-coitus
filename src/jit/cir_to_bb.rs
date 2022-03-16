@@ -14,9 +14,10 @@ use crate::{
             Output, Phi, RValue, Store, Sub, Terminator, Type, ValId, Value,
         },
         block_builder::BlockBuilder,
-        RETURN_SUCCESS,
+        JitReturnCode,
     },
-    utils::AssertNone,
+    utils::{AssertNone, HashMap},
+    values::Cell,
 };
 use std::collections::BTreeMap;
 
@@ -29,7 +30,9 @@ pub fn translate(block: &CirBlock) -> Blocks {
     // Set the final block to return zero for success
     builder
         .current()
-        .set_terminator(Terminator::Return(Value::U8(RETURN_SUCCESS)));
+        .set_terminator(Terminator::Return(Value::U8(Cell::new(
+            JitReturnCode::Success as u8,
+        ))));
     builder.finalize();
 
     // // Run a few really basic optimization passes to clean up from codegen
@@ -40,10 +43,10 @@ pub fn translate(block: &CirBlock) -> Blocks {
     let entry = blocks[0].id();
 
     // Sort the blocks in topological order
-    let blocks = {
+    let (blocks, cfg, nodes) = {
         let mut graph = Graph::new();
 
-        let mut nodes = BTreeMap::new();
+        let mut nodes = HashMap::with_capacity_and_hasher(blocks.len(), Default::default());
         for block in &blocks {
             nodes
                 .insert(block.id(), graph.add_node(block.id()))
@@ -89,7 +92,7 @@ pub fn translate(block: &CirBlock) -> Blocks {
             .collect();
         block_ordering.reverse();
 
-        block_ordering
+        let ordered_blocks = block_ordering
             .into_iter()
             .map(|block_id| {
                 let idx = blocks
@@ -99,10 +102,12 @@ pub fn translate(block: &CirBlock) -> Blocks {
 
                 blocks.remove(idx)
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+
+        (ordered_blocks, graph, nodes)
     };
 
-    let blocks = Blocks::new(entry, blocks);
+    let blocks = Blocks::new(entry, blocks, cfg, nodes);
 
     tracing::debug!(
         "produced ssa ir: {}",
@@ -112,6 +117,7 @@ pub fn translate(block: &CirBlock) -> Blocks {
     blocks
 }
 
+#[allow(dead_code)]
 fn remove_noop_jumps(builder: &mut BlockBuilder) {
     let blocks: Vec<_> = builder.blocks.keys().copied().collect();
     for block in blocks {

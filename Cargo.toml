@@ -24,10 +24,10 @@ tracing-tree = { version = "0.2.0", default-features = false }
 tracing = { version = "0.1.29", features = ["release_max_level_info"] }
 
 # Cranelift
-cranelift = "0.81.0"
-cranelift-jit = "0.81.0"
-cranelift-module = "0.81.0"
-cranelift-native = "0.81.1"
+cranelift = "0.82.1"
+cranelift-jit = "0.82.1"
+cranelift-module = "0.82.1"
+cranelift-native = "0.82.1"
 
     [dependencies.iced-x86]
     version = "1.15.0"

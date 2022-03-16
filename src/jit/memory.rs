@@ -16,6 +16,8 @@ use winapi::um::{
     winnt::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE, PAGE_READWRITE},
 };
 
+// TODO: Add linux support
+
 /// The OS's memory page size, currently set to a blanket of 4kb
 // https://devblogs.microsoft.com/oldnewthing/20210510-00/?p=105200
 const PAGE_SIZE: usize = 1024 * 4;

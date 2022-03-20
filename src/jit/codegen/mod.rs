@@ -131,6 +131,8 @@ impl<'a> Codegen<'a> {
 
         // If the io handler block was ever used, construct it
         if self.handlers.io_error_handler_used() {
+            assert_type::<unsafe extern "fastcall" fn(*mut State) -> bool>(ffi::io_error);
+
             let io_error_handler = self.io_error_handler();
             self.builder.switch_to_block(io_error_handler);
 

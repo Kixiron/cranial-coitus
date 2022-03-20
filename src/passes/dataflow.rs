@@ -12,6 +12,7 @@ use ranges::Ranges;
 use std::fmt::{self, Debug, Display};
 
 /// Removes dead code from the graph
+// FIXME: This is horrifically slow, refactor it some
 pub struct Dataflow {
     changed: bool,
     facts: HashMap<OutputPort, Domain>,
@@ -25,8 +26,8 @@ impl Dataflow {
     pub fn new(tape_len: u16) -> Self {
         Self {
             changed: false,
-            facts: HashMap::with_hasher(Default::default()),
-            constants: HashMap::with_hasher(Default::default()),
+            facts: HashMap::default(),
+            constants: HashMap::default(),
             tape: vec![
                 (
                     Domain::exact_cell(Cell::zero(), tape_len),

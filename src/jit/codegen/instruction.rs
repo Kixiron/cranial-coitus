@@ -9,7 +9,8 @@ use crate::{
     ir::{CmpKind, Pretty, PrettyConfig},
     jit::{
         basic_block::{Instruction, RValue, Type, Value},
-        codegen::Codegen,
+        codegen::{assert_type, Codegen},
+        ffi, State,
     },
     utils::AssertNone,
     values::{Cell, Ptr},
@@ -464,6 +465,10 @@ impl<'a> Codegen<'a> {
                     }
 
                     RValue::Input(_) => {
+                        assert_type::<unsafe extern "fastcall" fn(*mut State, *mut u8) -> bool>(
+                            ffi::input,
+                        );
+
                         // Create a block to house the stuff that happens after the function
                         // call and associated error check
                         let call_prelude = self.builder.create_block();
@@ -507,6 +512,10 @@ impl<'a> Codegen<'a> {
             }
 
             Instruction::Output(output) => {
+                assert_type::<unsafe extern "fastcall" fn(*mut State, *const u8, usize) -> bool>(
+                    ffi::output,
+                );
+
                 // Create a block to house the stuff that happens after the function
                 // call and associated error check
                 let call_prelude = self.builder.create_block();

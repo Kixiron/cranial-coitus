@@ -68,6 +68,7 @@ impl Cell {
 }
 
 impl PartialEq<u8> for Cell {
+    #[inline]
     fn eq(&self, other: &u8) -> bool {
         self.value == *other
     }

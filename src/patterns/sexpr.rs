@@ -1,12 +1,36 @@
 use std::{iter::Peekable, str::CharIndices};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Sexpr<'a> {
     Atom(&'a str),
     Cons(Vec<Self>),
 }
 
-pub fn parse_sexpr(source: &str) -> Sexpr<'_> {
+impl<'a> Sexpr<'a> {
+    pub fn parse(source: &'a str) -> Self {
+        parse_sexpr(source)
+    }
+
+    #[track_caller]
+    pub fn to_atom(&self) -> &'a str {
+        if let Self::Atom(atom) = self {
+            atom
+        } else {
+            panic!("attempted to get an atom out of {:?}", self);
+        }
+    }
+
+    #[track_caller]
+    pub fn to_cons(&self) -> &[Self] {
+        if let Self::Cons(cons) = self {
+            cons
+        } else {
+            panic!("attempted to get a cons out of {:?}", self);
+        }
+    }
+}
+
+fn parse_sexpr(source: &str) -> Sexpr<'_> {
     let mut chars = source.char_indices().peekable();
 
     parse_sexpr_inner(source, &mut chars)
@@ -40,15 +64,19 @@ fn parse_sexpr_inner<'a>(source: &'a str, chars: &mut Peekable<CharIndices>) -> 
                 }
             }
 
-            c if c.is_alphabetic() || c == '_' => {
+            c if is_ident(c) => {
                 let start = idx;
                 let mut end = idx;
 
                 let mut current = *chars.peek().unwrap();
-                while current.1.is_alphabetic() || current.1 == '_' {
+                while is_ident(current.1) {
                     end = current.0;
                     chars.next().unwrap();
-                    current = *chars.peek().unwrap();
+                    if let Some(&peek) = chars.peek() {
+                        current = peek;
+                    } else {
+                        break;
+                    }
                 }
 
                 return Sexpr::Atom(&source[start..=end]);
@@ -61,6 +89,10 @@ fn parse_sexpr_inner<'a>(source: &'a str, chars: &mut Peekable<CharIndices>) -> 
     }
 
     Sexpr::Cons(Vec::new())
+}
+
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '?' | '+' | '-' | '*' | '/')
 }
 
 #[test]

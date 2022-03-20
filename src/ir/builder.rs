@@ -344,15 +344,16 @@ impl IrBuilder {
             Node::Output(output) => {
                 let effect = EffectId::new(output.output_effect());
 
-                let value = input_values
-                    .get(&output.value())
-                    .cloned()
-                    .unwrap_or(Value::Missing);
+                let values = output
+                    .values()
+                    .iter()
+                    .map(|value| input_values.get(value).cloned().unwrap_or(Value::Missing))
+                    .collect();
 
                 let call = Call::new(
                     output.node(),
                     "output",
-                    vec![value],
+                    values,
                     effect,
                     graph
                         .try_input(output.input_effect())

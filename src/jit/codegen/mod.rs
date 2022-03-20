@@ -201,8 +201,16 @@ impl Intrinsics {
         assert_type::<unsafe extern "fastcall" fn(*mut State, *mut u8) -> bool>(ffi::input);
         let input = create_imported_function(builder, module, "input", &[ptr_type, ptr_type], B1)?;
 
-        assert_type::<unsafe extern "fastcall" fn(*mut State, u8) -> bool>(ffi::output);
-        let output = create_imported_function(builder, module, "output", &[ptr_type, I8], B1)?;
+        assert_type::<unsafe extern "fastcall" fn(*mut State, *const u8, usize) -> bool>(
+            ffi::output,
+        );
+        let output = create_imported_function(
+            builder,
+            module,
+            "output",
+            &[ptr_type, ptr_type, ptr_type],
+            B1,
+        )?;
 
         assert_type::<unsafe extern "fastcall" fn(*mut State) -> bool>(ffi::io_error);
         let io_error = create_imported_function(builder, module, "io_error", &[ptr_type], B1)?;

@@ -5,6 +5,7 @@
     array_windows,
     slice_ptr_get,
     slice_ptr_len,
+    str_internals,
     bool_to_option,
     hash_drain_filter,
     vec_into_raw_parts,

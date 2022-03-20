@@ -8,6 +8,7 @@ mod duplicate_cell;
 mod eliminate_const_gamma;
 mod expr_dedup;
 mod fold_arithmetic;
+mod fuse_outputs;
 mod licm;
 mod mem2reg;
 mod shift;
@@ -27,6 +28,7 @@ pub use duplicate_cell::DuplicateCell;
 pub use eliminate_const_gamma::ElimConstGamma;
 pub use expr_dedup::ExprDedup;
 pub use fold_arithmetic::FoldArithmetic;
+pub use fuse_outputs::FuseOutputs;
 pub use licm::Licm;
 pub use mem2reg::Mem2Reg;
 pub use shift::ShiftCell;
@@ -57,6 +59,7 @@ pub fn default_passes(tape_len: u16) -> Vec<Box<dyn Pass>> {
         Mem2Reg::new(tape_len),
         AddSubLoop::new(tape_len),
         ShiftCell::new(tape_len),
+        FuseOutputs::new(),
         Dce::new(),
         Dataflow::new(tape_len),
         ElimConstGamma::new(),

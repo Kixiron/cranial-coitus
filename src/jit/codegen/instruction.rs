@@ -511,25 +511,47 @@ impl<'a> Codegen<'a> {
                 // call and associated error check
                 let call_prelude = self.builder.create_block();
 
-                // Get the argument to the function
-                let value = match output.value() {
-                    Value::U8(byte) => self.builder.ins().iconst(I8, byte),
-                    Value::U16(int) => self.builder.ins().iconst(I8, int.0 as i64),
-                    Value::TapePtr(uint) => self.builder.ins().iconst(I8, uint),
-                    Value::Bool(bool) => self.builder.ins().iconst(I8, bool as i64),
-                    Value::Val(value, _ty) => {
-                        let (value, ty) = self.values[&value];
-                        if ty != I8 {
-                            self.builder.ins().ireduce(I8, value)
-                        } else {
-                            value
+                // Create a stack slot to hold the arguments
+                let bytes_slot = self.builder.create_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    output.values().len() as u32,
+                ));
+
+                // Store the arguments into the stack slot
+                for (offset, &value) in output.values().iter().enumerate() {
+                    let value = match value {
+                        Value::U8(byte) => self.builder.ins().iconst(I8, byte),
+                        Value::U16(int) => self.builder.ins().iconst(I8, int.0 as i64),
+                        Value::TapePtr(uint) => self.builder.ins().iconst(I8, uint),
+                        Value::Bool(bool) => self.builder.ins().iconst(I8, bool as i64),
+                        Value::Val(value, _ty) => {
+                            let (value, ty) = self.values[&value];
+                            if ty != I8 {
+                                self.builder.ins().ireduce(I8, value)
+                            } else {
+                                value
+                            }
                         }
-                    }
-                };
+                    };
+
+                    self.builder
+                        .ins()
+                        .stack_store(value, bytes_slot, offset as i32);
+                }
+
+                // Get the address of the stack slot and the number of arguments in it
+                let bytes_ptr = self.builder.ins().stack_addr(self.ptr_type, bytes_slot, 0);
+                let bytes_len = self
+                    .builder
+                    .ins()
+                    .iconst(self.ptr_type, output.values().len() as i64);
 
                 // Call the output function
                 let (output_func, state_ptr) = (self.output_function(), self.state_ptr());
-                let output_call = self.builder.ins().call(output_func, &[state_ptr, value]);
+                let output_call = self
+                    .builder
+                    .ins()
+                    .call(output_func, &[state_ptr, bytes_ptr, bytes_len]);
                 let output_result = self.builder.inst_results(output_call)[0];
 
                 // If the call to output failed (and therefore returned true),

@@ -11,8 +11,7 @@ use std::{
     ops::{Deref, DerefMut},
     slice, vec,
 };
-
-const COMMENT_ALIGNMENT_OFFSET: usize = 20;
+use tinyvec::TinyVec;
 
 #[derive(Debug, Clone)]
 pub struct Blocks {
@@ -394,16 +393,16 @@ impl Pretty for Assign {
 
 #[derive(Debug, Clone)]
 pub struct Output {
-    value: Value,
+    values: TinyVec<[Value; 1]>,
 }
 
 impl Output {
-    pub const fn new(value: Value) -> Self {
-        Self { value }
+    pub const fn new(values: TinyVec<[Value; 1]>) -> Self {
+        Self { values }
     }
 
-    pub fn value(&self) -> Value {
-        self.value
+    pub fn values(&self) -> &[Value] {
+        &*self.values
     }
 }
 
@@ -414,45 +413,20 @@ impl Pretty for Output {
         D::Doc: Clone,
         A: Clone,
     {
-        allocator.column(move |start_column| {
-            allocator
-                .text("call")
-                .append(allocator.space())
-                .append(allocator.text("output"))
-                .append(self.value.pretty(allocator, config).parens())
-                .append(allocator.column(move |column| {
-                    let char = match self.value() {
-                        Value::U8(byte) => byte.into_inner() as char,
-                        Value::U16(long) => {
-                            if let Some(char) = char::from_u32(long.0 as u32) {
-                                char
-                            } else {
-                                return allocator.nil().into_doc();
-                            }
-                        }
-                        Value::TapePtr(ptr) => {
-                            if let Some(char) = char::from_u32(ptr.value() as u32) {
-                                char
-                            } else {
-                                return allocator.nil().into_doc();
-                            }
-                        }
-                        Value::Bool(bool) => bool as u8 as char,
-                        Value::Val(..) => return allocator.nil().into_doc(),
-                    };
-                    let comment = format!("// {:?}", char);
-
-                    allocator
-                        .space()
-                        .append(
-                            allocator.text(comment).indent(
-                                COMMENT_ALIGNMENT_OFFSET.saturating_sub(column - start_column),
-                            ),
-                        )
-                        .into_doc()
-                }))
-                .into_doc()
-        })
+        allocator
+            .text("call")
+            .append(allocator.space())
+            .append(allocator.text("output"))
+            .append(
+                allocator
+                    .intersperse(
+                        self.values
+                            .iter()
+                            .map(|value| value.pretty(allocator, config)),
+                        allocator.text(",").append(allocator.space()),
+                    )
+                    .parens(),
+            )
     }
 }
 
@@ -1045,6 +1019,12 @@ impl Value {
             Self::Bool(_) => Type::Bool,
             Self::Val(_, ty) => ty,
         }
+    }
+}
+
+impl Default for Value {
+    fn default() -> Self {
+        Self::U8(Cell::zero())
     }
 }
 

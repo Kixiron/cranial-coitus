@@ -1,6 +1,6 @@
 use crate::{
     graph::{
-        Add, Byte, End, Eq, Gamma, InputParam, InputPort, Int, Load, Neq, NodeExt, NodeId, Not,
+        Add, Byte, End, Eq, Gamma, InputParam, InputPort, Int, Load, Neq, NodeExt, NodeId,
         OutputPort, Rvsdg, Start, Store, Sub, Theta,
     },
     ir::Const,

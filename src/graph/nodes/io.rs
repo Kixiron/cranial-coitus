@@ -4,7 +4,7 @@ use crate::graph::{
     nodes::node_ext::{InputPortKinds, InputPorts, OutputPortKinds, OutputPorts},
     EdgeCount, EdgeDescriptor, EdgeKind, InputPort, NodeExt, NodeId, OutputPort,
 };
-use tinyvec::tiny_vec;
+use tinyvec::{tiny_vec, TinyVec};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Input {
@@ -94,10 +94,12 @@ impl NodeExt for Input {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+pub type OutputValues = TinyVec<[InputPort; 1]>;
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Output {
     node: NodeId,
-    value: InputPort,
+    values: OutputValues,
     input_effect: InputPort,
     output_effect: OutputPort,
 }
@@ -105,20 +107,24 @@ pub struct Output {
 impl Output {
     pub(in crate::graph) const fn new(
         node: NodeId,
-        value: InputPort,
+        values: OutputValues,
         input_effect: InputPort,
         output_effect: OutputPort,
     ) -> Self {
         Self {
             node,
-            value,
+            values,
             input_effect,
             output_effect,
         }
     }
 
-    pub const fn value(&self) -> InputPort {
-        self.value
+    pub fn values(&self) -> &[InputPort] {
+        &*self.values
+    }
+
+    pub fn values_mut(&mut self) -> &mut OutputValues {
+        &mut self.values
     }
 
     pub const fn input_effect(&self) -> InputPort {
@@ -136,24 +142,28 @@ impl NodeExt for Output {
     }
 
     fn input_desc(&self) -> EdgeDescriptor {
-        EdgeDescriptor::new(EdgeCount::one(), EdgeCount::one())
+        EdgeDescriptor::new(EdgeCount::one(), EdgeCount::new(Some(1), None))
     }
 
     fn all_input_ports(&self) -> InputPorts {
-        tiny_vec![self.value, self.input_effect]
+        let mut ports = TinyVec::with_capacity(self.values.len() + 1);
+        ports.extend_from_slice(&self.values);
+        ports.push(self.input_effect);
+        ports
     }
 
     fn all_input_port_kinds(&self) -> InputPortKinds {
-        tiny_vec! {
-            [_; 4] =>
-                (self.value, EdgeKind::Value),
-                (self.input_effect, EdgeKind::Effect),
-        }
+        let mut ports = TinyVec::with_capacity(self.values.len() + 1);
+        ports.extend(self.values.iter().map(|&value| (value, EdgeKind::Value)));
+        ports.push((self.input_effect, EdgeKind::Effect));
+        ports
     }
 
     fn update_input(&mut self, from: InputPort, to: InputPort) {
-        if from == self.value {
-            self.value = to;
+        for value in &mut self.values {
+            if from == *value {
+                *value = to;
+            }
         }
 
         if from == self.input_effect {

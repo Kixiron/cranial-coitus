@@ -661,18 +661,6 @@ impl Rvsdg {
             .map(move |input| (input, self.try_input(input)))
     }
 
-    #[track_caller]
-    #[deprecated = "this is terrible and lies to the user"]
-    pub fn outputs(
-        &self,
-        node: NodeId,
-    ) -> impl Iterator<Item = (OutputPort, Option<(&Node, InputPort, EdgeKind)>)> {
-        self.get_node(node)
-            .all_output_ports()
-            .into_iter()
-            .map(|output| (output, self.get_output(output)))
-    }
-
     // FIXME: Invariant assertions and logging
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn remove_input_edges(&mut self, input: InputPort) {
@@ -1098,6 +1086,7 @@ impl Rvsdg {
         self.remove_output_edges(output);
     }
 
+    #[inline]
     #[track_caller]
     fn assert_value_port<P>(&self, port: P)
     where
@@ -1107,6 +1096,7 @@ impl Rvsdg {
         debug_assert_eq!(self.ports[&port.port()].edge, EdgeKind::Value);
     }
 
+    #[inline]
     #[track_caller]
     fn assert_effect_port<P>(&self, port: P)
     where

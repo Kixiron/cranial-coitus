@@ -188,15 +188,18 @@ fn translate_inst(
                     "got standalone call `{}()` when `output()` was expected",
                     call.function,
                 );
-            } else if call.args.len() != 1 {
+            } else if call.args.is_empty() {
+                panic!("expected at least one argument to output call");
+            } else if call.args.len() > u32::MAX as usize {
                 panic!(
-                    "got {} args to `output` call when one was expected",
+                    "got {} arguments to output call when it can have a maximum of {}",
                     call.args.len(),
+                    u32::MAX,
                 );
             }
 
-            let value = builder.get(call.args[0]);
-            builder.push(Output::new(value));
+            let values = call.args.iter().map(|&arg| builder.get(arg)).collect();
+            builder.push(Output::new(values));
         }
 
         CirInstruction::Assign(assign) => match &assign.value {

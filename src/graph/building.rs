@@ -228,22 +228,36 @@ impl Rvsdg {
 
     #[track_caller]
     pub fn output(&mut self, value: OutputPort, effect: OutputPort) -> Output {
-        self.assert_value_port(value);
+        self.outputs([value], effect)
+    }
+
+    #[track_caller]
+    pub fn outputs<V>(&mut self, values: V, effect: OutputPort) -> Output
+    where
+        V: IntoIterator<Item = OutputPort>,
+    {
         self.assert_effect_port(effect);
 
         let output_id = self.next_node();
 
-        let value_port = self.input_port(output_id, EdgeKind::Value);
-        self.add_value_edge(value, value_port);
+        let value_ports = values
+            .into_iter()
+            .map(|value| {
+                self.assert_value_port(value);
+                let port = self.input_port(output_id, EdgeKind::Value);
+                self.add_value_edge(value, port);
+                port
+            })
+            .collect();
 
         let effect_port = self.input_port(output_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_port);
 
         let effect_out = self.output_port(output_id, EdgeKind::Effect);
 
-        let output = Output::new(output_id, value_port, effect_port, effect_out);
+        let output = Output::new(output_id, value_ports, effect_port, effect_out);
         self.nodes
-            .insert(output_id, Node::Output(output))
+            .insert(output_id, Node::Output(output.clone()))
             .debug_unwrap_none();
 
         output

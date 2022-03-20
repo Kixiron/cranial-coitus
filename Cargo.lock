@@ -201,7 +201,6 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native",
- "ena",
  "expect-test",
  "iced-x86",
  "paste",
@@ -214,7 +213,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-tree",
- "winapi",
  "xxhash-rust",
 ]
 
@@ -223,15 +221,6 @@ name = "dissimilar"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "31ad93652f40969dead8d4bf897a41e9462095152eb21c56e5830537e41179dd"
-
-[[package]]
-name = "ena"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7402b94a93c24e742487327a7cd839dc9d36fec9de9fb25b09f2dae459f36c3"
-dependencies = [
- "log",
-]
 
 [[package]]
 name = "expect-test"

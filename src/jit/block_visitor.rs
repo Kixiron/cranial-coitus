@@ -103,7 +103,9 @@ pub trait BasicBlockVisitor {
     }
 
     fn visit_output(&mut self, output: &Output) {
-        self.visit_value(output.value());
+        for &value in output.values() {
+            self.visit_value(value);
+        }
     }
 
     /// Called before a terminator is visited

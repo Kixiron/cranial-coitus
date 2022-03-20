@@ -7,7 +7,6 @@ edition = "2021"
 resolver = "2"
 
 [dependencies]
-ena = "0.14.0"
 atty = "0.2.14"
 paste = "1.0.5"
 ranges = "0.3.3"
@@ -18,7 +17,6 @@ petgraph = "0.6.0"
 clap = "3.0.0-beta.5"
 superluminal-perf = "0.1.1"
 tinyvec = { version = "1.5.0", features = ["alloc"] }
-winapi = { version = "0.3.9", features = ["memoryapi"] }
 xxhash-rust = { version = "0.8.2", features = ["xxh3"] }
 tracing-tree = { version = "0.2.0", default-features = false }
 tracing = { version = "0.1.29", features = ["release_max_level_info"] }

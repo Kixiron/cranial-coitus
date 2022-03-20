@@ -631,7 +631,7 @@ impl Pretty for Call {
                 allocator
                     .intersperse(
                         self.args.iter().map(|arg| arg.pretty(allocator, config)),
-                        allocator.text(","),
+                        allocator.text(",").append(allocator.space()),
                     )
                     .parens(),
             ),

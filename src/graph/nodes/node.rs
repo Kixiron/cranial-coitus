@@ -420,8 +420,8 @@ macro_rules! node_variants {
                 type Error = Self;
 
                 fn try_into(self) -> Result<$type, Self::Error> {
-                    if let node_variants!(@variant node, $type, $($name)?) = *self {
-                        Ok(node)
+                    if let node_variants!(@variant node, $type, $($name)?) = self {
+                        Ok(node.clone())
                     } else {
                         Err(self)
                     }
@@ -446,9 +446,9 @@ macro_rules! node_variants {
                         matches!(self, node_variants!(@pat $type, $($name)?))
                     }
 
-                    pub const fn [<as_ $type:snake>](&self) -> Option<$type> {
-                        if let node_variants!(@variant node, $type, $($name)?) = *self {
-                            Some(node)
+                    pub fn [<as_ $type:snake>](&self) -> Option<$type> {
+                        if let node_variants!(@variant node, $type, $($name)?) = self {
+                            Some(node.clone())
                         } else {
                             None
                         }
@@ -464,8 +464,8 @@ macro_rules! node_variants {
 
                     #[track_caller]
                     pub fn [<to_ $type:snake>](&self) -> $type {
-                        if let node_variants!(@variant node, $type, $($name)?) = *self {
-                            node
+                        if let node_variants!(@variant node, $type, $($name)?) = self {
+                            node.clone()
                         } else {
                             panic!(
                                 concat!("attempted to get", stringify!($type), " got {:?}"),

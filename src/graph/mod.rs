@@ -14,13 +14,8 @@ pub use nodes::{
 pub use ports::{InputPort, OutputPort, Port, PortData, PortId, PortKind};
 pub use subgraph::Subgraph;
 
-use crate::utils::AssertNone;
-use std::{
-    cell::Cell,
-    collections::{btree_map::Entry, BTreeMap},
-    fmt::Debug,
-    rc::Rc,
-};
+use crate::utils::{AssertNone, HashMap};
+use std::{cell::Cell, collections::hash_map::Entry, fmt::Debug, rc::Rc};
 use tinyvec::TinyVec;
 
 // FIXME: Make a `Subgraph` type and use it in gamma & theta nodes
@@ -37,10 +32,10 @@ type EdgeData<T> = TinyVec<[(T, EdgeKind); 2]>;
 // TODO: Structural equivalence method
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rvsdg {
-    nodes: BTreeMap<NodeId, Node>,
-    forward: BTreeMap<OutputPort, EdgeData<InputPort>>,
-    reverse: BTreeMap<InputPort, EdgeData<OutputPort>>,
-    ports: BTreeMap<PortId, PortData>,
+    nodes: HashMap<NodeId, Node>,
+    forward: HashMap<OutputPort, EdgeData<InputPort>>,
+    reverse: HashMap<InputPort, EdgeData<OutputPort>>,
+    ports: HashMap<PortId, PortData>,
     start_nodes: TinyVec<[NodeId; 1]>,
     end_nodes: TinyVec<[NodeId; 1]>,
     node_counter: Counter<NodeId>,
@@ -57,10 +52,10 @@ impl Rvsdg {
 
     fn from_counters(node_counter: Counter<NodeId>, port_counter: Counter<PortId>) -> Self {
         Self {
-            nodes: BTreeMap::new(),
-            forward: BTreeMap::new(),
-            reverse: BTreeMap::new(),
-            ports: BTreeMap::new(),
+            nodes: HashMap::default(),
+            forward: HashMap::default(),
+            reverse: HashMap::default(),
+            ports: HashMap::default(),
             start_nodes: TinyVec::new(),
             end_nodes: TinyVec::new(),
             node_counter,

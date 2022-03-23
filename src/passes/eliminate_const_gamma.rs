@@ -4,30 +4,25 @@ use crate::{
         OutputPort, Rvsdg, Start, Theta,
     },
     passes::Pass,
-    utils::AssertNone,
+    utils::{AssertNone, HashMap},
 };
-use std::{
-    collections::{BTreeMap, HashMap},
-    hash::BuildHasherDefault,
-};
-use xxhash_rust::xxh3::Xxh3;
 
 /// Evaluates constant operations within the program
 pub struct ElimConstGamma {
-    values: BTreeMap<OutputPort, bool>,
+    values: HashMap<OutputPort, bool>,
     nodes: Vec<(NodeId, Node)>,
-    input_lookup: HashMap<InputPort, Vec<InputPort>, BuildHasherDefault<Xxh3>>,
-    output_lookup: HashMap<OutputPort, OutputPort, BuildHasherDefault<Xxh3>>,
+    input_lookup: HashMap<InputPort, Vec<InputPort>>,
+    output_lookup: HashMap<OutputPort, OutputPort>,
     changed: bool,
 }
 
 impl ElimConstGamma {
     pub fn new() -> Self {
         Self {
-            values: BTreeMap::new(),
+            values: HashMap::default(),
             nodes: Vec::new(),
-            input_lookup: HashMap::with_capacity_and_hasher(1024, Default::default()),
-            output_lookup: HashMap::with_capacity_and_hasher(1024, Default::default()),
+            input_lookup: HashMap::default(),
+            output_lookup: HashMap::default(),
             changed: false,
         }
     }
@@ -177,7 +172,10 @@ impl Pass for ElimConstGamma {
                         }
 
                         {
-                            let mut new_invariant_inputs = BTreeMap::new();
+                            let mut new_invariant_inputs = HashMap::with_capacity_and_hasher(
+                                theta.invariant_inputs_len(),
+                                Default::default(),
+                            );
                             for (port, param) in theta.invariant_input_pair_ids() {
                                 let inlined = graph.input_port(theta.node(), EdgeKind::Value);
 
@@ -201,8 +199,17 @@ impl Pass for ElimConstGamma {
                         }
 
                         {
-                            let (mut new_variant_inputs, mut new_output_feedback) =
-                                (BTreeMap::new(), BTreeMap::new());
+                            let total_variant_inputs = theta.variant_inputs_len();
+                            let (mut new_variant_inputs, mut new_output_feedback) = (
+                                HashMap::with_capacity_and_hasher(
+                                    total_variant_inputs,
+                                    Default::default(),
+                                ),
+                                HashMap::with_capacity_and_hasher(
+                                    total_variant_inputs,
+                                    Default::default(),
+                                ),
+                            );
 
                             for (port, param, output) in
                                 theta.variant_input_pair_ids_with_feedback()
@@ -233,8 +240,17 @@ impl Pass for ElimConstGamma {
                         }
 
                         {
-                            let (mut new_outputs, mut new_output_feedback) =
-                                (BTreeMap::new(), BTreeMap::new());
+                            let total_outputs = theta.outputs_len();
+                            let (mut new_outputs, mut new_output_feedback) = (
+                                HashMap::with_capacity_and_hasher(
+                                    total_outputs,
+                                    Default::default(),
+                                ),
+                                HashMap::with_capacity_and_hasher(
+                                    total_outputs,
+                                    Default::default(),
+                                ),
+                            );
 
                             for (port, param, input) in theta.output_pair_ids_with_feedback() {
                                 let inlined = graph.output_port(theta.node(), EdgeKind::Value);
@@ -441,7 +457,12 @@ impl Pass for ElimConstGamma {
                         }
 
                         {
-                            let mut new_invariant_inputs = BTreeMap::new();
+                            let total_invariant_inputs = theta.invariant_inputs_len();
+                            let mut new_invariant_inputs = HashMap::with_capacity_and_hasher(
+                                total_invariant_inputs,
+                                Default::default(),
+                            );
+
                             for (port, param) in theta.invariant_input_pair_ids() {
                                 let inlined = graph.input_port(theta.node(), EdgeKind::Value);
 
@@ -465,8 +486,17 @@ impl Pass for ElimConstGamma {
                         }
 
                         {
-                            let (mut new_variant_inputs, mut new_output_feedback) =
-                                (BTreeMap::new(), BTreeMap::new());
+                            let total_variant_inputs = theta.variant_inputs_len();
+                            let (mut new_variant_inputs, mut new_output_feedback) = (
+                                HashMap::with_capacity_and_hasher(
+                                    total_variant_inputs,
+                                    Default::default(),
+                                ),
+                                HashMap::with_capacity_and_hasher(
+                                    total_variant_inputs,
+                                    Default::default(),
+                                ),
+                            );
 
                             for (port, param, output) in
                                 theta.variant_input_pair_ids_with_feedback()
@@ -497,8 +527,17 @@ impl Pass for ElimConstGamma {
                         }
 
                         {
-                            let (mut new_outputs, mut new_output_feedback) =
-                                (BTreeMap::new(), BTreeMap::new());
+                            let total_outputs = theta.outputs_len();
+                            let (mut new_outputs, mut new_output_feedback) = (
+                                HashMap::with_capacity_and_hasher(
+                                    total_outputs,
+                                    Default::default(),
+                                ),
+                                HashMap::with_capacity_and_hasher(
+                                    total_outputs,
+                                    Default::default(),
+                                ),
+                            );
 
                             for (port, param, input) in theta.output_pair_ids_with_feedback() {
                                 let inlined = graph.output_port(theta.node(), EdgeKind::Value);

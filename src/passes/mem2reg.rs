@@ -57,6 +57,14 @@ impl Mem2Reg {
     fn changed(&mut self) {
         self.changed = true;
     }
+
+    fn update_counts(&mut self, other: &Self) {
+        self.constant_loads_elided += other.constant_loads_elided;
+        self.loads_elided += other.loads_elided;
+        self.constant_stores_elided += other.constant_stores_elided;
+        self.identical_stores_removed += other.identical_stores_removed;
+        self.dependent_loads_removed += other.dependent_loads_removed;
+    }
 }
 
 // TODO: Better analyze stores on the outs from thetas & gammas for fine-grained
@@ -334,7 +342,10 @@ impl Pass for Mem2Reg {
         }
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
+        self.update_counts(&true_visitor);
+
         changed |= false_visitor.visit_graph(gamma.false_mut());
+        self.update_counts(&false_visitor);
 
         // Figure out if there's any stores within either of the gamma branches
         let mut truthy_stores = 0;
@@ -423,6 +434,7 @@ impl Pass for Mem2Reg {
         }
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.update_counts(&visitor);
 
         // If any stores occur within the theta's body, invalidate the whole tape
         // FIXME: We pessimistically clear out the *entire* tape, but

@@ -1,34 +1,24 @@
-use tinyvec::TinyVec;
-
 use crate::{
-    graph::{Add, Bool, Byte, Eq, Int, Mul, Neq, Not, OutputPort, Rvsdg},
-    passes::Pass,
+    graph::{Add, Bool, Byte, Eq, Gamma, Int, Mul, Neq, NodeExt, Not, OutputPort, Rvsdg, Theta},
+    passes::{utils::Changes, Pass},
+    utils::HashMap,
     values::{Cell, Ptr},
 };
 use std::{collections::BTreeSet, mem::swap};
+use tinyvec::TinyVec;
 
 #[derive(Debug)]
 pub struct Canonicalize {
     constants: BTreeSet<OutputPort>,
-    changed: bool,
-    canonicalizations: usize,
-    eq_to_neq: usize,
-    neq_to_eq: usize,
+    changes: Changes<3>,
 }
 
 impl Canonicalize {
     pub fn new() -> Self {
         Self {
             constants: BTreeSet::new(),
-            changed: false,
-            canonicalizations: 0,
-            eq_to_neq: 0,
-            neq_to_eq: 0,
+            changes: Changes::new(["canonicalizations", "eq-to-neq", "neq-to-eq"]),
         }
-    }
-
-    fn changed(&mut self) {
-        self.changed = true;
     }
 }
 
@@ -38,19 +28,16 @@ impl Pass for Canonicalize {
     }
 
     fn did_change(&self) -> bool {
-        self.changed
+        self.changes.has_changed()
     }
 
     fn reset(&mut self) {
         self.constants.clear();
+        self.changes.set_has_changed(false);
     }
 
-    fn report(&self) -> crate::utils::HashMap<&'static str, usize> {
-        map! {
-            "canonicalizations" => self.canonicalizations,
-            "eq to neq conversions" => self.eq_to_neq,
-            "neq to eq conversions" => self.neq_to_eq,
-        }
+    fn report(&self) -> HashMap<&'static str, usize> {
+        self.changes.as_map()
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _: Ptr) {
@@ -84,8 +71,7 @@ impl Pass for Canonicalize {
             graph.add_value_edge(rhs_src, add.lhs());
             graph.add_value_edge(lhs_src, add.rhs());
 
-            self.canonicalizations += 1;
-            self.changed();
+            self.changes.inc::<"canonicalizations">();
         }
     }
 
@@ -110,8 +96,7 @@ impl Pass for Canonicalize {
             graph.add_value_edge(rhs_src, mul.lhs());
             graph.add_value_edge(lhs_src, mul.rhs());
 
-            self.canonicalizations += 1;
-            self.changed();
+            self.changes.inc::<"canonicalizations">();
         }
     }
 
@@ -141,8 +126,7 @@ impl Pass for Canonicalize {
             // Swap the two inputs for when we do eq => neq canonicalization
             swap(&mut lhs_src, &mut rhs_src);
 
-            self.canonicalizations += 1;
-            self.changed();
+            self.changes.inc::<"canonicalizations">();
         }
 
         // Find all consumers of this eq that are `not` nodes.
@@ -170,8 +154,7 @@ impl Pass for Canonicalize {
             let neq = *neq.get_or_insert_with(|| graph.neq(lhs_src, rhs_src).value());
             graph.rewire_dependents(not.value(), neq);
 
-            self.eq_to_neq += 1;
-            self.changed();
+            self.changes.inc::<"eq-to-neq">();
         }
     }
 
@@ -198,8 +181,7 @@ impl Pass for Canonicalize {
             // Swap the two inputs for when we do neq => eq canonicalization
             swap(&mut lhs_src, &mut rhs_src);
 
-            self.canonicalizations += 1;
-            self.changed();
+            self.changes.inc::<"canonicalizations">();
         }
 
         // Find all consumers of this eq that are `not` nodes.
@@ -227,8 +209,25 @@ impl Pass for Canonicalize {
             let eq = *eq.get_or_insert_with(|| graph.eq(lhs_src, rhs_src).value());
             graph.rewire_dependents(not.value(), eq);
 
-            self.neq_to_eq += 1;
-            self.changed();
+            self.changes.inc::<"neq-to-eq">();
+        }
+    }
+
+    // FIXME: Remove the added constants from the inner scopes
+    fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
+        let mut changed = false;
+        changed |= self.visit_graph(gamma.true_mut());
+        changed |= self.visit_graph(gamma.false_mut());
+
+        if changed {
+            graph.replace_node(gamma.node(), gamma);
+        }
+    }
+
+    // FIXME: Remove the added constants from the inner scopes
+    fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
+        if self.visit_graph(theta.body_mut()) {
+            graph.replace_node(theta.node(), theta);
         }
     }
 }

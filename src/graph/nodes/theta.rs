@@ -6,9 +6,8 @@ use crate::{
         EdgeCount, EdgeDescriptor, EdgeKind, End, InputParam, InputPort, NodeExt, NodeId,
         OutputParam, OutputPort, Rvsdg, Start, Subgraph,
     },
-    utils::AssertNone,
+    utils::{AssertNone, HashMap},
 };
-use std::collections::BTreeMap;
 use tinyvec::TinyVec;
 
 // TODO: Probably want reverse lookup maps as well as the current forward ones
@@ -31,25 +30,25 @@ pub struct Theta {
     ///
     /// These point from an [`InputPort`] on the theta to the [`NodeId`]
     /// of an [`InputParam`] within the theta's body
-    invariant_inputs: BTreeMap<InputPort, NodeId>,
+    invariant_inputs: HashMap<InputPort, NodeId>,
 
     /// These inputs change upon each iteration, they're connected to `output_back_edges`
     ///
     /// These point from an [`InputPort`] on the theta to the [`NodeId`]
     /// of an [`InputParam`] within the theta's body
-    variant_inputs: BTreeMap<InputPort, NodeId>,
+    variant_inputs: HashMap<InputPort, NodeId>,
 
     /// The node's outputs, these all must be included in `output_back_edges`. Any invariant
     /// data must go around the loop to reach dependents after it
     ///
     /// These point from an [`OutputPort`] on the theta to the [`NodeId`]
     /// of an [`OutputParam`] within the theta's body
-    outputs: BTreeMap<OutputPort, NodeId>,
+    outputs: HashMap<OutputPort, NodeId>,
 
     /// These are the relationships between outputs and variant inputs
     ///
     /// These point from an [`OutputPort`] in `outputs` to an [`InputPort`] in `variant_inputs`
-    output_feedback: BTreeMap<OutputPort, InputPort>,
+    output_feedback: HashMap<OutputPort, InputPort>,
 
     /// The theta's condition, it should be an expression that evaluates to a boolean
     ///
@@ -69,10 +68,10 @@ impl Theta {
     pub(in crate::graph) fn new(
         node: NodeId,
         effects: Option<ThetaEffects>,
-        invariant_inputs: BTreeMap<InputPort, NodeId>,
-        variant_inputs: BTreeMap<InputPort, NodeId>,
-        outputs: BTreeMap<OutputPort, NodeId>,
-        output_feedback: BTreeMap<OutputPort, InputPort>,
+        invariant_inputs: HashMap<InputPort, NodeId>,
+        variant_inputs: HashMap<InputPort, NodeId>,
+        outputs: HashMap<OutputPort, NodeId>,
+        output_feedback: HashMap<OutputPort, InputPort>,
         condition: NodeId,
         subgraph: Box<Subgraph>,
     ) -> Self {
@@ -171,7 +170,7 @@ impl Theta {
     }
 
     /// Get the theta's output feedback edges
-    pub const fn output_feedback(&self) -> &BTreeMap<OutputPort, InputPort> {
+    pub const fn output_feedback(&self) -> &HashMap<OutputPort, InputPort> {
         &self.output_feedback
     }
 
@@ -307,7 +306,7 @@ impl Theta {
         self.invariant_inputs.values().copied()
     }
 
-    pub fn replace_invariant_inputs(&mut self, invariant_inputs: BTreeMap<InputPort, NodeId>) {
+    pub fn replace_invariant_inputs(&mut self, invariant_inputs: HashMap<InputPort, NodeId>) {
         self.invariant_inputs = invariant_inputs;
     }
 
@@ -363,7 +362,7 @@ impl Theta {
         })
     }
 
-    pub fn replace_variant_inputs(&mut self, variant_inputs: BTreeMap<InputPort, NodeId>) {
+    pub fn replace_variant_inputs(&mut self, variant_inputs: HashMap<InputPort, NodeId>) {
         self.variant_inputs = variant_inputs;
     }
 
@@ -398,11 +397,11 @@ impl Theta {
             .map(|(&port, &param)| (port, param, self.output_feedback[&port]))
     }
 
-    pub fn replace_outputs(&mut self, outputs: BTreeMap<OutputPort, NodeId>) {
+    pub fn replace_outputs(&mut self, outputs: HashMap<OutputPort, NodeId>) {
         self.outputs = outputs;
     }
 
-    pub fn replace_output_feedback(&mut self, output_feedback: BTreeMap<OutputPort, InputPort>) {
+    pub fn replace_output_feedback(&mut self, output_feedback: HashMap<OutputPort, InputPort>) {
         self.output_feedback = output_feedback;
     }
 

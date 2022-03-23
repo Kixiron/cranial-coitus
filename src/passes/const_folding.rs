@@ -4,14 +4,18 @@ use crate::{
         Not, OutputPort, Rvsdg, Sub, Theta,
     },
     ir::Const,
-    passes::{utils::ConstantStore, Pass},
+    passes::{
+        utils::{Changes, ConstantStore},
+        Pass,
+    },
+    utils::HashMap,
     values::{Cell, Ptr},
 };
 
 /// Evaluates constant operations within the program
 pub struct ConstFolding {
     values: ConstantStore,
-    changed: bool,
+    changes: Changes<2>,
     tape_len: u16,
 }
 
@@ -19,13 +23,9 @@ impl ConstFolding {
     pub fn new(tape_len: u16) -> Self {
         Self {
             values: ConstantStore::new(tape_len),
-            changed: false,
+            changes: Changes::new(["exprs-folded", "propagated-inputs"]),
             tape_len,
         }
-    }
-
-    fn changed(&mut self) {
-        self.changed = true;
     }
 
     fn operand(&self, graph: &Rvsdg, input: InputPort) -> (OutputPort, Option<Ptr>) {
@@ -43,12 +43,16 @@ impl Pass for ConstFolding {
     }
 
     fn did_change(&self) -> bool {
-        self.changed
+        self.changes.has_changed()
     }
 
     fn reset(&mut self) {
         self.values.clear();
-        self.changed = false;
+        self.changes.set_has_changed(false);
+    }
+
+    fn report(&self) -> HashMap<&'static str, usize> {
+        self.changes.as_map()
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
@@ -78,11 +82,12 @@ impl Pass for ConstFolding {
 
                 let int = graph.int(sum);
                 graph.rewire_dependents(add.value(), int.value());
-                self.changed();
 
                 // Add the derived values to the known constants
                 self.values.add(int.value(), sum);
                 self.values.add(add.value(), sum);
+
+                self.changes.inc::<"exprs-folded">();
             }
 
             // If either side of the add is zero, we can simplify it to the non-zero value
@@ -97,12 +102,13 @@ impl Pass for ConstFolding {
                 );
 
                 graph.rewire_dependents(add.value(), value);
-                self.changed();
 
                 // Add the derived value for the add node to the known constants
                 if let Some(value) = self.values.get(value) {
                     self.values.add(add.value(), value);
                 }
+
+                self.changes.inc::<"exprs-folded">();
             }
 
             // If one side of the add is the negative of the other, the add simplifies into a zero
@@ -119,11 +125,12 @@ impl Pass for ConstFolding {
 
                 let zero = graph.int(Ptr::zero(self.tape_len));
                 graph.rewire_dependents(add.value(), zero.value());
-                self.changed();
 
                 // Add the derived values to the known constants
                 self.values.add(zero.value(), Ptr::zero(self.tape_len));
                 self.values.add(add.value(), Ptr::zero(self.tape_len));
+
+                self.changes.inc::<"exprs-folded">();
             }
 
             _ => {}
@@ -145,11 +152,12 @@ impl Pass for ConstFolding {
 
                 let int = graph.int(difference);
                 graph.rewire_dependents(sub.value(), int.value());
-                self.changed();
 
                 // Add the derived values to the known constants
                 self.values.add(int.value(), difference);
                 self.values.add(sub.value(), difference);
+
+                self.changes.inc::<"exprs-folded">();
             }
 
             // If either side of the sub are zero, we can simplify it to the non-zero value
@@ -162,12 +170,13 @@ impl Pass for ConstFolding {
                 );
 
                 graph.rewire_dependents(sub.value(), value);
-                self.changed();
 
                 // Add the derived value for the sub node to the known constants
                 if let Some(value) = self.values.get(value) {
                     self.values.add(sub.value(), value);
                 }
+
+                self.changes.inc::<"exprs-folded">();
             }
 
             // `0 - x => -x`
@@ -181,13 +190,13 @@ impl Pass for ConstFolding {
                 let neg = graph.neg(value);
                 graph.rewire_dependents(sub.value(), neg.value());
 
-                self.changed();
-
                 // Add the derived value for the sub node to the known constants
                 if let Some(value) = self.values.get(value) {
                     self.values.add(sub.value(), -value);
                     self.values.add(neg.value(), -value);
                 }
+
+                self.changes.inc::<"exprs-folded">();
             }
 
             // If one side of the sub is the negative of the other, the sub simplifies into a zero
@@ -204,11 +213,12 @@ impl Pass for ConstFolding {
 
                 let zero = graph.int(Ptr::zero(self.tape_len));
                 graph.rewire_dependents(sub.value(), zero.value());
-                self.changed();
 
                 // Add the derived values to the known constants
                 self.values.add(zero.value(), Ptr::zero(self.tape_len));
                 self.values.add(sub.value(), Ptr::zero(self.tape_len));
+
+                self.changes.inc::<"exprs-folded">();
             }
 
             _ => {}
@@ -230,11 +240,12 @@ impl Pass for ConstFolding {
 
                 let int = graph.int(product);
                 graph.rewire_dependents(mul.value(), int.value());
-                self.changed();
 
                 // Add the derived values to the known constants
                 self.values.add(int.value(), product);
                 self.values.add(mul.value(), product);
+
+                self.changes.inc::<"exprs-folded">();
             }
 
             // If either side of the multiply is zero, we can remove the multiply entirely for zero
@@ -247,10 +258,11 @@ impl Pass for ConstFolding {
                 );
 
                 graph.rewire_dependents(mul.value(), zero);
-                self.changed();
 
                 // Add the derived value to the known constants
                 self.values.add(mul.value(), Cell::zero());
+
+                self.changes.inc::<"exprs-folded">();
             }
 
             // If either side of the multiply is one, we can remove the multiply entirely for the non-one value
@@ -263,12 +275,13 @@ impl Pass for ConstFolding {
                 );
 
                 graph.rewire_dependents(mul.value(), value);
-                self.changed();
 
                 // Add the derived value for the mul node to the known constants
                 if let Some(value) = self.values.get(value) {
                     self.values.add(mul.value(), value);
                 }
+
+                self.changes.inc::<"exprs-folded">();
             }
 
             _ => {}
@@ -294,16 +307,16 @@ impl Pass for ConstFolding {
                 visitor.values.add(value, constant);
                 theta.body_mut().rewire_dependents(param.output(), value);
 
-                self.changed();
+                self.changes.inc::<"propagated-inputs">();
                 changed = true;
             }
         }
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.changes.combine(&visitor.changes);
 
         if changed {
             graph.replace_node(theta.node(), theta);
-            self.changed();
         }
     }
 
@@ -329,7 +342,7 @@ impl Pass for ConstFolding {
 
             graph.rewire_dependents(eq.value(), are_equal.value());
 
-            self.changed();
+            self.changes.inc::<"exprs-folded">();
 
         // If the operands are equal this comparison will always be true
         } else if lhs_source == rhs_source {
@@ -346,7 +359,7 @@ impl Pass for ConstFolding {
 
             graph.rewire_dependents(eq.value(), true_val.value());
 
-            self.changed();
+            self.changes.inc::<"exprs-folded">();
         }
     }
 
@@ -375,7 +388,7 @@ impl Pass for ConstFolding {
 
             graph.rewire_dependents(neq.value(), are_inequal.value());
 
-            self.changed();
+            self.changes.inc::<"exprs-folded">();
 
         // If the operands are equal this comparison will always be false
         } else if lhs_source == rhs_source {
@@ -392,7 +405,7 @@ impl Pass for ConstFolding {
 
             graph.rewire_dependents(neq.value(), false_val.value());
 
-            self.changed();
+            self.changes.inc::<"exprs-folded">();
         }
     }
 
@@ -409,7 +422,7 @@ impl Pass for ConstFolding {
 
             graph.rewire_dependents(not.value(), inverted.value());
 
-            self.changed();
+            self.changes.inc::<"exprs-folded">();
         }
     }
 
@@ -430,13 +443,13 @@ impl Pass for ConstFolding {
 
             graph.rewire_dependents(neg.value(), inverted);
 
-            self.changed();
+            self.changes.inc::<"exprs-folded">();
         }
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
-        let (mut truthy_visitor, mut falsy_visitor) =
+        let (mut true_visitor, mut false_visitor) =
             (Self::new(self.tape_len), Self::new(self.tape_len));
 
         let inputs: Vec<_> = gamma
@@ -469,8 +482,8 @@ impl Pass for ConstFolding {
                     ),
                 };
 
-                truthy_visitor.values.add(true_val, constant);
-                falsy_visitor.values.add(false_val, constant);
+                true_visitor.values.add(true_val, constant);
+                false_visitor.values.add(false_val, constant);
 
                 let true_output = gamma
                     .true_branch()
@@ -484,13 +497,16 @@ impl Pass for ConstFolding {
                     .output();
                 gamma.false_mut().rewire_dependents(false_output, false_val);
 
-                self.changed();
+                self.changes.inc::<"propagated-inputs">();
                 changed = true;
             }
         }
 
-        changed |= truthy_visitor.visit_graph(gamma.true_mut());
-        changed |= falsy_visitor.visit_graph(gamma.false_mut());
+        changed |= true_visitor.visit_graph(gamma.true_mut());
+        self.changes.combine(&true_visitor.changes);
+
+        changed |= false_visitor.visit_graph(gamma.false_mut());
+        self.changes.combine(&false_visitor.changes);
 
         for (&port, &param) in gamma.outputs().iter().zip(gamma.output_params()) {
             let true_output = gamma.true_branch().input_source(
@@ -510,8 +526,8 @@ impl Pass for ConstFolding {
             );
 
             if let (Some(truthy), Some(falsy)) = (
-                truthy_visitor.values.get(true_output),
-                falsy_visitor.values.get(false_output),
+                true_visitor.values.get(true_output),
+                false_visitor.values.get(false_output),
             ) {
                 if truthy == falsy {
                     tracing::trace!("propagating {:?} out of gamma node", truthy);
@@ -528,7 +544,6 @@ impl Pass for ConstFolding {
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
-            self.changed();
         }
     }
 }

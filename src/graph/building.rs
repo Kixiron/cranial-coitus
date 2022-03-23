@@ -5,10 +5,9 @@ use crate::{
         Neg, Neq, Node, Not, Output, OutputParam, OutputPort, Rvsdg, Start, Store, Sub, Subgraph,
         Theta, ThetaData,
     },
-    utils::AssertNone,
+    utils::{AssertNone, HashMap},
     values::{Cell, Ptr},
 };
-use std::collections::BTreeMap;
 use tinyvec::TinyVec;
 
 impl Rvsdg {
@@ -386,7 +385,7 @@ impl Rvsdg {
         let start = subgraph.start();
 
         // Create the input params for the invariant inputs
-        let (invariant_inputs, invariant_param_outputs): (BTreeMap<_, _>, TinyVec<[_; 5]>) =
+        let (invariant_inputs, invariant_param_outputs): (HashMap<_, _>, TinyVec<[_; 5]>) =
             invariant_input_ports
                 .iter()
                 .map(|&input| {
@@ -396,7 +395,7 @@ impl Rvsdg {
                 .unzip();
 
         // Create the input params for the variant inputs
-        let (variant_inputs, variant_param_outputs): (BTreeMap<_, _>, TinyVec<[_; 5]>) =
+        let (variant_inputs, variant_param_outputs): (HashMap<_, _>, TinyVec<[_; 5]>) =
             variant_input_ports
                 .iter()
                 .map(|&input| {
@@ -458,7 +457,7 @@ impl Rvsdg {
 
         // Create the map of theta output ports to subgraph input params and
         // the map of back edges between output ports and variant inputs
-        let (outputs, output_back_edges): (BTreeMap<_, _>, BTreeMap<_, _>) = output_params
+        let (outputs, output_back_edges): (HashMap<_, _>, HashMap<_, _>) = output_params
             .map(|(variant_input, output_param)| {
                 // Create the output port on the theta node
                 let output_port = self.output_port(theta_id, EdgeKind::Value);

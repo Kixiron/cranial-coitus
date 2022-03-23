@@ -52,6 +52,7 @@ impl DuplicateCell {
         }
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.duplicates_removed += visitor.duplicates_removed;
 
         (
             changed,
@@ -447,7 +448,10 @@ impl Pass for DuplicateCell {
         }
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
+        self.duplicates_removed += true_visitor.duplicates_removed;
+
         changed |= false_visitor.visit_graph(gamma.false_mut());
+        self.duplicates_removed += false_visitor.duplicates_removed;
 
         // Is `true` if the gamma's true branch is a passthrough
         let true_is_empty = {
@@ -541,6 +545,7 @@ impl Pass for DuplicateCell {
         }
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.duplicates_removed += visitor.duplicates_removed;
 
         if changed {
             graph.replace_node(theta.node(), theta);

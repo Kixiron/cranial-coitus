@@ -414,7 +414,12 @@ impl Pass for ZeroLoop {
         );
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
+        self.zero_loops_removed += true_visitor.zero_loops_removed;
+        self.zero_gammas_removed += true_visitor.zero_gammas_removed;
+
         changed |= false_visitor.visit_graph(gamma.false_mut());
+        self.zero_loops_removed += false_visitor.zero_loops_removed;
+        self.zero_gammas_removed += false_visitor.zero_gammas_removed;
 
         if let Some(target_ptr) = self.is_zero_gamma_store(graph, &false_visitor.values, &gamma) {
             let zero = graph.int(Ptr::zero(self.tape_len));
@@ -458,6 +463,8 @@ impl Pass for ZeroLoop {
             .theta_invariant_inputs_into(&theta, graph, &mut visitor.values);
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.zero_loops_removed += visitor.zero_loops_removed;
+        self.zero_gammas_removed += visitor.zero_gammas_removed;
 
         if let Some(target_ptr) = self.is_zero_loop(&theta, &visitor.values) {
             tracing::debug!(

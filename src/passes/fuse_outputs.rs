@@ -1,24 +1,18 @@
 use crate::{
-    graph::{EdgeKind, NodeExt, Output, Rvsdg},
-    passes::Pass,
+    graph::{EdgeKind, Gamma, NodeExt, Output, Rvsdg, Theta},
+    passes::{utils::Changes, Pass},
     utils::HashMap,
 };
 
 pub struct FuseOutputs {
-    changed: bool,
-    outputs_fused: usize,
+    changes: Changes<1>,
 }
 
 impl FuseOutputs {
     pub fn new() -> Self {
         Self {
-            changed: false,
-            outputs_fused: 0,
+            changes: Changes::new(["outputs-fused"]),
         }
-    }
-
-    pub fn changed(&mut self) {
-        self.changed = true;
     }
 }
 
@@ -28,20 +22,19 @@ impl Pass for FuseOutputs {
     }
 
     fn did_change(&self) -> bool {
-        self.changed
+        self.changes.has_changed()
     }
 
     fn reset(&mut self) {
-        self.changed = false;
+        self.changes.set_has_changed(false);
     }
 
     fn report(&self) -> HashMap<&'static str, usize> {
-        map! {
-            "outputs fused" => self.outputs_fused,
-        }
+        self.changes.as_map()
     }
 
     fn visit_output(&mut self, graph: &mut Rvsdg, mut output: Output) {
+        let mut changed = false;
         while let Some(consumer) = graph.cast_target::<Output>(output.output_effect()).cloned() {
             // Add each value from the fused output to the current one
             output.values_mut().reserve(consumer.values().len());
@@ -56,13 +49,29 @@ impl Pass for FuseOutputs {
             graph.rewire_dependents(consumer.output_effect(), output.output_effect());
             graph.remove_node(consumer.node());
 
-            self.outputs_fused += 1;
-            self.changed();
+            changed = true;
+            self.changes.inc::<"outputs-fused">();
         }
 
         // If we fused any output calls together, replace the node
-        if self.changed {
+        if changed {
             graph.replace_node(output.node(), output);
+        }
+    }
+
+    fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
+        let mut changed = false;
+        changed |= self.visit_graph(gamma.true_mut());
+        changed |= self.visit_graph(gamma.false_mut());
+
+        if changed {
+            graph.replace_node(gamma.node(), gamma);
+        }
+    }
+
+    fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
+        if self.visit_graph(theta.body_mut()) {
+            graph.replace_node(theta.node(), theta);
         }
     }
 }

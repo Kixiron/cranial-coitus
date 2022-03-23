@@ -6,6 +6,7 @@ mod dataflow;
 mod dce;
 mod duplicate_cell;
 mod eliminate_const_gamma;
+mod equality;
 mod expr_dedup;
 mod fold_arithmetic;
 mod fuse_outputs;
@@ -26,6 +27,7 @@ pub use dataflow::Dataflow;
 pub use dce::Dce;
 pub use duplicate_cell::DuplicateCell;
 pub use eliminate_const_gamma::ElimConstGamma;
+pub use equality::Equality;
 pub use expr_dedup::ExprDedup;
 pub use fold_arithmetic::FoldArithmetic;
 pub use fuse_outputs::FuseOutputs;
@@ -68,6 +70,7 @@ pub fn default_passes(tape_len: u16) -> Vec<Box<dyn Pass>> {
         SymbolicEval::new(tape_len),
         Licm::new(),
         DuplicateCell::new(tape_len),
+        Equality::new(),
         ExprDedup::new(),
         Dce::new(),
         Canonicalize::new(),

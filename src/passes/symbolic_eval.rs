@@ -306,6 +306,8 @@ impl Pass for SymbolicEval {
                 .theta_invariant_inputs_into(&theta, graph, &mut visitor.constants);
 
             changed |= visitor.visit_graph(theta.body_mut());
+            self.evaluated_outputs += visitor.evaluated_outputs;
+            self.evaluated_thetas += visitor.evaluated_thetas;
 
             if changed {
                 graph.replace_node(theta.node(), theta);
@@ -342,7 +344,12 @@ impl Pass for SymbolicEval {
         );
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
+        self.evaluated_outputs += true_visitor.evaluated_outputs;
+        self.evaluated_thetas += true_visitor.evaluated_thetas;
+
         changed |= false_visitor.visit_graph(gamma.false_mut());
+        self.evaluated_outputs += false_visitor.evaluated_outputs;
+        self.evaluated_thetas += false_visitor.evaluated_thetas;
 
         if changed {
             graph.replace_node(gamma.node(), gamma);

@@ -7,10 +7,12 @@
     slice_ptr_len,
     str_internals,
     bool_to_option,
+    adt_const_params,
     hash_drain_filter,
     vec_into_raw_parts,
     nonnull_slice_from_raw_parts
 )]
+#![allow(incomplete_features)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 #[macro_use]
@@ -107,32 +109,32 @@ fn debug(
     // Note: This happens *after* we print out the initial graph for better debugging
     validate(&graph);
 
-    let compile_attempt: Result<Result<_>, _> = panic::catch_unwind(|| {
-        let jit = Jit::new(args, &dump_dir, "input")?.compile(&input_program)?;
-
-        let mut tape = vec![0x00; args.tape_len as usize];
-        let start = Instant::now();
-
-        // Safety: Decidedly not safe in the slightest
-        unsafe { jit.execute(&mut tape)? };
-
-        let elapsed = start.elapsed();
-        println!("Unoptimized jit finished execution in {:#?}", elapsed);
-
-        Ok(())
-    });
-
-    match compile_attempt {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            tracing::error!("jit compilation attempt failed: {:?}", error);
-        }
-        Err(error) => {
-            tracing::error!("jit compilation attempt panicked: {:?}", error);
-        }
-    }
-
     let unoptimized_execution = if !only_final_run {
+        let compile_attempt: Result<Result<_>, _> = panic::catch_unwind(|| {
+            let jit = Jit::new(args, &dump_dir, "input")?.compile(&input_program)?;
+
+            let mut tape = vec![0x00; args.tape_len as usize];
+            let start = Instant::now();
+
+            // Safety: Decidedly not safe in the slightest
+            unsafe { jit.execute(&mut tape)? };
+
+            let elapsed = start.elapsed();
+            println!("Unoptimized jit finished execution in {:#?}", elapsed);
+
+            Ok(())
+        });
+
+        match compile_attempt {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::error!("jit compilation attempt failed: {:?}", error);
+            }
+            Err(error) => {
+                tracing::error!("jit compilation attempt panicked: {:?}", error);
+            }
+        }
+
         let result_path = dump_dir.join("input-result.txt");
         let mut result_file = File::create(&result_path)
             .with_context(|| format!("failed to create '{}'", result_path.display()))?;

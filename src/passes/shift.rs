@@ -306,8 +306,6 @@ impl ShiftCell {
         // FIXME: Depends on the relation between the add and sub node, not the operand
         let (src_ptr, src_dec, dest_ptr) = if offset_one == 1 && offset_two == 1 {
             (load_ptr_two, add_two.value(), load_ptr_one)
-        } else if offset_one == 1 && offset_two == 1 {
-            (load_ptr_one, add_one.value(), load_ptr_two)
         } else {
             return None;
         };
@@ -378,7 +376,10 @@ impl Pass for ShiftCell {
         );
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
+        self.shifts_removed += true_visitor.shifts_removed;
+
         changed |= false_visitor.visit_graph(gamma.false_mut());
+        self.shifts_removed += false_visitor.shifts_removed;
 
         // Is `true` if the gamma's true branch is a passthrough
         let true_is_empty = {
@@ -455,6 +456,7 @@ impl Pass for ShiftCell {
             .theta_invariant_inputs_into(&theta, graph, &mut visitor.constants);
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.shifts_removed += visitor.shifts_removed;
 
         if changed {
             graph.replace_node(theta.node(), theta);

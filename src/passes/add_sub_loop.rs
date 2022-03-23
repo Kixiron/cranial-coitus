@@ -4,7 +4,7 @@ use crate::{
         Sub, Theta,
     },
     ir::Const,
-    passes::Pass,
+    passes::{utils::Changes, Pass},
     utils::{AssertNone, HashMap},
     values::{Cell, Ptr},
 };
@@ -17,11 +17,9 @@ enum Candidate {
 }
 
 pub struct AddSubLoop {
-    changed: bool,
     // FIXME: ConstantStore
     values: BTreeMap<OutputPort, Const>,
-    add_loops_removed: usize,
-    sub_loops_removed: usize,
+    changes: Changes<2>,
     tape_len: u16,
 }
 
@@ -29,15 +27,9 @@ impl AddSubLoop {
     pub fn new(tape_len: u16) -> Self {
         Self {
             values: BTreeMap::new(),
-            changed: false,
-            add_loops_removed: 0,
-            sub_loops_removed: 0,
+            changes: Changes::new(["add-loops", "sub-loops"]),
             tape_len,
         }
-    }
-
-    fn changed(&mut self) {
-        self.changed = true;
     }
 
     /// We're matching two motifs here
@@ -138,15 +130,15 @@ impl AddSubLoop {
         // dec_counter := sub counter_val, int 1
         let dec_counter = graph.cast_source::<Sub>(store_dec_counter.value())?;
 
-        let (dec_lhs_src, add_rhs_src) = (
+        let (dec_lhs_src, dec_rhs_src) = (
             graph.input_source(dec_counter.lhs()),
             graph.input_source(dec_counter.rhs()),
         );
-        let (add_lhs_neg_one, add_rhs_neg_one) = (is(dec_lhs_src, 1), is(add_rhs_src, 1));
+        let (add_lhs_neg_one, add_rhs_neg_one) = (is(dec_lhs_src, 1), is(dec_rhs_src, 1));
 
         // If the sub isn't `sub loaded_lhs, 1` this isn't a candidate
         if !((dec_lhs_src == load_counter.output_value() && add_rhs_neg_one)
-            || (add_lhs_neg_one && add_rhs_src == load_counter.output_value()))
+            || (add_lhs_neg_one && dec_rhs_src == load_counter.output_value()))
         {
             return None;
         }
@@ -203,6 +195,7 @@ impl AddSubLoop {
         let cond_output = theta.condition();
 
         // counter_not_zero := neq counter_is_zero, int 0
+        // counter_not_zero := neq counter_val, int 1
         let cond_not_zero = graph.cast_source::<Neq>(cond_output.input())?;
         let (neq_lhs_src, neq_rhs_src) = (
             graph.input_source(cond_not_zero.lhs()),
@@ -210,15 +203,12 @@ impl AddSubLoop {
         );
         let (neq_lhs_zero, neq_rhs_zero) = (is(neq_lhs_src, 0), is(neq_rhs_src, 0));
 
-        // If the neq isn't `neq dec_counter, 0` this isn't a candidate
-        if !((neq_lhs_src == dec_counter.value() && neq_rhs_zero)
-            || (neq_lhs_zero && neq_rhs_src == dec_counter.value()))
-        {
-            return None;
-        }
+        // If the neq isn't `neq counter_is_zero, 0` or `neq counter_val, int 1` this isn't a candidate
+        let is_neq_counter_is_zero = (neq_lhs_src == dec_counter.value() && neq_rhs_zero)
+            || (neq_lhs_zero && neq_rhs_src == dec_counter.value());
+        let is_neq_counter_val = neq_lhs_src == dec_lhs_src && neq_rhs_src == dec_rhs_src;
 
-        // Otherwise we've matched the pattern properly and this is an add/sub loop
-        Some((candidate, counter_ptr, acc_ptr))
+        (is_neq_counter_is_zero || is_neq_counter_val).then_some((candidate, counter_ptr, acc_ptr))
     }
 }
 
@@ -228,19 +218,16 @@ impl Pass for AddSubLoop {
     }
 
     fn did_change(&self) -> bool {
-        self.changed
+        self.changes.has_changed()
     }
 
     fn reset(&mut self) {
         self.values.clear();
-        self.changed = false;
+        self.changes.set_has_changed(false);
     }
 
     fn report(&self) -> HashMap<&'static str, usize> {
-        map! {
-            "addition loops" => self.add_loops_removed,
-            "subtraction loops" => self.sub_loops_removed,
-        }
+        self.changes.as_map()
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
@@ -278,11 +265,13 @@ impl Pass for AddSubLoop {
         }
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
+        self.changes.combine(&true_visitor.changes);
+
         changed |= false_visitor.visit_graph(gamma.false_mut());
+        self.changes.combine(&false_visitor.changes);
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
-            self.changed();
         }
     }
 
@@ -302,6 +291,7 @@ impl Pass for AddSubLoop {
         }
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.changes.combine(&visitor.changes);
 
         if let Some((candidate, counter_ptr, acc_ptr)) =
             self.theta_is_candidate(&visitor.values, &theta)
@@ -352,7 +342,7 @@ impl Pass for AddSubLoop {
             let sum_diff = match candidate {
                 // Add the counter and accumulator values together
                 Candidate::Add => {
-                    self.add_loops_removed += 1;
+                    self.changes.inc::<"add-loops">();
                     graph
                         .add(counter_val.output_value(), acc_val.output_value())
                         .value()
@@ -360,7 +350,7 @@ impl Pass for AddSubLoop {
 
                 // Subtract the accumulator from the counter
                 Candidate::Sub => {
-                    self.sub_loops_removed += 1;
+                    self.changes.inc::<"sub-loops">();
                     graph
                         .sub(counter_val.output_value(), acc_val.output_value())
                         .value()
@@ -418,10 +408,8 @@ impl Pass for AddSubLoop {
             }
 
             graph.remove_node(theta.node());
-            self.changed();
         } else if changed {
             graph.replace_node(theta.node(), theta);
-            self.changed();
         }
     }
 }

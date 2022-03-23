@@ -198,7 +198,9 @@ impl Pass for UnobservedStore {
         );
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
+        self.unobserved_stores_removed += true_visitor.unobserved_stores_removed;
         changed |= false_visitor.visit_graph(gamma.false_mut());
+        self.unobserved_stores_removed += false_visitor.unobserved_stores_removed;
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
@@ -219,6 +221,7 @@ impl Pass for UnobservedStore {
             .theta_invariant_inputs_into(&theta, graph, &mut visitor.constants);
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.unobserved_stores_removed += visitor.unobserved_stores_removed;
 
         if changed {
             graph.replace_node(theta.node(), theta);

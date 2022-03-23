@@ -165,7 +165,7 @@ impl Pass for ExprDedup {
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
-        let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
+        let (mut true_visitor, mut false_visitor) = (Self::new(), Self::new());
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -173,21 +173,23 @@ impl Pass for ExprDedup {
         {
             if let Some(constant) = self.constants.get(&graph.input_source(input)).copied() {
                 let param = gamma.true_branch().to_node::<InputParam>(true_param);
-                truthy_visitor
+                true_visitor
                     .constants
                     .insert(param.output(), constant)
                     .debug_unwrap_none();
 
                 let param = gamma.false_branch().to_node::<InputParam>(false_param);
-                falsy_visitor
+                false_visitor
                     .constants
                     .insert(param.output(), constant)
                     .debug_unwrap_none();
             }
         }
 
-        changed |= truthy_visitor.visit_graph(gamma.true_mut());
-        changed |= falsy_visitor.visit_graph(gamma.false_mut());
+        changed |= true_visitor.visit_graph(gamma.true_mut());
+        self.deduplicated_loads += true_visitor.deduplicated_loads;
+        changed |= false_visitor.visit_graph(gamma.false_mut());
+        self.deduplicated_loads += false_visitor.deduplicated_loads;
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
@@ -217,6 +219,7 @@ impl Pass for ExprDedup {
         }
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.deduplicated_loads += visitor.deduplicated_loads;
 
         // Deduplicate invariant parameters
         // TODO: Buffers

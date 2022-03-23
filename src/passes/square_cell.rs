@@ -557,7 +557,10 @@ impl Pass for SquareCell {
         }
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
+        self.squares_removed += true_visitor.squares_removed;
+
         changed |= false_visitor.visit_graph(gamma.false_mut());
+        self.squares_removed += false_visitor.squares_removed;
 
         if let Some(theta_id) = self.outer_gamma_is_candidate(&gamma) {
             let mut outmost_theta_visitor = Self::new(self.tape_len);
@@ -577,7 +580,9 @@ impl Pass for SquareCell {
                         .debug_unwrap_none();
                 }
             }
+
             changed |= outmost_theta_visitor.visit_graph(outmost_theta.body_mut());
+            self.squares_removed += outmost_theta_visitor.squares_removed;
 
             if let Some(candidate) = false_visitor
                 .outmost_theta_is_candidate(&outmost_theta_visitor.values, &outmost_theta)
@@ -608,7 +613,9 @@ impl Pass for SquareCell {
                             .debug_unwrap_none();
                     }
                 }
+
                 inner_gamma_visitor.visit_graph(&mut inner_gamma.false_branch().clone());
+                self.squares_removed += inner_gamma_visitor.squares_removed;
 
                 if let Some(InnerGamma { inner_theta_id }) =
                     inner_gamma_visitor.inner_gamma_is_candidate(inner_gamma)
@@ -628,7 +635,9 @@ impl Pass for SquareCell {
                                 .debug_unwrap_none();
                         }
                     }
+
                     inner_theta_visitor.visit_graph(&mut inner_theta.body().clone());
+                    self.squares_removed += inner_theta_visitor.squares_removed;
 
                     if let Some(()) = inner_theta_visitor
                         .inner_theta_is_candidate(inner_theta, &inner_theta_visitor.values)
@@ -767,6 +776,7 @@ impl Pass for SquareCell {
         }
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.squares_removed += visitor.squares_removed;
 
         if changed {
             graph.replace_node(theta.node(), theta);

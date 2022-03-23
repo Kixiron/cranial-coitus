@@ -1,20 +1,20 @@
 use crate::{
     graph::{Gamma, InputParam, OutputPort, Rvsdg, Theta},
     ir::Const,
+    utils::HashMap,
     values::{Cell, Ptr},
 };
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct ConstantStore {
-    values: BTreeMap<OutputPort, Const>,
+    values: HashMap<OutputPort, Const>,
     tape_len: u16,
 }
 
 impl ConstantStore {
     pub fn new(tape_len: u16) -> Self {
         Self {
-            values: BTreeMap::new(),
+            values: HashMap::default(),
             tape_len,
         }
     }

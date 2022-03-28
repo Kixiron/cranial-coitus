@@ -33,7 +33,7 @@ impl Pass for Canonicalize {
 
     fn reset(&mut self) {
         self.constants.clear();
-        self.changes.set_has_changed(false);
+        self.changes.reset();
     }
 
     fn report(&self) -> HashMap<&'static str, usize> {

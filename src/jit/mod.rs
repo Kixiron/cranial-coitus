@@ -29,11 +29,13 @@ use cranelift::{
     },
 };
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{Linkage, Module};
+use cranelift_module::{DataContext, Linkage, Module};
 use std::{fs, mem::transmute, path::Path, slice};
 
 /// The function produced by jit code
 pub type JitFunction = unsafe extern "fastcall" fn(*mut State, *mut u8, *const u8) -> u8;
+
+const SCAN_ERROR_MESSAGE: &str = "A scanr or scanl call failed";
 
 pub struct Jit<'a> {
     /// The function builder context, which is reused across multiple
@@ -44,6 +46,8 @@ pub struct Jit<'a> {
     /// separates this from `Module` to allow for parallel compilation, with a
     /// context per thread, though this isn't in the simple demo here
     ctx: Context,
+
+    data_ctx: DataContext,
 
     /// The module, with the jit backend, which manages the JIT'd
     /// functions
@@ -70,13 +74,33 @@ impl<'a> Jit<'a> {
             ("io_error", ffi::io_error as *const u8),
         ]);
 
-        let module = JITModule::new(builder);
+        // If tape wrapping is UB, we can use our functions that take advantage of it
+        if args.tape_wrapping_ub {
+            builder.symbols([
+                ("scanr", ffi::scanr_non_wrapping as *const u8),
+                ("scanl", ffi::scanl_non_wrapping as *const u8),
+            ]);
+        } else {
+            builder.symbols([
+                ("scanr", ffi::scanr_wrapping as *const u8),
+                ("scanl", ffi::scanl_wrapping as *const u8),
+            ]);
+        }
+
+        let mut module = JITModule::new(builder);
         let ctx = module.make_context();
         let builder_ctx = FunctionBuilderContext::new();
+
+        let mut data_ctx = DataContext::new();
+        data_ctx.define(Box::from(SCAN_ERROR_MESSAGE.as_bytes()));
+        let message_id =
+            module.declare_data("scan_error_message", Linkage::Export, false, false)?;
+        module.define_data(message_id, &data_ctx)?;
 
         Ok(Self {
             builder_ctx,
             ctx,
+            data_ctx,
             module,
             tape_len: args.tape_len,
             dump_dir,
@@ -104,9 +128,10 @@ impl<'a> Jit<'a> {
             &mut self.ctx,
             &mut self.module,
             &mut self.builder_ctx,
+            &mut self.data_ctx,
             self.tape_len,
         )?;
-        let function = codegen.run();
+        let function = codegen.run()?;
 
         fs::write(
             self.dump_dir.join(self.file_name).with_extension("clif"),

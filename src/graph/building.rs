@@ -1,21 +1,38 @@
 use crate::{
     graph::{
-        nodes::{GammaStub, ThetaEffects, ThetaStub},
-        Add, Bool, Byte, EdgeKind, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul,
-        Neg, Neq, Node, Not, Output, OutputParam, OutputPort, Rvsdg, Start, Store, Sub, Subgraph,
-        Theta, ThetaData,
+        nodes::ThetaEffects, Add, Bool, Byte, EdgeKind, End, Eq, Gamma, GammaData, Input,
+        InputParam, Int, Load, Mul, Neg, Neq, Node, Not, Output, OutputParam, OutputPort, Rvsdg,
+        Scan, ScanDirection, Start, Store, Sub, Subgraph, Theta, ThetaData,
     },
+    ir::Const,
     utils::{AssertNone, HashMap},
     values::{Cell, Ptr},
 };
 use tinyvec::TinyVec;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ConstNode {
+    Int(Int),
+    Byte(Byte),
+    Bool(Bool),
+}
+
+impl ConstNode {
+    pub const fn value(self) -> OutputPort {
+        match self {
+            Self::Int(int) => int.value(),
+            Self::Byte(byte) => byte.value(),
+            Self::Bool(bool) => bool.value(),
+        }
+    }
+}
 
 impl Rvsdg {
     pub fn start(&mut self) -> Start {
         let start_id = self.next_node();
         self.start_nodes.push(start_id);
 
-        let effect = self.output_port(start_id, EdgeKind::Effect);
+        let effect = self.create_output_port(start_id, EdgeKind::Effect);
 
         let start = Start::new(start_id, effect);
         self.nodes
@@ -32,7 +49,7 @@ impl Rvsdg {
         let end_id = self.next_node();
         self.end_nodes.push(end_id);
 
-        let effect_port = self.input_port(end_id, EdgeKind::Effect);
+        let effect_port = self.create_input_port(end_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_port);
 
         let end = End::new(end_id, effect_port);
@@ -46,7 +63,7 @@ impl Rvsdg {
     pub fn int(&mut self, value: Ptr) -> Int {
         let int_id = self.next_node();
 
-        let output = self.output_port(int_id, EdgeKind::Value);
+        let output = self.create_output_port(int_id, EdgeKind::Value);
 
         let int = Int::new(int_id, output);
         self.nodes
@@ -62,7 +79,7 @@ impl Rvsdg {
     {
         let byte_id = self.next_node();
 
-        let output = self.output_port(byte_id, EdgeKind::Value);
+        let output = self.create_output_port(byte_id, EdgeKind::Value);
 
         let byte = Byte::new(byte_id, output);
         self.nodes
@@ -75,7 +92,7 @@ impl Rvsdg {
     pub fn bool(&mut self, value: bool) -> Bool {
         let bool_id = self.next_node();
 
-        let output = self.output_port(bool_id, EdgeKind::Value);
+        let output = self.create_output_port(bool_id, EdgeKind::Value);
 
         let bool = Bool::new(bool_id, output);
         self.nodes
@@ -85,6 +102,14 @@ impl Rvsdg {
         bool
     }
 
+    pub fn constant(&mut self, constant: Const) -> ConstNode {
+        match constant {
+            Const::Ptr(ptr) => ConstNode::Int(self.int(ptr)),
+            Const::Cell(cell) => ConstNode::Byte(self.byte(cell)),
+            Const::Bool(bool) => ConstNode::Bool(self.bool(bool)),
+        }
+    }
+
     #[track_caller]
     pub fn add(&mut self, lhs: OutputPort, rhs: OutputPort) -> Add {
         self.assert_value_port(lhs);
@@ -92,13 +117,13 @@ impl Rvsdg {
 
         let add_id = self.next_node();
 
-        let lhs_port = self.input_port(add_id, EdgeKind::Value);
+        let lhs_port = self.create_input_port(add_id, EdgeKind::Value);
         self.add_value_edge(lhs, lhs_port);
 
-        let rhs_port = self.input_port(add_id, EdgeKind::Value);
+        let rhs_port = self.create_input_port(add_id, EdgeKind::Value);
         self.add_value_edge(rhs, rhs_port);
 
-        let output = self.output_port(add_id, EdgeKind::Value);
+        let output = self.create_output_port(add_id, EdgeKind::Value);
 
         let add = Add::new(add_id, lhs_port, rhs_port, output);
         self.nodes
@@ -115,13 +140,13 @@ impl Rvsdg {
 
         let sub_id = self.next_node();
 
-        let lhs_port = self.input_port(sub_id, EdgeKind::Value);
+        let lhs_port = self.create_input_port(sub_id, EdgeKind::Value);
         self.add_value_edge(lhs, lhs_port);
 
-        let rhs_port = self.input_port(sub_id, EdgeKind::Value);
+        let rhs_port = self.create_input_port(sub_id, EdgeKind::Value);
         self.add_value_edge(rhs, rhs_port);
 
-        let output = self.output_port(sub_id, EdgeKind::Value);
+        let output = self.create_output_port(sub_id, EdgeKind::Value);
 
         let sub = Sub::new(sub_id, lhs_port, rhs_port, output);
         self.nodes
@@ -138,13 +163,13 @@ impl Rvsdg {
 
         let mul_id = self.next_node();
 
-        let lhs_port = self.input_port(mul_id, EdgeKind::Value);
+        let lhs_port = self.create_input_port(mul_id, EdgeKind::Value);
         self.add_value_edge(lhs, lhs_port);
 
-        let rhs_port = self.input_port(mul_id, EdgeKind::Value);
+        let rhs_port = self.create_input_port(mul_id, EdgeKind::Value);
         self.add_value_edge(rhs, rhs_port);
 
-        let output = self.output_port(mul_id, EdgeKind::Value);
+        let output = self.create_output_port(mul_id, EdgeKind::Value);
 
         let mul = Mul::new(mul_id, lhs_port, rhs_port, output);
         self.nodes
@@ -161,14 +186,14 @@ impl Rvsdg {
 
         let load_id = self.next_node();
 
-        let ptr_port = self.input_port(load_id, EdgeKind::Value);
+        let ptr_port = self.create_input_port(load_id, EdgeKind::Value);
         self.add_value_edge(ptr, ptr_port);
 
-        let effect_port = self.input_port(load_id, EdgeKind::Effect);
+        let effect_port = self.create_input_port(load_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_port);
 
-        let loaded = self.output_port(load_id, EdgeKind::Value);
-        let effect_out = self.output_port(load_id, EdgeKind::Effect);
+        let loaded = self.create_output_port(load_id, EdgeKind::Value);
+        let effect_out = self.create_output_port(load_id, EdgeKind::Effect);
 
         let load = Load::new(load_id, ptr_port, effect_port, loaded, effect_out);
         self.nodes
@@ -186,16 +211,16 @@ impl Rvsdg {
 
         let store_id = self.next_node();
 
-        let ptr_port = self.input_port(store_id, EdgeKind::Value);
+        let ptr_port = self.create_input_port(store_id, EdgeKind::Value);
         self.add_value_edge(ptr, ptr_port);
 
-        let value_port = self.input_port(store_id, EdgeKind::Value);
+        let value_port = self.create_input_port(store_id, EdgeKind::Value);
         self.add_value_edge(value, value_port);
 
-        let effect_port = self.input_port(store_id, EdgeKind::Effect);
+        let effect_port = self.create_input_port(store_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_port);
 
-        let effect_out = self.output_port(store_id, EdgeKind::Effect);
+        let effect_out = self.create_output_port(store_id, EdgeKind::Effect);
 
         let store = Store::new(store_id, ptr_port, value_port, effect_port, effect_out);
         self.nodes
@@ -211,11 +236,11 @@ impl Rvsdg {
 
         let input_id = self.next_node();
 
-        let effect_port = self.input_port(input_id, EdgeKind::Effect);
+        let effect_port = self.create_input_port(input_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_port);
 
-        let value = self.output_port(input_id, EdgeKind::Value);
-        let effect_out = self.output_port(input_id, EdgeKind::Effect);
+        let value = self.create_output_port(input_id, EdgeKind::Value);
+        let effect_out = self.create_output_port(input_id, EdgeKind::Effect);
 
         let input = Input::new(input_id, effect_port, value, effect_out);
         self.nodes
@@ -243,16 +268,16 @@ impl Rvsdg {
             .into_iter()
             .map(|value| {
                 self.assert_value_port(value);
-                let port = self.input_port(output_id, EdgeKind::Value);
+                let port = self.create_input_port(output_id, EdgeKind::Value);
                 self.add_value_edge(value, port);
                 port
             })
             .collect();
 
-        let effect_port = self.input_port(output_id, EdgeKind::Effect);
+        let effect_port = self.create_input_port(output_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_port);
 
-        let effect_out = self.output_port(output_id, EdgeKind::Effect);
+        let effect_out = self.create_output_port(output_id, EdgeKind::Effect);
 
         let output = Output::new(output_id, value_ports, effect_port, effect_out);
         self.nodes
@@ -265,7 +290,7 @@ impl Rvsdg {
     pub fn input_param(&mut self, kind: EdgeKind) -> InputParam {
         let input_id = self.next_node();
 
-        let port = self.output_port(input_id, EdgeKind::Value);
+        let port = self.create_output_port(input_id, EdgeKind::Value);
         let param = InputParam::new(input_id, port, kind);
         self.nodes
             .insert(input_id, Node::InputParam(param))
@@ -277,7 +302,7 @@ impl Rvsdg {
     pub fn output_param(&mut self, input: OutputPort, kind: EdgeKind) -> OutputParam {
         let output_id = self.next_node();
 
-        let port = self.input_port(output_id, EdgeKind::Value);
+        let port = self.create_input_port(output_id, EdgeKind::Value);
         self.add_edge(input, port, kind);
 
         let param = OutputParam::new(output_id, port, kind);
@@ -330,7 +355,7 @@ impl Rvsdg {
         variant_inputs: I2,
         effect: E,
         build_theta: F,
-    ) -> ThetaStub
+    ) -> &Theta
     where
         I1: IntoIterator<Item = OutputPort>,
         I2: IntoIterator<Item = OutputPort>,
@@ -345,7 +370,7 @@ impl Rvsdg {
         let effect_input = effect_source.map(|effect_source| {
             self.assert_effect_port(effect_source);
 
-            let effect_input = self.input_port(theta_id, EdgeKind::Effect);
+            let effect_input = self.create_input_port(theta_id, EdgeKind::Effect);
             self.add_effect_edge(effect_source, effect_input);
 
             effect_input
@@ -357,7 +382,7 @@ impl Rvsdg {
             .map(|input| {
                 self.assert_value_port(input);
 
-                let port = self.input_port(theta_id, EdgeKind::Value);
+                let port = self.create_input_port(theta_id, EdgeKind::Value);
                 self.add_value_edge(input, port);
 
                 port
@@ -370,7 +395,7 @@ impl Rvsdg {
             .map(|input| {
                 self.assert_value_port(input);
 
-                let port = self.input_port(theta_id, EdgeKind::Value);
+                let port = self.create_input_port(theta_id, EdgeKind::Value);
                 self.add_value_edge(input, port);
 
                 port
@@ -460,7 +485,7 @@ impl Rvsdg {
         let (outputs, output_back_edges): (HashMap<_, _>, HashMap<_, _>) = output_params
             .map(|(variant_input, output_param)| {
                 // Create the output port on the theta node
-                let output_port = self.output_port(theta_id, EdgeKind::Value);
+                let output_port = self.create_output_port(theta_id, EdgeKind::Value);
 
                 (
                     (output_port, output_param.node()),
@@ -468,11 +493,10 @@ impl Rvsdg {
                 )
             })
             .unzip();
-        let output_ports: TinyVec<[OutputPort; 5]> = outputs.keys().copied().collect();
 
         // If we were given an input effect then we need to make an output effect as well
         let effects = effect_input.map(|effect_input| {
-            let effect_output = self.output_port(theta_id, EdgeKind::Effect);
+            let effect_output = self.create_output_port(theta_id, EdgeKind::Effect);
 
             ThetaEffects::new(effect_input, effect_output)
         });
@@ -488,12 +512,7 @@ impl Rvsdg {
             Box::new(Subgraph::new(subgraph, start.node(), end.node())),
         );
 
-        let stub = ThetaStub::new(effects.map(|effect| effect.output()), output_ports);
-        self.nodes
-            .insert(theta_id, Node::Theta(Box::new(theta)))
-            .debug_unwrap_none();
-
-        stub
+        self.insert_node(theta).to_theta()
     }
 
     // TODO: Refactor this
@@ -505,7 +524,7 @@ impl Rvsdg {
         condition: OutputPort,
         truthy: T,
         falsy: F,
-    ) -> GammaStub
+    ) -> &Gamma
     where
         I: IntoIterator<Item = OutputPort>,
         T: FnOnce(&mut Rvsdg, OutputPort, &[OutputPort]) -> GammaData,
@@ -516,10 +535,10 @@ impl Rvsdg {
 
         let gamma_id = self.next_node();
 
-        let effect_in = self.input_port(gamma_id, EdgeKind::Effect);
+        let effect_in = self.create_input_port(gamma_id, EdgeKind::Effect);
         self.add_effect_edge(effect, effect_in);
 
-        let cond_port = self.input_port(gamma_id, EdgeKind::Value);
+        let cond_port = self.create_input_port(gamma_id, EdgeKind::Value);
         self.add_value_edge(condition, cond_port);
 
         // Wire up the external inputs to the gamma node
@@ -528,7 +547,7 @@ impl Rvsdg {
             .map(|input| {
                 self.assert_value_port(input);
 
-                let port = self.input_port(gamma_id, EdgeKind::Value);
+                let port = self.create_input_port(gamma_id, EdgeKind::Value);
                 self.add_value_edge(input, port);
                 port
             })
@@ -622,12 +641,12 @@ impl Rvsdg {
             .map(|(truthy, falsy)| [truthy, falsy])
             .collect();
 
-        let effect_out = self.output_port(gamma_id, EdgeKind::Effect);
+        let effect_out = self.create_output_port(gamma_id, EdgeKind::Effect);
         let outer_outputs: TinyVec<[_; 4]> = (0..output_params.len())
-            .map(|_| self.output_port(gamma_id, EdgeKind::Value))
+            .map(|_| self.create_output_port(gamma_id, EdgeKind::Value))
             .collect();
 
-        let stub = GammaStub::new(Some(effect_out), outer_outputs.iter().copied().collect());
+        // let stub = GammaStub::new(Some(effect_out), outer_outputs.iter().copied().collect());
         let gamma = Gamma::new(
             gamma_id,                                    // node
             outer_inputs,                                // inputs
@@ -644,11 +663,7 @@ impl Rvsdg {
             cond_port,                                   // condition
         );
 
-        self.nodes
-            .insert(gamma_id, Node::Gamma(Box::new(gamma)))
-            .debug_unwrap_none();
-
-        stub
+        self.insert_node(gamma).to_gamma()
     }
 
     #[track_caller]
@@ -658,13 +673,13 @@ impl Rvsdg {
 
         let eq_id = self.next_node();
 
-        let lhs_port = self.input_port(eq_id, EdgeKind::Value);
+        let lhs_port = self.create_input_port(eq_id, EdgeKind::Value);
         self.add_value_edge(lhs, lhs_port);
 
-        let rhs_port = self.input_port(eq_id, EdgeKind::Value);
+        let rhs_port = self.create_input_port(eq_id, EdgeKind::Value);
         self.add_value_edge(rhs, rhs_port);
 
-        let output = self.output_port(eq_id, EdgeKind::Value);
+        let output = self.create_output_port(eq_id, EdgeKind::Value);
 
         let eq = Eq::new(eq_id, lhs_port, rhs_port, output);
         self.nodes.insert(eq_id, Node::Eq(eq)).debug_unwrap_none();
@@ -679,13 +694,13 @@ impl Rvsdg {
 
         let neq_id = self.next_node();
 
-        let lhs_port = self.input_port(neq_id, EdgeKind::Value);
+        let lhs_port = self.create_input_port(neq_id, EdgeKind::Value);
         self.add_value_edge(lhs, lhs_port);
 
-        let rhs_port = self.input_port(neq_id, EdgeKind::Value);
+        let rhs_port = self.create_input_port(neq_id, EdgeKind::Value);
         self.add_value_edge(rhs, rhs_port);
 
-        let output = self.output_port(neq_id, EdgeKind::Value);
+        let output = self.create_output_port(neq_id, EdgeKind::Value);
 
         let neq = Neq::new(neq_id, lhs_port, rhs_port, output);
         self.nodes
@@ -701,10 +716,10 @@ impl Rvsdg {
 
         let not_id = self.next_node();
 
-        let input_port = self.input_port(not_id, EdgeKind::Value);
+        let input_port = self.create_value_input(not_id);
         self.add_value_edge(input, input_port);
 
-        let output = self.output_port(not_id, EdgeKind::Value);
+        let output = self.create_value_output(not_id);
 
         let not = Not::new(not_id, input_port, output);
         self.nodes
@@ -720,10 +735,10 @@ impl Rvsdg {
 
         let neg_id = self.next_node();
 
-        let input_port = self.input_port(neg_id, EdgeKind::Value);
+        let input_port = self.create_value_input(neg_id);
         self.add_value_edge(input, input_port);
 
-        let output = self.output_port(neg_id, EdgeKind::Value);
+        let output = self.create_value_output(neg_id);
 
         let neg = Neg::new(neg_id, input_port, output);
         self.nodes
@@ -731,5 +746,62 @@ impl Rvsdg {
             .debug_unwrap_none();
 
         neg
+    }
+
+    #[track_caller]
+    pub fn scanr(
+        &mut self,
+        ptr: OutputPort,
+        step: OutputPort,
+        needle: OutputPort,
+        input_effect: OutputPort,
+    ) -> &Scan {
+        self.scan(ScanDirection::Forward, ptr, step, needle, input_effect)
+    }
+
+    #[track_caller]
+    pub fn scanl(
+        &mut self,
+        ptr: OutputPort,
+        step: OutputPort,
+        needle: OutputPort,
+        input_effect: OutputPort,
+    ) -> &Scan {
+        self.scan(ScanDirection::Backward, ptr, step, needle, input_effect)
+    }
+
+    #[track_caller]
+    pub fn scan(
+        &mut self,
+        direction: ScanDirection,
+        ptr: OutputPort,
+        step: OutputPort,
+        needle: OutputPort,
+        input_effect: OutputPort,
+    ) -> &Scan {
+        let scan_id = self.next_node();
+
+        // Create the scan inputs
+        let ptr = self.create_effect_input_edge(scan_id, ptr);
+        let step = self.create_effect_input_edge(scan_id, step);
+        let needle = self.create_effect_input_edge(scan_id, needle);
+        let input_effect = self.create_effect_input_edge(scan_id, input_effect);
+
+        // Create the scan outputs
+        let output_ptr = self.create_value_output(scan_id);
+        let output_effect = self.create_effect_output(scan_id);
+
+        let scan = Scan::new(
+            scan_id,
+            direction,
+            ptr,
+            step,
+            needle,
+            output_ptr,
+            input_effect,
+            output_effect,
+        );
+
+        self.insert_node(scan).to_scan()
     }
 }

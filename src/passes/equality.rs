@@ -34,7 +34,7 @@ impl Pass for Equality {
     }
 
     fn reset(&mut self) {
-        self.changes.set_has_changed(false);
+        self.changes.reset();
     }
 
     fn report(&self) -> HashMap<&'static str, usize> {

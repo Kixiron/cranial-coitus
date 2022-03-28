@@ -13,6 +13,7 @@ pub struct Stats {
     pub constants: usize,
     pub instructions: usize,
     pub io_ops: usize,
+    pub scans: usize,
 }
 
 impl Stats {
@@ -25,6 +26,7 @@ impl Stats {
             constants: 0,
             instructions: 0,
             io_ops: 0,
+            scans: 0,
         }
     }
 
@@ -34,6 +36,12 @@ impl Stats {
 
             if diff.is_nan() || diff == -0.0 {
                 0.0
+            } else if diff.is_infinite() {
+                if diff.is_sign_positive() {
+                    100.0
+                } else {
+                    -100.0
+                }
             } else {
                 diff
             }
@@ -47,6 +55,7 @@ impl Stats {
             constants: diff(self.constants, new.constants),
             instructions: diff(self.instructions, new.instructions),
             io_ops: diff(self.io_ops, new.io_ops),
+            scans: diff(self.scans, new.scans),
         }
     }
 }
@@ -66,6 +75,7 @@ pub struct StatsChange {
     pub constants: f64,
     pub instructions: f64,
     pub io_ops: f64,
+    pub scans: f64,
 }
 
 impl Rvsdg {
@@ -91,6 +101,10 @@ impl Rvsdg {
             Node::Store(_) => {
                 stats.instructions += 1;
                 stats.stores += 1;
+            }
+            Node::Scan(_) => {
+                stats.instructions += 1;
+                stats.scans += 1;
             }
             Node::Input(_) | Node::Output(_) => {
                 stats.instructions += 1;

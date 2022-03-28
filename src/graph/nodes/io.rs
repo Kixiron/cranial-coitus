@@ -142,7 +142,7 @@ impl NodeExt for Output {
     }
 
     fn input_desc(&self) -> EdgeDescriptor {
-        EdgeDescriptor::new(EdgeCount::one(), EdgeCount::new(Some(1), None))
+        EdgeDescriptor::new(EdgeCount::one(), EdgeCount::at_least(1))
     }
 
     fn all_input_ports(&self) -> InputPorts {

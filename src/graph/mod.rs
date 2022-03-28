@@ -6,10 +6,12 @@ mod remove;
 mod stats;
 mod subgraph;
 
+pub use building::ConstNode;
 pub use edge::{EdgeCount, EdgeDescriptor, EdgeKind};
 pub use nodes::{
-    Add, Bool, Byte, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul, Neg, Neq, Node,
-    NodeExt, NodeId, Not, Output, OutputParam, Start, Store, Sub, Theta, ThetaData,
+    Add, AddOrSub, Bool, Byte, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul, Neg,
+    Neq, Node, NodeExt, NodeId, Not, Output, OutputParam, Scan, ScanDirection, Start, Store, Sub,
+    Theta, ThetaData,
 };
 pub use ports::{InputPort, OutputPort, Port, PortData, PortId, PortKind};
 pub use subgraph::Subgraph;
@@ -183,7 +185,7 @@ impl Rvsdg {
         self.nodes.insert(node_id, node).debug_unwrap_none();
     }
 
-    pub fn input_port(&mut self, parent: NodeId, edge: EdgeKind) -> InputPort {
+    pub fn create_input_port(&mut self, parent: NodeId, edge: EdgeKind) -> InputPort {
         let port = self.next_port();
         self.ports
             .insert(port, PortData::input(parent, edge))
@@ -192,13 +194,63 @@ impl Rvsdg {
         InputPort::new(port)
     }
 
-    pub fn output_port(&mut self, parent: NodeId, edge: EdgeKind) -> OutputPort {
+    pub fn create_value_input(&mut self, parent: NodeId) -> InputPort {
+        self.create_input_port(parent, EdgeKind::Value)
+    }
+
+    pub fn create_effect_input(&mut self, parent: NodeId) -> InputPort {
+        self.create_input_port(parent, EdgeKind::Effect)
+    }
+
+    pub fn create_output_port(&mut self, parent: NodeId, edge: EdgeKind) -> OutputPort {
         let port = self.next_port();
         self.ports
             .insert(port, PortData::output(parent, edge))
             .debug_unwrap_none();
 
         OutputPort::new(port)
+    }
+
+    pub fn create_value_output(&mut self, parent: NodeId) -> OutputPort {
+        self.create_output_port(parent, EdgeKind::Value)
+    }
+
+    pub fn create_effect_output(&mut self, parent: NodeId) -> OutputPort {
+        self.create_output_port(parent, EdgeKind::Effect)
+    }
+
+    /// Creates a value input on the given node and creates a value edge from the
+    /// source output to the created input port
+    #[track_caller]
+    pub fn create_value_input_edge(&mut self, node: NodeId, source: OutputPort) -> InputPort {
+        self.assert_value_port(source);
+
+        let input_port = self.create_value_input(node);
+        self.add_value_edge(source, input_port);
+
+        input_port
+    }
+
+    /// Inserts a node into the current graph
+    fn insert_node<N>(&mut self, node: N) -> &Node
+    where
+        N: Into<Node>,
+    {
+        let node = node.into();
+        debug_assert!(!self.nodes.contains_key(&node.node()));
+        self.nodes.entry(node.node()).insert_entry(node).into_mut()
+    }
+
+    /// Creates an effect input on the given node and creates an effect edge from the
+    /// source output to the created input port
+    #[track_caller]
+    pub fn create_effect_input_edge(&mut self, node: NodeId, source: OutputPort) -> InputPort {
+        self.assert_effect_port(source);
+
+        let input_port = self.create_effect_input(node);
+        self.add_effect_edge(source, input_port);
+
+        input_port
     }
 
     pub fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
@@ -571,8 +623,8 @@ impl Rvsdg {
     where
         for<'a> &'a Node: TryInto<&'a T>,
     {
-        self.output_dest_node(output)
-            .and_then(|node| node.try_into().ok())
+        self.get_outputs(output)
+            .find_map(|(node, _, _)| node.try_into().ok())
     }
 
     #[inline]

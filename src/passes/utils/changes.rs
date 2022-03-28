@@ -19,8 +19,8 @@ impl<const LEN: usize> Changes<LEN> {
         self.has_changed
     }
 
-    pub fn set_has_changed(&mut self, has_changed: bool) {
-        self.has_changed = has_changed;
+    pub fn reset(&mut self) {
+        self.has_changed = false;
     }
 
     pub fn combine(&mut self, other: &Self) {

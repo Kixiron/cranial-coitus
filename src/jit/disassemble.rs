@@ -142,6 +142,14 @@ impl SymbolResolver for Resolver {
             "input"
         } else if address == ffi::output as u64 {
             "output"
+        } else if address == ffi::scanr_wrapping as u64 {
+            "scanr_wrapping"
+        } else if address == ffi::scanl_wrapping as u64 {
+            "scanl_wrapping"
+        } else if address == ffi::scanr_non_wrapping as u64 {
+            "scanr_non_wrapping"
+        } else if address == ffi::scanl_non_wrapping as u64 {
+            "scanl_non_wrapping"
         } else {
             return None;
         };

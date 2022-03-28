@@ -1,20 +1,19 @@
-use std::ops::Not;
-
-use cranelift::prelude::{
-    types::{B1, I16, I32, I64, I8},
-    InstBuilder, IntCC, MemFlags, StackSlotData, StackSlotKind,
-};
-
 use crate::{
     ir::{CmpKind, Pretty, PrettyConfig},
     jit::{
-        basic_block::{Instruction, RValue, Type, Value},
+        basic_block::{Instruction, RValue, Scanl, Scanr, Type, Value},
         codegen::{assert_type, Codegen},
         ffi, State,
     },
     utils::AssertNone,
     values::{Cell, Ptr},
 };
+use cranelift::prelude::{
+    types::{B1, I16, I32, I64, I8},
+    InstBuilder, IntCC, MemFlags, StackSlotData, StackSlotKind, Type as ClifType,
+    Value as ClifValue,
+};
+use std::ops::Not;
 
 impl<'a> Codegen<'a> {
     pub(super) fn instruction(&mut self, inst: &Instruction) {
@@ -504,6 +503,10 @@ impl<'a> Codegen<'a> {
 
                         (input_value, I8)
                     }
+
+                    RValue::Scanr(scanr) => self.codegen_scanr(scanr),
+
+                    RValue::Scanl(scanl) => self.codegen_scanl(scanl),
                 };
 
                 self.values
@@ -573,5 +576,175 @@ impl<'a> Codegen<'a> {
                 self.builder.switch_to_block(call_prelude);
             }
         }
+    }
+
+    fn codegen_scanr(&mut self, scanr: &Scanr) -> (ClifValue, ClifType) {
+        assert_type::<unsafe extern "fastcall" fn(*const State, u16, u16, u8) -> u32>(
+            ffi::scanr_wrapping,
+        );
+
+        let ptr = match scanr.ptr() {
+            Value::U8(byte) => self.builder.ins().iconst(I16, byte),
+            Value::U16(int) => self.builder.ins().iconst(I16, int.0 as i64),
+            Value::TapePtr(uint) => self.builder.ins().iconst(I16, uint),
+            Value::Bool(_) => unreachable!(),
+            Value::Val(value, _ty) => {
+                let (value, ty) = self.values[&value];
+                if ty == I16 {
+                    value
+                } else if ty == I8 {
+                    self.builder.ins().uextend(I16, value)
+                } else if ty == I32 || ty == I64 {
+                    self.builder.ins().ireduce(I16, value)
+                } else {
+                    panic!("{}", ty)
+                }
+            }
+        };
+        let step = match scanr.step() {
+            Value::U8(byte) => self.builder.ins().iconst(I16, byte),
+            Value::U16(int) => self.builder.ins().iconst(I16, int.0 as i64),
+            Value::TapePtr(uint) => self.builder.ins().iconst(I16, uint),
+            Value::Bool(_) => unreachable!(),
+            Value::Val(value, _ty) => {
+                let (value, ty) = self.values[&value];
+                if ty == I16 {
+                    value
+                } else if ty == I8 {
+                    self.builder.ins().uextend(I16, value)
+                } else if ty == I32 || ty == I64 {
+                    self.builder.ins().ireduce(I16, value)
+                } else {
+                    panic!("{}", ty)
+                }
+            }
+        };
+        let needle = match scanr.needle() {
+            Value::U8(byte) => self.builder.ins().iconst(I8, byte),
+            Value::U16(int) => self.builder.ins().iconst(I8, int.0 as i64),
+            Value::TapePtr(uint) => self.builder.ins().iconst(I8, uint),
+            Value::Bool(_) => unreachable!(),
+            Value::Val(value, _ty) => {
+                let (value, ty) = self.values[&value];
+                if ty == I8 {
+                    value
+                } else if ty == I16 || ty == I32 || ty == I64 {
+                    self.builder.ins().ireduce(I16, value)
+                } else {
+                    panic!("{}", ty)
+                }
+            }
+        };
+
+        // Create a block to house the stuff that happens after the function
+        // call and associated error check
+        let call_prelude = self.builder.create_block();
+
+        // Call the input function
+        let (scanr_func, state_ptr) = (self.scanr_function(), self.state_ptr());
+        let scanr_call = self
+            .builder
+            .ins()
+            .call(scanr_func, &[state_ptr, ptr, step, needle]);
+        let scanr_value = self.builder.inst_results(scanr_call)[0];
+
+        // If the call to scanr failed (and therefore returned usize::MAX),
+        // branch to the scan error handler
+        let error_handler = self.scan_error_handler();
+        let u32_max = self.builder.ins().iconst(I32, u32::MAX as i64);
+        self.builder
+            .ins()
+            .br_icmp(IntCC::Equal, scanr_value, u32_max, error_handler, &[]);
+
+        // Otherwise if the call didn't fail, so we use the return value as the pointer
+        self.builder.ins().jump(call_prelude, &[]);
+        self.builder.switch_to_block(call_prelude);
+
+        (scanr_value, I32)
+    }
+
+    fn codegen_scanl(&mut self, scanl: &Scanl) -> (ClifValue, ClifType) {
+        assert_type::<unsafe extern "fastcall" fn(*const State, u16, u16, u8) -> u32>(
+            ffi::scanl_wrapping,
+        );
+
+        let ptr = match scanl.ptr() {
+            Value::U8(byte) => self.builder.ins().iconst(I16, byte),
+            Value::U16(int) => self.builder.ins().iconst(I16, int.0 as i64),
+            Value::TapePtr(uint) => self.builder.ins().iconst(I16, uint),
+            Value::Bool(_) => unreachable!(),
+            Value::Val(value, _ty) => {
+                let (value, ty) = self.values[&value];
+                if ty == I16 {
+                    value
+                } else if ty == I8 {
+                    self.builder.ins().uextend(I16, value)
+                } else if ty == I32 || ty == I64 {
+                    self.builder.ins().ireduce(I16, value)
+                } else {
+                    panic!("{}", ty)
+                }
+            }
+        };
+        let step = match scanl.step() {
+            Value::U8(byte) => self.builder.ins().iconst(I16, byte),
+            Value::U16(int) => self.builder.ins().iconst(I16, int.0 as i64),
+            Value::TapePtr(uint) => self.builder.ins().iconst(I16, uint),
+            Value::Bool(_) => unreachable!(),
+            Value::Val(value, _ty) => {
+                let (value, ty) = self.values[&value];
+                if ty == I16 {
+                    value
+                } else if ty == I8 {
+                    self.builder.ins().uextend(I16, value)
+                } else if ty == I32 || ty == I64 {
+                    self.builder.ins().ireduce(I16, value)
+                } else {
+                    panic!("{}", ty)
+                }
+            }
+        };
+        let needle = match scanl.needle() {
+            Value::U8(byte) => self.builder.ins().iconst(I8, byte),
+            Value::U16(int) => self.builder.ins().iconst(I8, int.0 as i64),
+            Value::TapePtr(uint) => self.builder.ins().iconst(I8, uint),
+            Value::Bool(_) => unreachable!(),
+            Value::Val(value, _ty) => {
+                let (value, ty) = self.values[&value];
+                if ty == I8 {
+                    value
+                } else if ty == I16 || ty == I32 || ty == I64 {
+                    self.builder.ins().ireduce(I16, value)
+                } else {
+                    panic!("{}", ty)
+                }
+            }
+        };
+
+        // Create a block to house the stuff that happens after the function
+        // call and associated error check
+        let call_prelude = self.builder.create_block();
+
+        // Call the input function
+        let (scanl_func, state_ptr) = (self.scanl_function(), self.state_ptr());
+        let scanr_call = self
+            .builder
+            .ins()
+            .call(scanl_func, &[state_ptr, ptr, step, needle]);
+        let scanl_value = self.builder.inst_results(scanr_call)[0];
+
+        // If the call to scanl failed (and therefore returned usize::MAX),
+        // branch to the scan error handler
+        let error_handler = self.scan_error_handler();
+        let u32_max = self.builder.ins().iconst(I32, u32::MAX as i64);
+        self.builder
+            .ins()
+            .br_icmp(IntCC::Equal, scanl_value, u32_max, error_handler, &[]);
+
+        // Otherwise if the call didn't fail, so we use the return value as the pointer
+        self.builder.ins().jump(call_prelude, &[]);
+        self.builder.switch_to_block(call_prelude);
+
+        (scanl_value, I32)
     }
 }

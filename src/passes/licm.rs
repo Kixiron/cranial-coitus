@@ -39,6 +39,7 @@ impl Licm {
         self.invariant_exprs.contains(&graph.input_source(input))
     }
 
+    #[allow(dead_code)]
     fn pull_out_constants(
         &mut self,
         graph: &mut Rvsdg,
@@ -227,7 +228,7 @@ impl Pass for Licm {
         // If a variant input is a constant, make it invariant
         let outputs: Vec<_> = theta.output_pairs().collect();
         for (output, output_param) in outputs {
-            if let Some(input_param) = theta
+            if let Some(&input_param) = theta
                 .body()
                 .input_source_node(output_param.input())
                 .as_input_param()

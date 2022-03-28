@@ -1,7 +1,7 @@
 use crate::{
     ir::{
-        Add, Assign, AssignTag, Block, Call, Cmp, CmpKind, Const, Expr, Gamma, Instruction, Load,
-        Mul, Neg, Not, Store, Sub, Theta, Value, VarId, Variance,
+        Add, Assign, AssignTag, Block, Call, CallFunction, Cmp, CmpKind, Const, Expr, Gamma,
+        Instruction, Load, Mul, Neg, Not, Store, Sub, Theta, Value, VarId, Variance,
     },
     utils::{self, AssertNone},
     values::{Cell, Ptr},
@@ -149,8 +149,8 @@ where
             call.invocations += 1;
         }
 
-        match &*call.function {
-            "input" => {
+        match call.function {
+            CallFunction::Input => {
                 self.stats.input_calls += 1;
 
                 if !call.args.is_empty() {
@@ -160,7 +160,7 @@ where
                 Ok(Some(Const::Cell(Cell::new((self.input)()))))
             }
 
-            "output" => {
+            CallFunction::Output => {
                 self.stats.output_calls += 1;
 
                 for value in &call.args {
@@ -171,7 +171,39 @@ where
                 Ok(None)
             }
 
-            other => panic!("unrecognized function {:?}", other),
+            CallFunction::Scanr => {
+                self.stats.scanr_calls += 1;
+
+                let ptr = self.get_ptr(&call.args[0])?;
+                let step = self.get_ptr(&call.args[1])?;
+                let needle = self.get_byte(&call.args[2])?;
+
+                let mut idx = ptr;
+                loop {
+                    match self.tape[idx.value() as usize] {
+                        Some(value) if value == needle => break Ok(Some(Const::Ptr(idx))),
+                        Some(_) => idx = idx.wrapping_add(step),
+                        None => break Err(EvaluationError::UnknownCellRead),
+                    }
+                }
+            }
+
+            CallFunction::Scanl => {
+                self.stats.scanl_calls += 1;
+
+                let ptr = self.get_ptr(&call.args[0])?;
+                let step = self.get_ptr(&call.args[1])?;
+                let needle = self.get_byte(&call.args[2])?;
+
+                let mut idx = ptr;
+                loop {
+                    match self.tape[idx.value() as usize] {
+                        Some(value) if value == needle => break Ok(Some(Const::Ptr(idx))),
+                        Some(_) => idx = idx.wrapping_sub(step),
+                        None => break Err(EvaluationError::UnknownCellRead),
+                    }
+                }
+            }
         }
     }
 
@@ -470,6 +502,8 @@ pub struct ExecutionStats {
     pub instructions: usize,
     pub in_branch_instructions: usize,
     pub in_loop_instructions: usize,
+    pub scanr_calls: usize,
+    pub scanl_calls: usize,
 }
 
 impl ExecutionStats {
@@ -484,6 +518,8 @@ impl ExecutionStats {
             instructions: 0,
             in_branch_instructions: 0,
             in_loop_instructions: 0,
+            scanr_calls: 0,
+            scanl_calls: 0,
         }
     }
 
@@ -491,7 +527,7 @@ impl ExecutionStats {
         DisplayStats::new(self)
     }
 
-    fn fields(&self) -> [(&'static str, usize); 7] {
+    fn fields(&self) -> [(&'static str, usize); 9] {
         [
             ("instructions", self.instructions),
             ("loads", self.loads),
@@ -500,6 +536,8 @@ impl ExecutionStats {
             ("branches", self.branches),
             ("input calls", self.input_calls),
             ("output calls", self.output_calls),
+            ("scanr calls", self.scanl_calls),
+            ("scanl calls", self.scanl_calls),
         ]
     }
 }

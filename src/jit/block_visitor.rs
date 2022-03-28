@@ -1,6 +1,6 @@
 use crate::jit::basic_block::{
     Add, Assign, BasicBlock, BitNot, BlockId, Blocks, Branch, Cmp, Input, Instruction, Load, Mul,
-    Neg, Not, Output, Phi, RValue, Store, Sub, Terminator, ValId, Value,
+    Neg, Not, Output, Phi, RValue, Scanl, Scanr, Store, Sub, Terminator, ValId, Value,
 };
 
 pub trait BasicBlockVisitor {
@@ -56,6 +56,8 @@ pub trait BasicBlockVisitor {
             RValue::Load(load) => self.visit_load(load, assigned_to),
             RValue::Input(input) => self.visit_input(input, assigned_to),
             RValue::BitNot(bit_not) => self.visit_bit_not(bit_not, assigned_to),
+            RValue::Scanr(scanr) => self.visit_scanr(scanr, assigned_to),
+            RValue::Scanl(scanl) => self.visit_scanl(scanl, assigned_to),
         }
     }
 
@@ -100,6 +102,18 @@ pub trait BasicBlockVisitor {
 
     fn visit_bit_not(&mut self, bit_not: &BitNot, _assigned_to: ValId) {
         self.visit_value(bit_not.value());
+    }
+
+    fn visit_scanr(&mut self, scanr: &Scanr, _assigned_to: ValId) {
+        self.visit_value(scanr.ptr());
+        self.visit_value(scanr.step());
+        self.visit_value(scanr.needle());
+    }
+
+    fn visit_scanl(&mut self, scanl: &Scanl, _assigned_to: ValId) {
+        self.visit_value(scanl.ptr());
+        self.visit_value(scanl.step());
+        self.visit_value(scanl.needle());
     }
 
     fn visit_output(&mut self, output: &Output) {

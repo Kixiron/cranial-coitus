@@ -80,11 +80,11 @@ impl Gamma {
         self.condition
     }
 
-    pub const fn effect_in(&self) -> InputPort {
+    pub const fn input_effect(&self) -> InputPort {
         self.effect_in
     }
 
-    pub const fn effect_out(&self) -> OutputPort {
+    pub const fn output_effect(&self) -> OutputPort {
         self.effect_out
     }
 
@@ -139,7 +139,7 @@ impl Gamma {
         self.input_params
             .push([true_param.node(), false_param.node()]);
 
-        let input = graph.input_port(self.node, EdgeKind::Value);
+        let input = graph.create_input_port(self.node, EdgeKind::Value);
         graph.add_value_edge(source, input);
 
         (input, [true_param, false_param])
@@ -243,32 +243,5 @@ impl GammaData {
             outputs: outputs.into_iter().collect(),
             effect,
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct GammaStub {
-    output_effect: Option<OutputPort>,
-    outputs: TinyVec<[OutputPort; 5]>,
-}
-
-impl GammaStub {
-    pub(in crate::graph) const fn new(
-        output_effect: Option<OutputPort>,
-        outputs: TinyVec<[OutputPort; 5]>,
-    ) -> Self {
-        Self {
-            output_effect,
-            outputs,
-        }
-    }
-
-    /// Get the output effect's port from the gamma node if available
-    pub fn output_effect(&self) -> Option<OutputPort> {
-        self.output_effect
-    }
-
-    pub fn outputs(&self) -> &[OutputPort] {
-        &self.outputs
     }
 }

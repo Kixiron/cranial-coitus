@@ -223,7 +223,7 @@ impl Pass for AddSubLoop {
 
     fn reset(&mut self) {
         self.values.clear();
-        self.changes.set_has_changed(false);
+        self.changes.reset();
     }
 
     fn report(&self) -> HashMap<&'static str, usize> {
@@ -324,9 +324,9 @@ impl Pass for AddSubLoop {
                         let source = theta.body().get_node(theta.body().port_parent(output));
 
                         source
-                            .as_int()
-                            .map(|(_, int)| graph.int(int).value())
-                            .or_else(|| source.as_byte().map(|(_, byte)| graph.byte(byte).value()))
+                            .as_int_value()
+                            .map(|int| graph.int(int).value())
+                            .or_else(|| source.as_byte_value().map(|byte| graph.byte(byte).value()))
                     })
                     .unwrap()
             };

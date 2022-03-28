@@ -76,17 +76,18 @@ fn match_pattern<'a>(
         Pattern::ConstAdd(_, _) => todo!(),
 
         &Pattern::Int(expected) => node
-            .as_int()
-            .map(|(_, ptr)| ptr.value() == expected)
+            .as_int_value()
+            .map(|ptr| ptr.value() == expected)
             .or_else(|| {
-                node.as_byte()
-                    .map(|(_, byte)| byte.into_inner() as u16 == expected)
+                node.as_byte_value()
+                    // TODO: Convert to Ptr to wrap byte into pointer space
+                    .map(|byte| byte.into_inner() as u16 == expected)
             })
             .unwrap_or(false),
 
         &Pattern::Bool(expected) => node
-            .as_bool()
-            .map(|(_, bool)| bool == expected)
+            .as_bool_value()
+            .map(|bool| bool == expected)
             .unwrap_or(false),
 
         Pattern::WildCard => true,

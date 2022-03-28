@@ -43,7 +43,7 @@ impl Debug for PortId {
 
 impl Display for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Display::fmt(&self.0, f)
+        write!(f, "p{}", self.0)
     }
 }
 
@@ -73,7 +73,7 @@ impl Debug for InputPort {
 
 impl Display for InputPort {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Display::fmt(&self.0.inner(), f)
+        write!(f, "i{}", self.0.inner())
     }
 }
 
@@ -103,7 +103,7 @@ impl Debug for OutputPort {
 
 impl Display for OutputPort {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Display::fmt(&self.0.inner(), f)
+        write!(f, "o{}", self.0.inner())
     }
 }
 

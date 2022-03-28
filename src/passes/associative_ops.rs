@@ -4,10 +4,10 @@ use crate::{
     },
     ir::Const,
     passes::{
-        utils::{BinOp, ConstantStore},
+        utils::{BinOp, Changes, ConstantStore},
         Pass,
     },
-    utils::HashSet,
+    utils::{HashMap, HashSet},
     values::{Cell, Ptr},
 };
 
@@ -17,7 +17,7 @@ use crate::{
 pub struct AssociativeOps {
     constants: ConstantStore,
     to_be_removed: HashSet<NodeId>,
-    changed: bool,
+    changes: Changes<2>,
     tape_len: u16,
 }
 
@@ -26,27 +26,23 @@ impl AssociativeOps {
         Self {
             constants: ConstantStore::new(tape_len),
             to_be_removed: HashSet::with_hasher(Default::default()),
-            changed: false,
+            changes: Changes::new(["add", "mul"]),
             tape_len,
         }
-    }
-
-    fn changed(&mut self) {
-        self.changed = true;
     }
 
     fn operand(&self, graph: &Rvsdg, input: InputPort) -> (InputPort, Option<Const>) {
         let (operand, output, _) = graph.get_input(input);
         let value = operand
-            .as_int()
-            .map(|(_, value)| Const::Ptr(value))
-            .or_else(|| operand.as_byte().map(|(_, byte)| Const::Cell(byte)))
+            .as_int_value()
+            .map(Const::Ptr)
+            .or_else(|| operand.as_byte_value().map(Const::Cell))
             .or_else(|| self.constants.ptr(output).map(Const::Ptr));
 
         (input, value)
     }
 
-    fn fold_associative_operation<T>(&mut self, graph: &mut Rvsdg, operation: T)
+    fn fold_associative_operation<T>(&mut self, graph: &mut Rvsdg, operation: T) -> bool
     where
         T: BinOp,
         for<'a> &'a Node: TryInto<&'a T>,
@@ -124,10 +120,12 @@ impl AssociativeOps {
                     graph.add_value_edge(unknown_source, operation.lhs());
                     graph.add_value_edge(int.value(), operation.rhs());
 
-                    self.changed();
+                    return true;
                 }
             }
         }
+
+        false
     }
 }
 
@@ -137,13 +135,17 @@ impl Pass for AssociativeOps {
     }
 
     fn did_change(&self) -> bool {
-        self.changed
+        self.changes.has_changed()
     }
 
     fn reset(&mut self) {
         self.constants.clear();
         self.to_be_removed.clear();
-        self.changed = false;
+        self.changes.reset();
+    }
+
+    fn report(&self) -> HashMap<&'static str, usize> {
+        self.changes.as_map()
     }
 
     fn post_visit_graph(&mut self, graph: &mut Rvsdg, _visited: &HashSet<NodeId>) {
@@ -152,12 +154,16 @@ impl Pass for AssociativeOps {
 
     // `x + (y + z) ≡ (x + y) + z`
     fn visit_add(&mut self, graph: &mut Rvsdg, add: Add) {
-        self.fold_associative_operation(graph, add);
+        if self.fold_associative_operation(graph, add) {
+            self.changes.inc::<"add">()
+        }
     }
 
     // `x × (y × z) ≡ (x × y) × z`
     fn visit_mul(&mut self, graph: &mut Rvsdg, mul: Mul) {
-        self.fold_associative_operation(graph, mul);
+        if self.fold_associative_operation(graph, mul) {
+            self.changes.inc::<"mul">()
+        }
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
@@ -189,11 +195,12 @@ impl Pass for AssociativeOps {
         }
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
+        self.changes.combine(&true_visitor.changes);
         changed |= false_visitor.visit_graph(gamma.false_mut());
+        self.changes.combine(&false_visitor.changes);
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
-            self.changed();
         }
     }
 
@@ -209,12 +216,11 @@ impl Pass for AssociativeOps {
             }
         }
 
-        visitor.visit_graph(theta.body_mut());
-        changed |= visitor.did_change();
+        changed |= visitor.visit_graph(theta.body_mut());
+        self.changes.combine(&visitor.changes);
 
         if changed {
             graph.replace_node(theta.node(), theta);
-            self.changed();
         }
     }
 }

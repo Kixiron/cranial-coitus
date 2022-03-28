@@ -127,7 +127,7 @@ impl DuplicateCell {
             .filter(|inputs| inputs.len() == dest_ptrs.len());
 
         if let (Some(src_ptr), Some(dest_ptrs)) = (get_gamma_input(src_ptr), dest_ptr_inputs) {
-            let input_effect = graph.input_source(gamma.effect_in());
+            let input_effect = graph.input_source(gamma.input_effect());
 
             // Load the source value
             let src_val = graph.load(src_ptr, input_effect);
@@ -153,7 +153,7 @@ impl DuplicateCell {
             let zero_src_cell = graph.store(src_ptr, zero.value(), last_effect);
 
             // Wire the final store into the gamma's output effect
-            graph.rewire_dependents(gamma.effect_out(), zero_src_cell.output_effect());
+            graph.rewire_dependents(gamma.output_effect(), zero_src_cell.output_effect());
 
             for (port, param) in theta.output_pairs() {
                 if let Some((input_node, ..)) = theta.body().try_input(param.input()) {

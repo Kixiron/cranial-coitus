@@ -88,6 +88,10 @@ impl EdgeCount {
         Self::new(Some(count), Some(count))
     }
 
+    pub const fn at_least(minimum: usize) -> Self {
+        Self::new(Some(minimum), None)
+    }
+
     pub const fn zero() -> Self {
         Self::exact(0)
     }

@@ -76,7 +76,7 @@ impl Pass for ExprDedup {
                     let param = existing_const.to_input_param();
                     (param.node(), param.output())
                 },
-                |(bool, _)| (bool.node(), bool.value()),
+                |bool| (bool.node(), bool.value()),
             );
 
             tracing::debug!(
@@ -99,7 +99,7 @@ impl Pass for ExprDedup {
 
     fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
         let _: Option<()> = try {
-            let next_load = graph.get_output(load.output_effect())?.0.as_load()?;
+            let next_load = *graph.get_output(load.output_effect())?.0.as_load()?;
 
             let current_ptr = graph.input_source(load.ptr());
             let next_ptr = graph.input_source(next_load.ptr());
@@ -142,7 +142,7 @@ impl Pass for ExprDedup {
                     let param = existing_const.to_input_param();
                     (param.node(), param.output())
                 },
-                |(int, _)| (int.node(), int.value()),
+                |int| (int.node(), int.value()),
             );
 
             tracing::debug!(
@@ -232,11 +232,13 @@ impl Pass for ExprDedup {
         for (port, param) in inputs {
             let source = graph.input_source(port);
 
-            if theta.has_invariant_input(port) {
+            if theta.contains_invariant_input(port) {
                 if let Some((new_port, new_source, new_param)) = sources
                     .iter()
                     .find(|&&(input, parm_source, _)| {
-                        theta.has_invariant_input(input) && input != port && source == parm_source
+                        theta.contains_invariant_input(input)
+                            && input != port
+                            && source == parm_source
                     })
                     .copied()
                 {

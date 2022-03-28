@@ -28,6 +28,14 @@ pub struct Args {
     /// assignments in the output IR
     #[clap(long)]
     pub dont_inline_constants: bool,
+
+    /// If this is set, then tape wrapping is disabled. This allows
+    /// greater optimizations and forbids programs that overflow or underflow
+    /// the program tape pointer, meaning that instead of wrapping around to
+    /// opposite side of the tape when the tape pointer is above the tape's length
+    /// or below zero the operation will instead be UB
+    #[clap(long)]
+    pub tape_wrapping_ub: bool,
 }
 
 #[derive(Debug, Parser)]

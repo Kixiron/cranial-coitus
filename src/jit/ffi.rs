@@ -1,6 +1,6 @@
 use core::str::lossy::{Utf8Lossy, Utf8LossyChunk};
 use std::{
-    io::{Read, StdinLock, StdoutLock, Write},
+    io::{Read, StdinLock, Write},
     panic::{self, AssertUnwindSafe},
     slice,
 };
@@ -9,16 +9,26 @@ const IO_FAILURE_MESSAGE: &[u8] = b"encountered an io failure during execution";
 
 pub struct State<'a> {
     stdin: StdinLock<'a>,
-    pub(super) stdout: StdoutLock<'a>,
+    stdout: &'a mut dyn Write,
     utf8_buffer: &'a mut String,
+    start_ptr: *const u8,
+    end_ptr: *const u8,
 }
 
 impl<'a> State<'a> {
-    pub fn new(stdin: StdinLock<'a>, stdout: StdoutLock<'a>, utf8_buffer: &'a mut String) -> Self {
+    pub fn new(
+        stdin: StdinLock<'a>,
+        stdout: &'a mut dyn Write,
+        utf8_buffer: &'a mut String,
+        start_ptr: *const u8,
+        end_ptr: *const u8,
+    ) -> Self {
         Self {
             stdin,
             stdout,
             utf8_buffer,
+            start_ptr,
+            end_ptr,
         }
     }
 }
@@ -93,6 +103,373 @@ pub(super) unsafe extern "fastcall" fn output(
     .unwrap_or_else(|err| {
         tracing::error!("writing byte to stdout panicked: {:?}", err);
         true
+    })
+}
+
+/// Performs a right scan over the program tape for the given `needle` value
+///
+/// The scan starts at `tape_offset` and progresses to the end of the tape before
+/// wrapping around to the beginning of the tape. The `step` value decides
+/// which cells are checked, a step of 1 will cause every cell to be checked while
+/// a step of 2 will cause every *other* cell to be checked.
+///
+/// The function returns [`u32::MAX`] as an error value. An error will be returned
+/// if `step` is zero or another unforeseen error occurs. Additionally, if the current
+/// tape doesn't contain the `needle` value or the given `step` value doesn't allow it
+/// to ever reach it, the function will loop infinitely.
+///
+/// # Safety
+///
+/// `state_ptr` must be a valid pointer to a [`State`] instance and `tape_offset`
+/// must be inbounds of the current program tape.
+///
+pub(super) unsafe extern "fastcall" fn scanr_wrapping(
+    state_ptr: *const State,
+    tape_offset: u16,
+    step: u16,
+    needle: u8,
+) -> u32 {
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        if state_ptr.is_null() {
+            tracing::error!(
+                ?state_ptr,
+                ?tape_offset,
+                ?step,
+                ?needle,
+                "scanr_wrapping call got null state pointer"
+            );
+            return u32::MAX;
+        } else if step == 0 {
+            tracing::error!(
+                ?state_ptr,
+                ?tape_offset,
+                ?step,
+                ?needle,
+                "scanr_wrapping called with a step of zero"
+            );
+            return u32::MAX;
+        }
+
+        unsafe {
+            let (tape_start, tape_end) = ((*state_ptr).start_ptr, (*state_ptr).end_ptr);
+
+            if step == 1 {
+                // Initial scan over the tape's suffix
+                let mut ptr = tape_start.add(tape_offset as usize);
+                while ptr < tape_end {
+                    if *ptr == needle {
+                        return (ptr as usize - tape_start as usize) as u32;
+                    }
+
+                    ptr = ptr.add(1);
+                }
+
+                // If we couldn't find it within the suffix, scan the entire tape until
+                // we find it (or loop infinitely)
+                loop {
+                    let mut ptr = tape_start;
+                    while ptr < tape_end {
+                        if *ptr == needle {
+                            return (ptr as usize - tape_start as usize) as u32;
+                        }
+
+                        ptr = ptr.add(1);
+                    }
+                }
+
+            // For non-one steps, fall back to our crappy impl
+            } else {
+                let mut ptr = tape_start.add(tape_offset as usize);
+                loop {
+                    if ptr < tape_end {
+                        if *ptr == needle {
+                            return (ptr as usize - tape_start as usize) as u32;
+                        }
+
+                        ptr = ptr.add(step as usize);
+                    } else {
+                        ptr = tape_start.add(tape_end as usize - ptr as usize);
+                    }
+                }
+            }
+        }
+
+        // unsafe {
+        //     let (base_ptr, tape_len) = ((*state_ptr).start_ptr, (*state_ptr).tape_len);
+        //     let mut ptr = Ptr::new(tape_offset, tape_len as u16);
+        //
+        //     loop {
+        //         let current = base_ptr.add(ptr.value() as usize);
+        //         if *current == needle {
+        //             break ptr.value() as u32;
+        //         } else {
+        //             ptr = ptr.wrapping_add_u16(step);
+        //         }
+        //     }
+        // }
+    }))
+    .unwrap_or_else(|error| {
+        tracing::error!(
+            ?state_ptr,
+            ?tape_offset,
+            ?step,
+            ?needle,
+            "scanr_wrapping panicked: {:?}",
+            error,
+        );
+        u32::MAX
+    })
+}
+
+/// Performs a right scan over the program tape for the given `needle` value
+///
+/// The scan starts at `tape_offset` and progresses to the end of the tape.
+/// The `step` value decides which cells are checked, a step of 1 will cause
+/// every cell to be checked while a step of 2 will cause every *other* cell
+/// to be checked.
+///
+/// The function returns [`u32::MAX`] as an error value. An error will be returned
+/// if `step` is zero or another unforeseen error occurs. Additionally, if the current
+/// tape doesn't contain the `needle` value or the given `step` value doesn't allow it
+/// to ever reach it, the function will loop infinitely.
+///
+/// # Safety
+///
+/// `state_ptr` must be a valid pointer to a [`State`] instance and `tape_offset`
+/// must be inbounds of the current program tape.
+///
+/// If the value is not contained within the scanned portion (`tape[tape_offset..]`)
+/// this function causes UB.
+///
+pub(super) unsafe extern "fastcall" fn scanr_non_wrapping(
+    state_ptr: *const State,
+    tape_offset: u16,
+    step: u16,
+    needle: u8,
+) -> u32 {
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        if state_ptr.is_null() {
+            tracing::error!(
+                ?state_ptr,
+                ?tape_offset,
+                ?step,
+                ?needle,
+                "scanr_non_wrapping call got null state pointer"
+            );
+            return u32::MAX;
+        } else if step == 0 {
+            tracing::error!(
+                ?state_ptr,
+                ?tape_offset,
+                ?step,
+                ?needle,
+                "scanr_non_wrapping called with a step of zero"
+            );
+            return u32::MAX;
+        }
+
+        unsafe {
+            let tape_start = (*state_ptr).start_ptr;
+            let mut ptr = tape_start.add(tape_offset as usize);
+
+            while ptr >= tape_start {
+                if *ptr == needle {
+                    return (ptr as usize - tape_start as usize) as u32;
+                }
+
+                ptr = ptr.add(step as usize);
+            }
+
+            // TODO: We could also just use `unreachable_unchecked()` here
+            u32::MAX
+        }
+    }))
+    .unwrap_or_else(|error| {
+        tracing::error!(
+            ?state_ptr,
+            ?tape_offset,
+            ?step,
+            ?needle,
+            "scanr_non_wrapping panicked: {:?}",
+            error,
+        );
+        u32::MAX
+    })
+}
+
+/// Performs a left scan over the program tape for the given `needle` value
+///
+/// The scan starts at `tape_offset` and progresses to the beginning of the tape before
+/// wrapping around to the end of the tape. The `step` value decides
+/// which cells are checked, a step of 1 will cause every cell to be checked while
+/// a step of 2 will cause every *other* cell to be checked.
+///
+/// The function returns [`u32::MAX`] as an error value. An error will be returned
+/// if `step` is zero or another unforeseen error occurs. Additionally, if the current
+/// tape doesn't contain the `needle` value or the given `step` value doesn't allow it
+/// to ever reach it, the function will loop infinitely.
+///
+/// # Safety
+///
+/// `state_ptr` must be a valid pointer to a [`State`] instance and `tape_offset`
+/// must be inbounds of the current program tape.
+///
+pub(super) unsafe extern "fastcall" fn scanl_wrapping(
+    state_ptr: *const State,
+    tape_offset: u16,
+    step: u16,
+    needle: u8,
+) -> u32 {
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        if state_ptr.is_null() {
+            tracing::error!(
+                ?state_ptr,
+                ?tape_offset,
+                ?step,
+                ?needle,
+                "scanl_wrapping call got null state pointer"
+            );
+            return u32::MAX;
+        } else if step == 0 {
+            tracing::error!(
+                ?state_ptr,
+                ?tape_offset,
+                ?step,
+                ?needle,
+                "scanl_wrapping called with a step of zero"
+            );
+            return u32::MAX;
+        }
+
+        unsafe {
+            let (tape_start, tape_end) = ((*state_ptr).start_ptr, (*state_ptr).end_ptr);
+
+            if step == 1 {
+                // Initial scan over the tape's prefix
+                let mut ptr = tape_start.add(tape_offset as usize);
+                while ptr >= tape_start {
+                    if *ptr == needle {
+                        return (ptr as usize - tape_start as usize) as u32;
+                    }
+
+                    ptr = ptr.sub(1);
+                }
+
+                // If we couldn't find it within the prefix, scan the entire tape until
+                // we find it (or loop infinitely)
+                loop {
+                    let mut ptr = tape_end;
+                    while ptr >= tape_start {
+                        if *ptr == needle {
+                            return (ptr as usize - tape_start as usize) as u32;
+                        }
+
+                        ptr = ptr.sub(1);
+                    }
+                }
+
+            // For non-one steps, fall back to our crappy impl
+            } else {
+                let mut ptr = tape_start.add(tape_offset as usize);
+                loop {
+                    if ptr >= tape_start {
+                        if *ptr == needle {
+                            return (ptr as usize - tape_start as usize) as u32;
+                        }
+
+                        ptr = ptr.sub(step as usize);
+                    } else {
+                        ptr = tape_end.sub(tape_start as usize - ptr as usize);
+                    }
+                }
+            }
+        }
+    }))
+    .unwrap_or_else(|error| {
+        tracing::error!(
+            ?state_ptr,
+            ?tape_offset,
+            ?step,
+            ?needle,
+            "scanl_wrapping panicked: {:?}",
+            error,
+        );
+        u32::MAX
+    })
+}
+
+/// Performs a left scan over the program tape for the given `needle` value
+///
+/// The scan starts at `tape_offset` and progresses to the beginning of the tape.
+/// The `step` value decides which cells are checked, a step of 1 will cause every
+/// cell to be checked while a step of 2 will cause every *other* cell to be checked.
+///
+/// The function returns [`u32::MAX`] as an error value. An error will be returned
+/// if `step` is zero or another unforeseen error occurs. Additionally, if the current
+/// tape doesn't contain the `needle` value or the given `step` value doesn't allow it
+/// to ever reach it, the function will loop infinitely.
+///
+/// # Safety
+///
+/// `state_ptr` must be a valid pointer to a [`State`] instance and `tape_offset`
+/// must be inbounds of the current program tape.
+///
+/// If the value is not contained within the scanned portion (`tape[..tape_offset]`)
+/// this function causes UB.
+///
+pub(super) unsafe extern "fastcall" fn scanl_non_wrapping(
+    state_ptr: *const State,
+    tape_offset: u16,
+    step: u16,
+    needle: u8,
+) -> u32 {
+    panic::catch_unwind(AssertUnwindSafe(|| {
+        if state_ptr.is_null() {
+            tracing::error!(
+                ?state_ptr,
+                ?tape_offset,
+                ?step,
+                ?needle,
+                "scanl_non_wrapping call got null state pointer"
+            );
+            return u32::MAX;
+        } else if step == 0 {
+            tracing::error!(
+                ?state_ptr,
+                ?tape_offset,
+                ?step,
+                ?needle,
+                "scanl_non_wrapping called with a step of zero"
+            );
+            return u32::MAX;
+        }
+
+        unsafe {
+            let tape_start = (*state_ptr).start_ptr;
+            let mut ptr = tape_start.add(tape_offset as usize);
+
+            while ptr >= tape_start {
+                if *ptr == needle {
+                    return (ptr as usize - tape_start as usize) as u32;
+                }
+
+                ptr = ptr.sub(step as usize);
+            }
+
+            // TODO: We could also just use `unreachable_unchecked()` here
+            u32::MAX
+        }
+    }))
+    .unwrap_or_else(|error| {
+        tracing::error!(
+            ?state_ptr,
+            ?tape_offset,
+            ?step,
+            ?needle,
+            "scanl_non_wrapping panicked: {:?}",
+            error,
+        );
+        u32::MAX
     })
 }
 

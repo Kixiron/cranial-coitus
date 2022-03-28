@@ -27,30 +27,39 @@ impl Executable {
     pub unsafe fn execute(&self, tape: &mut [u8]) -> Result<u8> {
         let tape_len = tape.len();
 
-        let (stdin, stdout, mut utf8_buffer) =
-            (io::stdin(), io::stdout(), String::with_capacity(512));
-        let mut state = State::new(stdin.lock(), stdout.lock(), &mut utf8_buffer);
-        state
-            .stdout
-            .flush()
-            .context("failed to flush stdout prior to jitted function execution")?;
+        let (stdin, mut stdout_buffer, mut utf8_buffer) = (
+            io::stdin(),
+            Vec::with_capacity(512),
+            String::with_capacity(512),
+        );
+        let (start_ptr, end_ptr) = unsafe { (tape.as_mut_ptr(), tape.as_mut_ptr().add(tape_len)) };
+        let mut state = State::new(
+            stdin.lock(),
+            &mut stdout_buffer,
+            &mut utf8_buffer,
+            start_ptr.cast(),
+            end_ptr.cast(),
+        );
 
         let jit_start = Instant::now();
         let jit_return = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
-            let start = tape.as_mut_ptr();
-            let end = start.add(tape_len);
-
-            self.call(&mut state, start, end)
+            self.call(&mut state, start_ptr, end_ptr)
         }))
         .map_err(|err| anyhow::anyhow!("jitted function panicked: {:?}", err));
         let elapsed = jit_start.elapsed();
-
-        writeln!(state.stdout).context("failed to write newline to stdout")?;
-        state
-            .stdout
-            .flush()
-            .context("failed to flush stdout after jitted function execution")?;
         drop(state);
+
+        {
+            let stdout = io::stdout();
+            let mut stdout = stdout.lock();
+
+            stdout
+                .write_all(&stdout_buffer)
+                .context("failed to write newline to stdout")?;
+            stdout
+                .flush()
+                .context("failed to flush stdout after jitted function execution")?;
+        }
 
         tracing::debug!(
             "jitted function returned {:?} in {:#?}",

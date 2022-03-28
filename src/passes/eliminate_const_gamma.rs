@@ -132,7 +132,7 @@ impl Pass for ElimConstGamma {
                     let start_id = if condition { starts[0] } else { starts[1] };
                     let start = chosen_branch.to_node::<Start>(start_id);
 
-                    let output_effect = graph.input_source(gamma.effect_in());
+                    let output_effect = graph.input_source(gamma.input_effect());
                     self.output_lookup
                         .insert(start.effect(), output_effect)
                         .debug_unwrap_none();
@@ -146,7 +146,7 @@ impl Pass for ElimConstGamma {
                     self.input_lookup
                         .insert(
                             end.input_effect(),
-                            graph.output_dest(gamma.effect_out()).collect(),
+                            graph.output_dest(gamma.output_effect()).collect(),
                         )
                         .debug_unwrap_none();
 
@@ -155,7 +155,7 @@ impl Pass for ElimConstGamma {
                 } else if !node.is_input_param() && !node.is_output_param() {
                     if let Some(theta) = node.as_theta_mut() {
                         if let Some(input_effect) = theta.input_effect() {
-                            let inlined = graph.input_port(theta.node(), EdgeKind::Effect);
+                            let inlined = graph.create_input_port(theta.node(), EdgeKind::Effect);
 
                             let replaced = self.input_lookup.insert(input_effect, vec![inlined]);
                             debug_assert!(
@@ -177,7 +177,8 @@ impl Pass for ElimConstGamma {
                                 Default::default(),
                             );
                             for (port, param) in theta.invariant_input_pair_ids() {
-                                let inlined = graph.input_port(theta.node(), EdgeKind::Value);
+                                let inlined =
+                                    graph.create_input_port(theta.node(), EdgeKind::Value);
 
                                 let replaced = self.input_lookup.insert(port, vec![inlined]);
                                 debug_assert!(
@@ -214,7 +215,8 @@ impl Pass for ElimConstGamma {
                             for (port, param, output) in
                                 theta.variant_input_pair_ids_with_feedback()
                             {
-                                let inlined = graph.input_port(theta.node(), EdgeKind::Value);
+                                let inlined =
+                                    graph.create_input_port(theta.node(), EdgeKind::Value);
 
                                 let replaced = self.input_lookup.insert(port, vec![inlined]);
                                 debug_assert!(
@@ -253,7 +255,8 @@ impl Pass for ElimConstGamma {
                             );
 
                             for (port, param, input) in theta.output_pair_ids_with_feedback() {
-                                let inlined = graph.output_port(theta.node(), EdgeKind::Value);
+                                let inlined =
+                                    graph.create_output_port(theta.node(), EdgeKind::Value);
 
                                 let replaced = self.output_lookup.insert(port, inlined);
                                 debug_assert!(
@@ -277,7 +280,7 @@ impl Pass for ElimConstGamma {
                         }
 
                         if let Some(output_effect) = theta.output_effect() {
-                            let inlined = graph.output_port(theta.node(), EdgeKind::Effect);
+                            let inlined = graph.create_output_port(theta.node(), EdgeKind::Effect);
 
                             let replaced = self.output_lookup.insert(output_effect, inlined);
                             debug_assert!(
@@ -294,7 +297,7 @@ impl Pass for ElimConstGamma {
                         }
                     } else {
                         node.update_inputs(|input, kind| {
-                            let inlined = graph.input_port(node_id, kind);
+                            let inlined = graph.create_input_port(node_id, kind);
                             self.input_lookup
                                 .insert(input, vec![inlined])
                                 .debug_unwrap_none();
@@ -303,7 +306,7 @@ impl Pass for ElimConstGamma {
                         });
 
                         node.update_outputs(|output, kind| {
-                            let inlined = graph.output_port(node_id, kind);
+                            let inlined = graph.create_output_port(node_id, kind);
                             self.output_lookup
                                 .insert(output, inlined)
                                 .debug_unwrap_none();
@@ -440,7 +443,7 @@ impl Pass for ElimConstGamma {
                 } else if !node.is_input_param() && !node.is_output_param() {
                     if let Some(theta) = node.as_theta_mut() {
                         if let Some(input_effect) = theta.input_effect() {
-                            let inlined = graph.input_port(theta.node(), EdgeKind::Effect);
+                            let inlined = graph.create_input_port(theta.node(), EdgeKind::Effect);
 
                             let replaced = self.input_lookup.insert(input_effect, vec![inlined]);
                             debug_assert!(
@@ -464,7 +467,8 @@ impl Pass for ElimConstGamma {
                             );
 
                             for (port, param) in theta.invariant_input_pair_ids() {
-                                let inlined = graph.input_port(theta.node(), EdgeKind::Value);
+                                let inlined =
+                                    graph.create_input_port(theta.node(), EdgeKind::Value);
 
                                 let replaced = self.input_lookup.insert(port, vec![inlined]);
                                 debug_assert!(
@@ -501,7 +505,8 @@ impl Pass for ElimConstGamma {
                             for (port, param, output) in
                                 theta.variant_input_pair_ids_with_feedback()
                             {
-                                let inlined = graph.input_port(theta.node(), EdgeKind::Value);
+                                let inlined =
+                                    graph.create_input_port(theta.node(), EdgeKind::Value);
 
                                 let replaced = self.input_lookup.insert(port, vec![inlined]);
                                 debug_assert!(
@@ -540,7 +545,8 @@ impl Pass for ElimConstGamma {
                             );
 
                             for (port, param, input) in theta.output_pair_ids_with_feedback() {
-                                let inlined = graph.output_port(theta.node(), EdgeKind::Value);
+                                let inlined =
+                                    graph.create_output_port(theta.node(), EdgeKind::Value);
 
                                 let replaced = self.output_lookup.insert(port, inlined);
                                 debug_assert!(
@@ -564,7 +570,7 @@ impl Pass for ElimConstGamma {
                         }
 
                         if let Some(output_effect) = theta.output_effect() {
-                            let inlined = graph.output_port(theta.node(), EdgeKind::Effect);
+                            let inlined = graph.create_output_port(theta.node(), EdgeKind::Effect);
 
                             let replaced = self.output_lookup.insert(output_effect, inlined);
                             debug_assert!(
@@ -581,7 +587,7 @@ impl Pass for ElimConstGamma {
                         }
                     } else {
                         node.update_inputs(|input, kind| {
-                            let inlined = graph.input_port(node_id, kind);
+                            let inlined = graph.create_input_port(node_id, kind);
                             self.input_lookup
                                 .insert(input, vec![inlined])
                                 .debug_unwrap_none();
@@ -590,7 +596,7 @@ impl Pass for ElimConstGamma {
                         });
 
                         node.update_outputs(|output, kind| {
-                            let inlined = graph.output_port(node_id, kind);
+                            let inlined = graph.create_output_port(node_id, kind);
                             self.output_lookup
                                 .insert(output, inlined)
                                 .debug_unwrap_none();

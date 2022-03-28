@@ -1,17 +1,15 @@
 use crate::{
-    graph::{Add, InputPort, Mul, NodeExt, NodeId, OutputPort, Sub},
+    graph::{Add, InputPort, Mul, NodeExt, OutputPort, Sub},
     values::Ptr,
 };
 
 // TODO: Eq & Neq?
-pub trait BinOp {
+pub trait BinOp: NodeExt {
     fn name() -> &'static str;
 
     fn symbol() -> &'static str;
 
     fn combine(lhs: Ptr, rhs: Ptr) -> Ptr;
-
-    fn node(&self) -> NodeId;
 
     fn lhs(&self) -> InputPort;
 
@@ -35,10 +33,6 @@ impl BinOp for Add {
 
     fn combine(lhs: Ptr, rhs: Ptr) -> Ptr {
         lhs + rhs
-    }
-
-    fn node(&self) -> NodeId {
-        NodeExt::node(self)
     }
 
     fn lhs(&self) -> InputPort {
@@ -75,10 +69,6 @@ impl BinOp for Sub {
         lhs - rhs
     }
 
-    fn node(&self) -> NodeId {
-        NodeExt::node(self)
-    }
-
     fn lhs(&self) -> InputPort {
         Sub::lhs(self)
     }
@@ -111,10 +101,6 @@ impl BinOp for Mul {
 
     fn combine(lhs: Ptr, rhs: Ptr) -> Ptr {
         lhs * rhs
-    }
-
-    fn node(&self) -> NodeId {
-        NodeExt::node(self)
     }
 
     fn lhs(&self) -> InputPort {

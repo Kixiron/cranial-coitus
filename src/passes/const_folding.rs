@@ -48,7 +48,7 @@ impl Pass for ConstFolding {
 
     fn reset(&mut self) {
         self.values.clear();
-        self.changes.set_has_changed(false);
+        self.changes.reset();
     }
 
     fn report(&self) -> HashMap<&'static str, usize> {
@@ -427,8 +427,7 @@ impl Pass for ConstFolding {
     }
 
     fn visit_neg(&mut self, graph: &mut Rvsdg, neg: Neg) {
-        let (_, output, edge) = graph.get_input(neg.input());
-        debug_assert_eq!(edge, EdgeKind::Value);
+        let output = graph.input_source(neg.input());
 
         if let Some(value) = self.values.get(output) {
             tracing::debug!("constant folding 'neg {}' to '{}'", value, !value);

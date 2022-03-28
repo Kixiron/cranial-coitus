@@ -4,28 +4,41 @@ use crate::{
         Rvsdg, Store, Theta,
     },
     ir::Const,
-    passes::Pass,
+    passes::{utils::Changes, Pass},
     utils::{AssertNone, HashMap},
     values::{Cell, Ptr},
 };
 use ranges::Ranges;
-use std::fmt::{self, Debug, Display};
+use std::{
+    cell::RefCell,
+    fmt::{self, Debug, Display},
+    mem::take,
+    rc::Rc,
+    thread,
+};
+
+#[derive(Default)]
+struct DataflowPool {
+    // TODO: Pool facts & constants too?
+    tapes: Vec<Vec<(Domain, Option<Const>)>>,
+}
 
 /// Removes dead code from the graph
 // FIXME: This is horrifically slow, refactor it some
 pub struct Dataflow {
-    changed: bool,
+    changes: Changes<3>,
     facts: HashMap<OutputPort, Domain>,
     // TODO: Use ConstantStore
     constants: HashMap<OutputPort, Const>,
     tape: Vec<(Domain, Option<Const>)>,
     tape_len: u16,
+    pool: Rc<RefCell<DataflowPool>>,
 }
 
 impl Dataflow {
     pub fn new(tape_len: u16) -> Self {
         Self {
-            changed: false,
+            changes: Changes::new(["eq-true", "eq-false", "add-zero"]),
             facts: HashMap::default(),
             constants: HashMap::default(),
             tape: vec![
@@ -36,11 +49,8 @@ impl Dataflow {
                 tape_len as usize
             ],
             tape_len,
+            pool: Rc::new(RefCell::new(DataflowPool::default())),
         }
-    }
-
-    fn changed(&mut self) {
-        self.changed = true;
     }
 
     /// Returns `true` if `port` is zero. `false` means that the zero-ness
@@ -60,6 +70,25 @@ impl Dataflow {
             .map(|facts| facts.exactly_zero())
             .unwrap_or(false)
     }
+
+    fn clone_for_subscope(&mut self) -> Self {
+        let mut tape = self
+            .pool
+            .borrow_mut()
+            .tapes
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(self.tape.len()));
+        tape.clone_from(&self.tape);
+
+        Self {
+            changes: Changes::new(["eq-true", "eq-false", "add-zero"]),
+            facts: HashMap::default(),
+            constants: HashMap::default(),
+            tape,
+            tape_len: self.tape_len,
+            pool: self.pool.clone(),
+        }
+    }
 }
 
 // Elide branches where variables are known to be non-zero
@@ -76,13 +105,13 @@ impl Pass for Dataflow {
     }
 
     fn did_change(&self) -> bool {
-        self.changed
+        self.changes.has_changed()
     }
 
     fn reset(&mut self) {
-        self.changed = false;
         self.facts.clear();
         self.constants.clear();
+        self.changes.reset();
 
         for cell in &mut self.tape {
             *cell = (
@@ -92,18 +121,14 @@ impl Pass for Dataflow {
         }
     }
 
+    fn report(&self) -> HashMap<&'static str, usize> {
+        self.changes.as_map()
+    }
+
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
-        let (mut true_visitor, mut false_visitor) = (
-            Self {
-                tape: self.tape.clone(),
-                ..Self::new(self.tape_len)
-            },
-            Self {
-                tape: self.tape.clone(),
-                ..Self::new(self.tape_len)
-            },
-        );
+        let (mut true_visitor, mut false_visitor) =
+            (self.clone_for_subscope(), self.clone_for_subscope());
 
         for (&input, &[true_param, false_param]) in gamma.inputs().iter().zip(gamma.input_params())
         {
@@ -197,7 +222,8 @@ impl Pass for Dataflow {
 
                 // If the left hand operand is zero
                 // FIXME: Bytes
-                if self.is_zero(lhs_src) || lhs_node.as_int().map_or(false, |(_, value)| value == 0)
+                if self.is_zero(lhs_src)
+                    || lhs_node.as_int_value().map_or(false, |value| value == 0)
                 {
                     // The left hand side is zero in both branches
                     zero_fact_true_branch(lhs_src, true);
@@ -210,7 +236,7 @@ impl Pass for Dataflow {
                 // If the right hand operand is zero
                 // FIXME: Bytes
                 } else if self.is_zero(rhs_src)
-                    || rhs_node.as_int().map_or(false, |(_, value)| value == 0)
+                    || rhs_node.as_int_value().map_or(false, |value| value == 0)
                 {
                     // The right hand side is zero in both branches
                     zero_fact_true_branch(rhs_src, true);
@@ -229,7 +255,7 @@ impl Pass for Dataflow {
 
             // If the left hand operand is zero
             // FIXME: Bytes
-            if self.is_zero(lhs_src) || lhs_node.as_int().map_or(false, |(_, value)| value == 0) {
+            if self.is_zero(lhs_src) || lhs_node.as_int_value().map_or(false, |value| value == 0) {
                 // The left hand side is zero in both branches
                 zero_fact_true_branch(lhs_src, true);
                 zero_fact_false_branch(lhs_src, true);
@@ -241,7 +267,7 @@ impl Pass for Dataflow {
             // If the right hand operand is zero
             // FIXME: Bytes
             } else if self.is_zero(rhs_src)
-                || rhs_node.as_int().map_or(false, |(_, value)| value == 0)
+                || rhs_node.as_int_value().map_or(false, |value| value == 0)
             {
                 // The right hand side is zero in both branches
                 zero_fact_true_branch(rhs_src, true);
@@ -254,7 +280,10 @@ impl Pass for Dataflow {
         }
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
+        self.changes.combine(&true_visitor.changes);
+
         changed |= false_visitor.visit_graph(gamma.false_mut());
+        self.changes.combine(&false_visitor.changes);
 
         // FIXME: Ensure that exactly one branch is empty
         // FIXME: Ensure that executing the false branch with the true state is valid
@@ -280,14 +309,13 @@ impl Pass for Dataflow {
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
-            self.changed();
         }
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
         // FIXME: Some tape values can be preserved within the loop
-        let mut visitor = Self::new(self.tape_len);
+        let mut visitor = self.clone_for_subscope();
 
         for (input, param) in theta.invariant_input_pairs() {
             let source = graph.input_source(input);
@@ -310,6 +338,7 @@ impl Pass for Dataflow {
         }
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.changes.combine(&visitor.changes);
 
         // After a loop's body has completed, if the condition is `!(x == 0)` then `x` will
         // be zero afterwards
@@ -375,7 +404,6 @@ impl Pass for Dataflow {
 
         if changed {
             graph.replace_node(theta.node(), theta);
-            self.changed();
         }
     }
 
@@ -404,7 +432,7 @@ impl Pass for Dataflow {
             let evaluated = graph.bool(true);
             graph.rewire_dependents(eq.value(), evaluated.value());
 
-            self.changed();
+            self.changes.inc::<"eq-true">();
         } else if let Some((lhs, rhs)) = self
             .facts
             .get(&graph.input_source(eq.lhs()))
@@ -417,7 +445,7 @@ impl Pass for Dataflow {
                 let evaluated = graph.bool(false);
                 graph.rewire_dependents(eq.value(), evaluated.value());
 
-                self.changed();
+                self.changes.inc::<"eq-false">();
             } else if lhs
                 .exact_value()
                 .and_then(|lhs| Some((lhs, rhs.exact_value()?)))
@@ -428,7 +456,7 @@ impl Pass for Dataflow {
                 let evaluated = graph.bool(true);
                 graph.rewire_dependents(eq.value(), evaluated.value());
 
-                self.changed();
+                self.changes.inc::<"eq-true">();
             }
         }
     }
@@ -440,12 +468,12 @@ impl Pass for Dataflow {
             tracing::trace!(?add, "replaced addition by zero to the non-zero side");
 
             graph.rewire_dependents(add.value(), rhs);
-            self.changed();
+            self.changes.inc::<"add-zero">();
         } else if self.is_zero(rhs) {
             tracing::trace!(?add, "replaced addition by zero to the non-zero side");
 
             graph.rewire_dependents(add.value(), lhs);
-            self.changed();
+            self.changes.inc::<"add-zero">();
         }
     }
 
@@ -473,10 +501,11 @@ impl Pass for Dataflow {
     fn visit_load(&mut self, graph: &mut Rvsdg, load: Load) {
         // Use an unknown byte value as the baseline loaded value
         let mut facts = Domain::unbounded_u8(self.tape_len);
+        let ptr = graph.input_source(load.ptr());
 
         if let Some(ptr) = self
             .constants
-            .get(&graph.input_source(load.ptr()))
+            .get(&ptr)
             .map(|value| value.into_ptr(self.tape_len))
         {
             let (loaded_facts, consts) = self.tape[ptr].clone();
@@ -497,6 +526,15 @@ impl Pass for Dataflow {
     }
 }
 
+impl Drop for Dataflow {
+    fn drop(&mut self) {
+        if !thread::panicking() {
+            self.tape.clear();
+            self.pool.borrow_mut().tapes.push(take(&mut self.tape));
+        }
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct Domain {
     values: Ranges<u16>,
@@ -504,13 +542,6 @@ pub struct Domain {
 }
 
 impl Domain {
-    pub fn unbounded_ptr(tape_len: u16) -> Self {
-        Self {
-            values: Ranges::full(),
-            tape_len,
-        }
-    }
-
     pub fn unbounded_u8(tape_len: u16) -> Self {
         Self {
             values: Ranges::from(u8::MIN as u16..=u8::MAX as u16),
@@ -532,6 +563,7 @@ impl Domain {
         }
     }
 
+    #[allow(dead_code)]
     pub fn join(&self, other: &Self) -> Self {
         debug_assert_eq!(self.tape_len, other.tape_len);
 
@@ -541,6 +573,7 @@ impl Domain {
         }
     }
 
+    #[allow(dead_code)]
     pub fn remove(&mut self, value: Ptr) {
         debug_assert_eq!(self.tape_len, value.tape_len());
         self.values.remove(value.value());
@@ -571,6 +604,7 @@ impl Domain {
         }
     }
 
+    #[allow(dead_code)]
     pub fn overlaps(&self, other: &Self) -> bool {
         debug_assert_eq!(self.tape_len, other.tape_len);
         self.join(other).values.is_empty()

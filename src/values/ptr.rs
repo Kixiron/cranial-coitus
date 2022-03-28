@@ -16,10 +16,15 @@ pub struct Ptr {
 impl Ptr {
     #[inline]
     pub const fn new(value: u16, tape_len: u16) -> Self {
+        Self::from_raw(value.rem_euclid(tape_len), tape_len)
+    }
+
+    #[inline]
+    const fn from_raw(value: u16, tape_len: u16) -> Self {
         debug_assert!(tape_len != 0);
 
         Self {
-            value: ((value.rem_euclid(tape_len) as u32) << 16) | tape_len as u32,
+            value: ((value as u32) << 16) | tape_len as u32,
         }
     }
 
@@ -65,8 +70,16 @@ impl Ptr {
     pub const fn wrapping_add(self, other: Self) -> Self {
         debug_assert!(self.tape_len() == other.tape_len());
 
-        Self::new(
+        Self::from_raw(
             (self.value() as i32 + other.value() as i32).rem_euclid(self.tape_len() as i32) as u16,
+            self.tape_len(),
+        )
+    }
+
+    #[inline]
+    pub const fn wrapping_add_u16(self, other: u16) -> Self {
+        Self::from_raw(
+            (self.value() as i32 + other as i32).rem_euclid(self.tape_len() as i32) as u16,
             self.tape_len(),
         )
     }
@@ -75,8 +88,16 @@ impl Ptr {
     pub const fn wrapping_sub(self, other: Self) -> Self {
         debug_assert!(self.tape_len() == other.tape_len());
 
-        Self::new(
+        Self::from_raw(
             (self.value() as i32 - other.value() as i32).rem_euclid(self.tape_len() as i32) as u16,
+            self.tape_len(),
+        )
+    }
+
+    #[inline]
+    pub const fn wrapping_sub_u16(self, other: u16) -> Self {
+        Self::from_raw(
+            (self.value() as i32 - other as i32).rem_euclid(self.tape_len() as i32) as u16,
             self.tape_len(),
         )
     }
@@ -85,7 +106,7 @@ impl Ptr {
     pub const fn wrapping_mul(self, other: Self) -> Self {
         debug_assert!(self.tape_len() == other.tape_len());
 
-        Self::new(
+        Self::from_raw(
             (self.value() as u32 + other.value() as u32).rem_euclid(self.tape_len() as u32) as u16,
             self.tape_len(),
         )

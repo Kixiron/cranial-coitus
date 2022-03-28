@@ -5,13 +5,13 @@ use petgraph::{
 
 use crate::{
     ir::{
-        AssignTag, Block as CirBlock, Expr as CirExpr, Instruction as CirInstruction, Pretty,
-        PrettyConfig, VarId, Variance,
+        AssignTag, Block as CirBlock, CallFunction, Expr as CirExpr, Instruction as CirInstruction,
+        Pretty, PrettyConfig, VarId, Variance,
     },
     jit::{
         basic_block::{
             Add, Assign, BlockId, Blocks, Branch, Cmp, Input, Instruction, Load, Mul, Neg, Not,
-            Output, Phi, RValue, Store, Sub, Terminator, Type, ValId, Value,
+            Output, Phi, RValue, Scanl, Scanr, Store, Sub, Terminator, Type, ValId, Value,
         },
         block_builder::BlockBuilder,
         JitReturnCode,
@@ -183,10 +183,10 @@ fn translate_inst(
 ) {
     match inst {
         CirInstruction::Call(call) => {
-            if call.function != "output" {
+            if call.function != CallFunction::Output {
                 panic!(
                     "got standalone call `{}()` when `output()` was expected",
-                    call.function,
+                    call.function.to_str(),
                 );
             } else if call.args.is_empty() {
                 panic!("expected at least one argument to output call");
@@ -269,26 +269,53 @@ fn translate_inst(
                 builder.push(Assign::new(val, Load::new(ptr)));
             }
 
-            CirExpr::Call(call) => {
-                if call.function != "input" {
-                    panic!(
-                        "got assign call `{}()` when `input()` was expected",
-                        call.function,
-                    );
-                } else if !call.args.is_empty() {
-                    panic!(
-                        "got {} args to `input` call when zero were expected",
-                        call.args.len(),
-                    );
+            CirExpr::Call(call) => match call.function {
+                CallFunction::Input => {
+                    if !call.args.is_empty() {
+                        panic!(
+                            "got {} args to `input` call when zero were expected",
+                            call.args.len(),
+                        );
+                    }
+
+                    let val = builder.create_val();
+                    builder.assign(assign.var, (val, Type::U8));
+                    builder.push(Assign::new(val, Input::new()));
                 }
 
-                let val = builder.create_val();
-                // Input always returns a byte from this perspective, the
-                // internal implementation returns a u16 but that's all
-                // just an internal detail
-                builder.assign(assign.var, (val, Type::U8));
-                builder.push(Assign::new(val, Input::new()));
-            }
+                CallFunction::Scanr => {
+                    assert_eq!(call.args.len(), 3, "scanr expects 3 arguments");
+
+                    let (ptr, step, needle) = (
+                        builder.get(call.args[0]),
+                        builder.get(call.args[1]),
+                        builder.get(call.args[2]),
+                    );
+
+                    let val = builder.create_val();
+                    builder.assign(assign.var, (val, Type::Ptr));
+                    builder.push(Assign::new(val, Scanr::new(ptr, step, needle)));
+                }
+
+                CallFunction::Scanl => {
+                    assert_eq!(call.args.len(), 3, "scanl expects 3 arguments");
+
+                    let (ptr, step, needle) = (
+                        builder.get(call.args[0]),
+                        builder.get(call.args[1]),
+                        builder.get(call.args[2]),
+                    );
+
+                    let val = builder.create_val();
+                    builder.assign(assign.var, (val, Type::Ptr));
+                    builder.push(Assign::new(val, Scanl::new(ptr, step, needle)));
+                }
+
+                other => panic!(
+                    "got assign call `{}()` when `input()` was expected",
+                    other.to_str(),
+                ),
+            },
 
             &CirExpr::Value(value) => {
                 if let AssignTag::InputParam(Variance::Variant { feedback_from }) = assign.tag {

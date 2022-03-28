@@ -442,6 +442,8 @@ pub enum RValue {
     Load(Load),
     Input(Input),
     BitNot(BitNot),
+    Scanr(Scanr),
+    Scanl(Scanl),
 }
 
 impl RValue {
@@ -522,6 +524,18 @@ impl From<Load> for RValue {
     }
 }
 
+impl From<Scanr> for RValue {
+    fn from(scanr: Scanr) -> Self {
+        Self::Scanr(scanr)
+    }
+}
+
+impl From<Scanl> for RValue {
+    fn from(scanl: Scanl) -> Self {
+        Self::Scanl(scanl)
+    }
+}
+
 impl Pretty for RValue {
     fn pretty<'a, D, A>(&'a self, allocator: &'a D, config: PrettyConfig) -> DocBuilder<'a, D, A>
     where
@@ -540,6 +554,8 @@ impl Pretty for RValue {
             Self::Load(load) => load.pretty(allocator, config),
             Self::Input(input) => input.pretty(allocator, config),
             Self::BitNot(bit_not) => bit_not.pretty(allocator, config),
+            Self::Scanr(scanr) => scanr.pretty(allocator, config),
+            Self::Scanl(scanl) => scanl.pretty(allocator, config),
         }
     }
 }
@@ -854,6 +870,96 @@ impl Pretty for Input {
         A: Clone,
     {
         allocator.text("call input()")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Scanr {
+    ptr: Value,
+    step: Value,
+    needle: Value,
+}
+
+impl Scanr {
+    pub const fn new(ptr: Value, step: Value, needle: Value) -> Self {
+        Self { ptr, step, needle }
+    }
+
+    pub const fn ptr(&self) -> Value {
+        self.ptr
+    }
+
+    pub const fn step(&self) -> Value {
+        self.step
+    }
+
+    pub const fn needle(&self) -> Value {
+        self.needle
+    }
+}
+
+impl Pretty for Scanr {
+    fn pretty<'a, D, A>(&'a self, allocator: &'a D, config: PrettyConfig) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+    {
+        allocator.text("call scanr").append(
+            allocator
+                .intersperse(
+                    [&self.ptr, &self.step, &self.needle]
+                        .into_iter()
+                        .map(|val| val.pretty(allocator, config)),
+                    allocator.text(",").append(allocator.space()),
+                )
+                .parens(),
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Scanl {
+    ptr: Value,
+    step: Value,
+    needle: Value,
+}
+
+impl Scanl {
+    pub const fn new(ptr: Value, step: Value, needle: Value) -> Self {
+        Self { ptr, step, needle }
+    }
+
+    pub const fn ptr(&self) -> Value {
+        self.ptr
+    }
+
+    pub const fn step(&self) -> Value {
+        self.step
+    }
+
+    pub const fn needle(&self) -> Value {
+        self.needle
+    }
+}
+
+impl Pretty for Scanl {
+    fn pretty<'a, D, A>(&'a self, allocator: &'a D, config: PrettyConfig) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+    {
+        allocator.text("call scanl").append(
+            allocator
+                .intersperse(
+                    [&self.ptr, &self.step, &self.needle]
+                        .into_iter()
+                        .map(|val| val.pretty(allocator, config)),
+                    allocator.text(",").append(allocator.space()),
+                )
+                .parens(),
+        )
     }
 }
 

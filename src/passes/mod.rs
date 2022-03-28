@@ -9,9 +9,10 @@ mod eliminate_const_gamma;
 mod equality;
 mod expr_dedup;
 mod fold_arithmetic;
-mod fuse_outputs;
+mod fuse_io;
 mod licm;
 mod mem2reg;
+mod scan_loops;
 mod shift;
 mod square_cell;
 mod symbolic_eval;
@@ -30,9 +31,10 @@ pub use eliminate_const_gamma::ElimConstGamma;
 pub use equality::Equality;
 pub use expr_dedup::ExprDedup;
 pub use fold_arithmetic::FoldArithmetic;
-pub use fuse_outputs::FuseOutputs;
+pub use fuse_io::FuseIO;
 pub use licm::Licm;
 pub use mem2reg::Mem2Reg;
+pub use scan_loops::ScanLoops;
 pub use shift::ShiftCell;
 pub use square_cell::SquareCell;
 pub use symbolic_eval::SymbolicEval;
@@ -42,7 +44,7 @@ pub use zero_loop::ZeroLoop;
 use crate::{
     graph::{
         Add, Bool, Byte, End, Eq, Gamma, Input, InputParam, Int, Load, Mul, Neg, Neq, Node,
-        NodeExt, NodeId, Not, Output, OutputParam, Rvsdg, Start, Store, Sub, Theta,
+        NodeExt, NodeId, Not, Output, OutputParam, Rvsdg, Scan, Start, Store, Sub, Theta,
     },
     utils::{HashMap, HashSet},
     values::{Cell, Ptr},
@@ -61,7 +63,8 @@ pub fn default_passes(tape_len: u16) -> Vec<Box<dyn Pass>> {
         Mem2Reg::new(tape_len),
         AddSubLoop::new(tape_len),
         ShiftCell::new(tape_len),
-        FuseOutputs::new(),
+        FuseIO::new(),
+        ScanLoops::new(),
         Dce::new(),
         Dataflow::new(tape_len),
         ElimConstGamma::new(),
@@ -254,6 +257,7 @@ pub trait Pass {
                 Node::Mul(mul) => self.visit_mul(graph, mul),
                 Node::Load(load) => self.visit_load(graph, load),
                 Node::Store(store) => self.visit_store(graph, store),
+                Node::Scan(scan) => self.visit_scan(graph, scan),
                 Node::Start(start) => self.visit_start(graph, start),
                 Node::End(end) => self.visit_end(graph, end),
                 Node::Input(input) => self.visit_input(graph, input),
@@ -280,6 +284,7 @@ pub trait Pass {
     fn visit_mul(&mut self, _graph: &mut Rvsdg, _mul: Mul) {}
     fn visit_load(&mut self, _graph: &mut Rvsdg, _load: Load) {}
     fn visit_store(&mut self, _graph: &mut Rvsdg, _store: Store) {}
+    fn visit_scan(&mut self, _graph: &mut Rvsdg, _scan: Scan) {}
     fn visit_start(&mut self, _graph: &mut Rvsdg, _start: Start) {}
     fn visit_end(&mut self, _graph: &mut Rvsdg, _end: End) {}
     fn visit_input(&mut self, _graph: &mut Rvsdg, _input: Input) {}
@@ -333,7 +338,7 @@ test_opts! {
 
             ThetaData::new([ptr], not_eq_zero.value(), effect)
         });
-        ptr = theta.outputs()[0];
+        ptr = theta.output_ports().next().unwrap();
         effect = theta.output_effect().unwrap();
 
         // Load the cell's value

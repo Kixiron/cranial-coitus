@@ -2,7 +2,7 @@
 
 use crate::graph::{
     nodes::node_ext::{InputPortKinds, InputPorts, OutputPortKinds, OutputPorts},
-    EdgeDescriptor, EdgeKind, InputPort, NodeExt, NodeId, OutputPort,
+    EdgeDescriptor, EdgeKind, InputPort, Node, NodeExt, NodeId, OutputPort, Rvsdg,
 };
 use tinyvec::tiny_vec;
 
@@ -580,6 +580,82 @@ impl NodeExt for Neg {
     fn update_output(&mut self, from: OutputPort, to: OutputPort) {
         if self.value == from {
             self.value = to;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AddOrSub {
+    Add(Add),
+    Sub(Sub),
+}
+
+impl AddOrSub {
+    pub const fn lhs(&self) -> InputPort {
+        match self {
+            Self::Add(add) => add.lhs(),
+            Self::Sub(sub) => sub.lhs(),
+        }
+    }
+
+    pub const fn rhs(&self) -> InputPort {
+        match self {
+            Self::Add(add) => add.rhs(),
+            Self::Sub(sub) => sub.rhs(),
+        }
+    }
+
+    pub const fn value(&self) -> OutputPort {
+        match self {
+            Self::Add(add) => add.value(),
+            Self::Sub(sub) => sub.value(),
+        }
+    }
+
+    pub fn cast_output_dest(graph: &Rvsdg, output: OutputPort) -> Option<Self> {
+        graph.output_dest_node(output)?.try_into().ok()
+    }
+
+    pub fn cast_input_source(graph: &Rvsdg, input: InputPort) -> Option<Self> {
+        graph.input_source_node(input).try_into().ok()
+    }
+
+    /// Returns `true` if the add or sub is an [`Add`].
+    ///
+    /// [`Add`]: AddOrSub::Add
+    pub const fn is_add(&self) -> bool {
+        matches!(self, Self::Add(..))
+    }
+
+    /// Returns `true` if the add or sub is a [`Sub`].
+    ///
+    /// [`Sub`]: AddOrSub::Sub
+    #[allow(dead_code)]
+    pub const fn is_sub(&self) -> bool {
+        matches!(self, Self::Sub(..))
+    }
+}
+
+impl TryFrom<Node> for AddOrSub {
+    type Error = Node;
+
+    fn try_from(node: Node) -> Result<Self, Self::Error> {
+        match node {
+            Node::Add(add) => Ok(Self::Add(add)),
+            Node::Sub(sub) => Ok(Self::Sub(sub)),
+            node => Err(node),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a Node> for AddOrSub {
+    type Error = &'a Node;
+
+    fn try_from(node: &'a Node) -> Result<Self, Self::Error> {
+        match node {
+            &Node::Add(add) => Ok(Self::Add(add)),
+            &Node::Sub(sub) => Ok(Self::Sub(sub)),
+            node => Err(node),
         }
     }
 }

@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Add, Bool, Byte, EdgeKind, End, Eq, Gamma, InputPort, Int, Load, Node, NodeExt, OutputPort,
-        Rvsdg, Start, Store, Sub, Theta,
+        AddOrSub, Bool, Byte, EdgeKind, End, Eq, Gamma, InputParam, InputPort, Int, Load, Neq,
+        Node, NodeExt, OutputPort, Rvsdg, Start, Store, Theta,
     },
     passes::{utils::ConstantStore, Pass},
     utils::HashMap,
@@ -38,9 +38,9 @@ impl ZeroLoop {
     /// ```
     /// do {
     ///   cell_value = load cell_ptr
-    ///   plus_one = add cell, int 1
+    ///   plus_one = add cell_value, int 1
     ///   store cell_ptr, plus_one
-    ///   not_zero = neq plus_one, int 0
+    ///   not_zero = neq cell_value, int 1
     /// } while { not_zero }
     /// ```
     ///
@@ -51,12 +51,18 @@ impl ZeroLoop {
     ///   cell_value = load cell_ptr
     ///   minus_one = sub cell_value, int 1
     ///   store cell_ptr, minus_one
-    ///   not_zero = neq minus_one, int 0
+    ///   not_zero = neq cell_value, int 1
     /// } while { not_zero }
     /// ```
     ///
     /// In both of these cases we can replace the entire loop with a simple
-    /// zero store
+    /// zero store.
+    ///
+    /// Don't be fooled by the `neq cell_value, 1`s, those are caused by
+    /// another rewrite and still effectively means `eq cell_value, 0`
+    /// for our use case since this is a do-while loop, meaning that on the
+    /// iteration where it is true (and cell_value is one), one more
+    /// subtraction/addition and store cycle would still happen.
     ///
     /// ```
     /// store cell_ptr, int 0
@@ -71,18 +77,41 @@ impl ZeroLoop {
         // The theta's start node
         let start = theta.start_node();
 
-        // The node after the effect must be a load
-        let load = graph.cast_output_dest::<Load>(start.effect())?;
+        // cell_value = load cell_ptr
+        let cell_value = graph.cast_output_dest::<Load>(start.effect())?;
+        let cell_ptr = graph.input_source(cell_value.ptr());
 
-        let (target_node, source, _) = graph.get_input(load.ptr());
+        // plus_one = add cell_value, int 1
+        // minus_one = sub cell_value, int 1
+        let add_or_sub = AddOrSub::cast_output_dest(graph, cell_value.output_value())?;
 
-        // We can zero out constant addresses or a dynamically generated ones
-        let target_ptr = match body_values.ptr(source) {
+        // store cell_ptr, plus_one
+        // store cell_ptr, minus_one
+        let store = graph.cast_output_dest::<Store>(cell_value.output_effect())?;
+        if graph.input_source(store.ptr()) != cell_ptr
+            || graph.input_source(store.value()) != add_or_sub.value()
+        {
+            return None;
+        }
+
+        // not_zero = neq cell_value, int 1
+        let not_zero = graph.cast_input_source::<Neq>(theta.condition().input())?;
+        if graph.input_source(not_zero.lhs()) != cell_value.output_value()
+            || body_values.ptr(graph.input_source(not_zero.rhs()))? != 1
+        {
+            return None;
+        }
+
+        // The theta's end node
+        let _end = graph.cast_output_dest::<End>(store.output_effect())?;
+
+        // Now that we've successfully matched the motif, we can extract the data of cell_ptr
+        let cell_ptr_value = match body_values.ptr(cell_ptr) {
             Some(ptr) => Ok(ptr),
             None => {
                 // FIXME: We're pretty strict right now and only take inputs as "dynamic addresses",
                 //        is it possible that this could be relaxed?
-                let input = target_node.as_input_param()?;
+                let input = graph.cast_input_source::<InputParam>(cell_value.ptr())?;
 
                 // Find the port that the input param refers to
                 let input_port = theta
@@ -93,108 +122,7 @@ impl ZeroLoop {
             }
         };
 
-        // TODO: Refactor
-        let value = if let Some(add) = graph.cast_output_dest::<Add>(load.output_value()) {
-            let (lhs, rhs) = (graph.input_source(add.lhs()), graph.input_source(add.rhs()));
-
-            // Make sure that one of the add's operands is the loaded cell and the other is 1 or -1
-            if lhs == load.output_value() {
-                let value = body_values.ptr(rhs)?;
-
-                // Any odd integer will eventually converge to zero
-                if value.is_even() {
-                    // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
-                    //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
-                    //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
-                    //       loop and we can remove it entirely for nothing, not even a store
-                    return None;
-                }
-            } else if rhs == load.output_value() {
-                let value = body_values.ptr(lhs)?;
-
-                // Any odd integer will eventually converge to zero
-                if value.is_even() {
-                    // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
-                    //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
-                    //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
-                    //       loop and we can remove it entirely for nothing, not even a store
-                    return None;
-                }
-            } else {
-                return None;
-            }
-
-            add.value()
-        } else if let Some(sub) = graph.cast_output_dest::<Sub>(load.output_value()) {
-            let (lhs, rhs) = (graph.input_source(sub.lhs()), graph.input_source(sub.rhs()));
-
-            // Make sure that one of the add's operands is the loaded cell and the other is 1 or -1
-            if lhs == load.output_value() {
-                let value = body_values.ptr(rhs)?;
-
-                // Any odd integer will eventually converge to zero
-                if value.is_even() {
-                    // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
-                    //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
-                    //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
-                    //       loop and we can remove it entirely for nothing, not even a store
-                    return None;
-                }
-            } else if rhs == load.output_value() {
-                let value = body_values.ptr(lhs)?;
-
-                // Any odd integer will eventually converge to zero
-                if value.is_even() {
-                    // TODO: If value is divisible by 2 this loop is finite if the loaded value is even.
-                    //       Otherwise if the loaded value is odd or `value` is zero, this loop is infinite.
-                    //       Lastly, if both the loaded value and `value` are zero, this is an entirely redundant
-                    //       loop and we can remove it entirely for nothing, not even a store
-                    return None;
-                }
-            } else {
-                return None;
-            }
-
-            sub.value()
-        } else {
-            return None;
-        };
-
-        let store = graph.cast_output_dest::<Store>(load.output_effect())?;
-        if graph.input_source(store.value()) != value {
-            return None;
-        }
-
-        let neq = graph
-            .get_outputs(value)
-            .find_map(|(node, ..)| node.as_neq())?;
-        let (lhs, rhs) = (graph.input_source(neq.lhs()), graph.input_source(neq.rhs()));
-
-        // Make sure that one of the eq's operands is the added val and the other is 0
-        if lhs == value {
-            let value = body_values.ptr(rhs)?;
-
-            if value != 0 {
-                return None;
-            }
-        } else if rhs == value {
-            let value = body_values.ptr(lhs)?;
-
-            if value != 0 {
-                return None;
-            }
-        } else {
-            return None;
-        }
-
-        // Make sure the `(value ± 1) != 0` expression is the theta's condition
-        if graph.output_dest_id(neq.value())? != theta.condition().node() {
-            return None;
-        }
-
-        let _end = graph.cast_output_dest::<End>(store.output_effect())?;
-
-        Some(target_ptr)
+        Some(cell_ptr_value)
     }
 
     /// If a gamma node is equivalent to one of our motifs,
@@ -322,7 +250,7 @@ impl ZeroLoop {
         };
 
         // store ptr, value
-        let store = graph.cast_input_source::<Store>(gamma.effect_in())?;
+        let store = graph.cast_input_source::<Store>(gamma.input_effect())?;
         if graph.input_source(store.value()) != value {
             return None;
         }
@@ -435,9 +363,9 @@ impl Pass for ZeroLoop {
                 target_ptr,
             );
 
-            let effect = graph.input_source(gamma.effect_in());
+            let effect = graph.input_source(gamma.input_effect());
             let store = graph.store(target_ptr, zero.value(), effect);
-            graph.rewire_dependents(gamma.effect_out(), store.output_effect());
+            graph.rewire_dependents(gamma.output_effect(), store.output_effect());
 
             if gamma.outputs().len() == 1 {
                 tracing::warn!("write comprehensive parameter rerouting for gamma nodes");

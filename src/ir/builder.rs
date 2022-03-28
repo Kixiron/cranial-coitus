@@ -1,8 +1,11 @@
 use crate::{
-    graph::{self, InputParam, InputPort, Node, NodeExt, NodeId, OutputParam, OutputPort, Rvsdg},
+    graph::{
+        self, InputParam, InputPort, Node, NodeExt, NodeId, OutputParam, OutputPort, Rvsdg,
+        ScanDirection,
+    },
     ir::{
-        lifetime, Add, Assign, Block, Call, Cmp, CmpKind, Const, EffectId, Gamma, Instruction,
-        Load, Mul, Neg, Not, Store, Sub, Theta, Value, VarId, Variance,
+        lifetime, Add, Assign, Block, Call, CallFunction, Cmp, CmpKind, Const, EffectId, Gamma,
+        Instruction, Load, Mul, Neg, Not, Store, Sub, Theta, Value, VarId, Variance,
     },
     utils::AssertNone,
 };
@@ -310,6 +313,7 @@ impl IrBuilder {
                     .get(&store.value())
                     .cloned()
                     .unwrap_or(Value::Missing);
+
                 self.inst(Store::new(
                     ptr,
                     value,
@@ -320,22 +324,49 @@ impl IrBuilder {
                 ));
             }
 
+            Node::Scan(scan) => {
+                let value = VarId::new(scan.output_ptr());
+                let effect = EffectId::new(scan.output_effect());
+                let function_kind = match scan.direction() {
+                    ScanDirection::Forward => CallFunction::Scanr,
+                    ScanDirection::Backward => CallFunction::Scanl,
+                };
+                let args = [scan.ptr(), scan.step(), scan.needle()]
+                    .into_iter()
+                    .map(|arg| input_values.get(&arg).cloned().unwrap_or(Value::Missing))
+                    .collect();
+
+                let call = Call::new(
+                    scan.node(),
+                    function_kind,
+                    args,
+                    effect,
+                    graph
+                        .try_input_source(scan.input_effect())
+                        .map(EffectId::new),
+                );
+
+                self.inst(Assign::new(value, call));
+                self.values
+                    .insert(scan.output_ptr(), value.into())
+                    .debug_unwrap_none();
+            }
+
             Node::Input(input) => {
                 let value = VarId::new(input.output_value());
                 let effect = EffectId::new(input.output_effect());
 
                 let call = Call::new(
                     input.node(),
-                    "input",
+                    CallFunction::Input,
                     Vec::new(),
                     effect,
                     graph
-                        .try_input(input.input_effect())
-                        .map(|(_, output, _)| EffectId::new(output)),
+                        .try_input_source(input.input_effect())
+                        .map(EffectId::new),
                 );
 
                 self.inst(Assign::new(value, call));
-
                 self.values
                     .insert(input.output_value(), value.into())
                     .debug_unwrap_none();
@@ -352,7 +383,7 @@ impl IrBuilder {
 
                 let call = Call::new(
                     output.node(),
-                    "output",
+                    CallFunction::Output,
                     values,
                     effect,
                     graph
@@ -593,13 +624,13 @@ impl IrBuilder {
 
         // Get the previous effect
         let prev_effect = graph
-            .try_input(gamma.effect_in())
+            .try_input(gamma.input_effect())
             .map(|(_, output, _)| EffectId::new(output));
 
         if prev_effect.is_none() {
             tracing::warn!(
                 "failed to get previous effect {:?} for gamma node {:?}",
-                gamma.effect_in(),
+                gamma.input_effect(),
                 gamma.node(),
             );
         }
@@ -611,7 +642,7 @@ impl IrBuilder {
             true_outputs,
             false_block.into_inner(),
             false_outputs,
-            EffectId::new(gamma.effect_out()),
+            EffectId::new(gamma.output_effect()),
             prev_effect,
         ));
     }
@@ -629,11 +660,9 @@ impl IrBuilder {
         branch: &str,
     ) {
         let output_param = graph.to_node::<OutputParam>(param);
-        let param_source = graph.input_source(output_param.input());
-
-        let value = builder
-            .values
-            .get(&param_source)
+        let value = graph
+            .try_input_source(output_param.input())
+            .and_then(|param_source| builder.values.get(&param_source))
             .cloned()
             .unwrap_or(Value::Missing);
 

@@ -14,7 +14,6 @@ use crate::{
 use pretty::{DocAllocator, DocBuilder};
 use pretty_print::COMMENT_ALIGNMENT_OFFSET;
 use std::{
-    borrow::Cow,
     collections::BTreeMap,
     fmt::{self, Debug, Display, Write},
     ops::{self, Deref, DerefMut},
@@ -589,7 +588,7 @@ impl Debug for Gamma {
 #[derive(Debug, Clone)]
 pub struct Call {
     pub node: NodeId,
-    pub function: Cow<'static, str>,
+    pub function: CallFunction,
     pub args: Vec<Value>,
     pub effect: EffectId,
     pub prev_effect: Option<EffectId>,
@@ -597,20 +596,19 @@ pub struct Call {
 }
 
 impl Call {
-    pub fn new<F, E>(
+    pub fn new<E>(
         node: NodeId,
-        function: F,
+        function: CallFunction,
         args: Vec<Value>,
         effect: EffectId,
         prev_effect: E,
     ) -> Self
     where
-        F: Into<Cow<'static, str>>,
         E: Into<Option<EffectId>>,
     {
         Self {
             node,
-            function: function.into(),
+            function,
             args,
             effect,
             prev_effect: prev_effect.into(),
@@ -627,7 +625,7 @@ impl Pretty for Call {
         A: Clone,
     {
         allocator.text("call").append(allocator.space()).append(
-            allocator.text(self.function.clone()).append(
+            allocator.text(self.function.to_str()).append(
                 allocator
                     .intersperse(
                         self.args.iter().map(|arg| arg.pretty(allocator, config)),
@@ -636,6 +634,25 @@ impl Pretty for Call {
                     .parens(),
             ),
         )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CallFunction {
+    Input,
+    Output,
+    Scanr,
+    Scanl,
+}
+
+impl CallFunction {
+    pub const fn to_str(self) -> &'static str {
+        match self {
+            Self::Input => "input",
+            Self::Output => "output",
+            Self::Scanr => "scanr",
+            Self::Scanl => "scanl",
+        }
     }
 }
 

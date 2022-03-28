@@ -1,16 +1,20 @@
 use crate::{
     graph::{
-        Add, Bool, Byte, Gamma, InputParam, InputPort, Int, Neg, NodeExt, OutputPort, Rvsdg, Sub,
-        Theta,
+        Add, Bool, Byte, Gamma, InputParam, InputPort, Int, Neg, NodeExt, Not, OutputPort, Rvsdg,
+        Sub, Theta,
     },
-    passes::{utils::ConstantStore, Pass},
+    passes::{
+        utils::{Changes, ConstantStore},
+        Pass,
+    },
+    utils::HashMap,
     values::{Cell, Ptr},
 };
 
 /// Folds arithmetic operations together
 pub struct FoldArithmetic {
     values: ConstantStore,
-    changed: bool,
+    changes: Changes<5>,
     tape_len: u16,
 }
 
@@ -18,13 +22,15 @@ impl FoldArithmetic {
     pub fn new(tape_len: u16) -> Self {
         Self {
             values: ConstantStore::new(tape_len),
-            changed: false,
+            changes: Changes::new([
+                "add-sub-greater",
+                "add-sub-less-eq",
+                "sub-add-greater",
+                "sub-add-less-eq",
+                "sub-sub",
+            ]),
             tape_len,
         }
-    }
-
-    fn changed(&mut self) {
-        self.changed = true;
     }
 
     fn operand(&self, graph: &Rvsdg, input: InputPort) -> (OutputPort, Option<Ptr>) {
@@ -42,12 +48,16 @@ impl Pass for FoldArithmetic {
     }
 
     fn did_change(&self) -> bool {
-        self.changed
+        self.changes.has_changed()
     }
 
     fn reset(&mut self) {
         self.values.clear();
-        self.changed = false;
+        self.changes.reset();
+    }
+
+    fn report(&self) -> HashMap<&'static str, usize> {
+        self.changes.as_map()
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
@@ -102,7 +112,7 @@ impl Pass for FoldArithmetic {
                         diff = sub_rhs_val - rhs_val,
                     );
 
-                    self.changed();
+                    self.changes.inc::<"add-sub-greater">();
 
                 // `add (sub x, y), z where y <= z => add x, (z - y)`
                 } else {
@@ -122,7 +132,7 @@ impl Pass for FoldArithmetic {
                         diff = rhs_val - sub_rhs_val,
                     );
 
-                    self.changed();
+                    self.changes.inc::<"add-sub-less-eq">();
                 }
             }
         }
@@ -162,7 +172,7 @@ impl Pass for FoldArithmetic {
                         diff = add_rhs_val - rhs_val,
                     );
 
-                    self.changed();
+                    self.changes.inc::<"sub-add-greater">();
 
                 // `sub (add x, y), z where y <= z => sub x, (z - y)`
                 } else {
@@ -182,13 +192,36 @@ impl Pass for FoldArithmetic {
                         diff = rhs_val - add_rhs_val,
                     );
 
-                    self.changed();
+                    self.changes.inc::<"sub-add-less-eq">();
                 }
             }
+        } else {
+            // (x - const) - const ≡ x - (const + const)
+            // (x - 1) - 1 ≡ x - (1 + 1) ≡ x - 2
+            let _: Option<()> = try {
+                let first_rhs = self.values.get(graph.input_source(sub.rhs()))?;
+
+                let lhs_sub = *graph.cast_input_source::<Sub>(sub.lhs())?;
+                let second_rhs = self.values.get(graph.input_source(lhs_sub.rhs()))?;
+
+                let sum = first_rhs + second_rhs;
+                let new_rhs = graph.constant(sum);
+                self.values.add(new_rhs.value(), sum);
+
+                graph.remove_inputs(sub.node());
+
+                let value = graph.input_source(lhs_sub.lhs());
+                graph.add_value_edge(value, sub.lhs());
+                graph.add_value_edge(new_rhs.value(), sub.rhs());
+
+                self.changes.inc::<"sub-sub">();
+            };
         }
     }
 
+    // TODO: Neg and not
     fn visit_neg(&mut self, _graph: &mut Rvsdg, _neg: Neg) {}
+    fn visit_not(&mut self, _graph: &mut Rvsdg, _not: Not) {}
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
@@ -205,10 +238,10 @@ impl Pass for FoldArithmetic {
         }
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.changes.combine(&visitor.changes);
 
         if changed {
             graph.replace_node(theta.node(), theta);
-            self.changed();
         }
     }
 
@@ -234,7 +267,10 @@ impl Pass for FoldArithmetic {
         }
 
         changed |= truthy_visitor.visit_graph(gamma.true_mut());
+        self.changes.combine(&truthy_visitor.changes);
+
         changed |= falsy_visitor.visit_graph(gamma.false_mut());
+        self.changes.combine(&falsy_visitor.changes);
 
         for (&port, &param) in gamma.outputs().iter().zip(gamma.output_params()) {
             let true_output = gamma.true_branch().input_source(
@@ -272,7 +308,6 @@ impl Pass for FoldArithmetic {
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
-            self.changed();
         }
     }
 }

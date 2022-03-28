@@ -492,7 +492,8 @@ fn debug(
            loads        : {}\n  \
            stores       : {}\n  \
            constants    : {}\n  \
-           io ops       : {}\n\
+           io ops       : {}\n  \
+           scans        : {}\n\
          Output:\n  \
            instructions : {}\n  \
            branches     : {}\n  \
@@ -500,7 +501,8 @@ fn debug(
            loads        : {}\n  \
            stores       : {}\n  \
            constants    : {}\n  \
-           io ops       : {}\n\
+           io ops       : {}\n  \
+           scans        : {}\n\
          Change:\n  \
            instructions : {:>+6.02}%\n  \
            branches     : {:>+6.02}%\n  \
@@ -508,7 +510,8 @@ fn debug(
            loads        : {:>+6.02}%\n  \
            stores       : {:>+6.02}%\n  \
            constants    : {:>+6.02}%\n  \
-           io ops       : {:>+6.02}%\n\n",
+           io ops       : {:>+6.02}%\n  \
+           scans        : {:>+6.02}%\n\n",
         pass_num,
         elapsed,
         input_graph_stats.instructions,
@@ -518,6 +521,7 @@ fn debug(
         input_graph_stats.stores,
         input_graph_stats.constants,
         input_graph_stats.io_ops,
+        input_graph_stats.scans,
         output_graph_stats.instructions,
         output_graph_stats.branches,
         output_graph_stats.loops,
@@ -525,6 +529,7 @@ fn debug(
         output_graph_stats.stores,
         output_graph_stats.constants,
         output_graph_stats.io_ops,
+        output_graph_stats.scans,
         difference.instructions,
         difference.branches,
         difference.loops,
@@ -532,6 +537,7 @@ fn debug(
         difference.stores,
         difference.constants,
         difference.io_ops,
+        difference.scans,
     );
 
     if let Some((unoptimized_stats, unoptimized_execution_duration)) = unoptimized_execution {
@@ -640,7 +646,8 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
            loads        : {}\n  \
            stores       : {}\n  \
            constants    : {}\n  \
-           io ops       : {}\n\
+           io ops       : {}\n  \
+           scans        : {}\n\
          Output:\n  \
            instructions : {}\n  \
            branches     : {}\n  \
@@ -648,7 +655,8 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
            loads        : {}\n  \
            stores       : {}\n  \
            constants    : {}\n  \
-           io ops       : {}\n\
+           io ops       : {}\n  \
+           scans        : {}\n\
          Change:\n  \
            instructions : {:>+6.02}%\n  \
            branches     : {:>+6.02}%\n  \
@@ -656,7 +664,8 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
            loads        : {:>+6.02}%\n  \
            stores       : {:>+6.02}%\n  \
            constants    : {:>+6.02}%\n  \
-           io ops       : {:>+6.02}%\
+           io ops       : {:>+6.02}%\n  \
+           scans        : {:>+6.02}%\n\
         ",
         opt_iters,
         elapsed,
@@ -667,6 +676,7 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
         input_stats.stores,
         input_stats.constants,
         input_stats.io_ops,
+        input_stats.scans,
         output_stats.instructions,
         output_stats.branches,
         output_stats.loops,
@@ -674,6 +684,7 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
         output_stats.stores,
         output_stats.constants,
         output_stats.io_ops,
+        output_stats.scans,
         difference.instructions,
         difference.branches,
         difference.loops,
@@ -681,6 +692,7 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
         difference.stores,
         difference.constants,
         difference.io_ops,
+        difference.scans,
     );
 
     let input = driver::stdin_input();

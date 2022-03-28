@@ -203,8 +203,20 @@ impl Theta {
             .debug_unwrap_none();
     }
 
-    pub fn has_invariant_input(&self, input: InputPort) -> bool {
+    pub fn contains_invariant_input(&self, input: InputPort) -> bool {
         self.invariant_inputs.contains_key(&input)
+    }
+
+    pub fn contains_variant_input(&self, input: InputPort) -> bool {
+        self.variant_inputs.contains_key(&input)
+    }
+
+    /// Returns `true` if the given [`InputParam`] is a variant input on the current
+    /// [`Theta`] node
+    pub fn contains_variant_input_param(&self, param: &InputParam) -> bool {
+        self.variant_inputs
+            .values()
+            .any(|&node| node == param.node())
     }
 
     pub fn retain_invariant_inputs<F>(&mut self, mut retain: F)
@@ -429,6 +441,31 @@ impl Theta {
             )
         })
     }
+
+    /// Returns `true` if the given [`OutputParam`] feeds back to the given variant [`InputParam`]
+    ///
+    /// Will return `false` if either of the given [`OutputParam`] or [`InputParam`]s don't exist
+    /// within the current [`Theta`] or if the given [`InputParam`] isn't a *variant* input.
+    pub(crate) fn output_feeds_back_to(
+        &self,
+        output: &OutputParam,
+        variant_input: &InputParam,
+    ) -> bool {
+        self.outputs
+            .iter()
+            .find(|(_, &output_id)| output_id == output.node())
+            .and_then(|(output_port, _)| self.output_feedback.get(output_port))
+            .and_then(|input_port| self.variant_inputs.get(input_port))
+            .map_or(false, |&input_node| input_node == variant_input.node())
+    }
+
+    /// Gets the [`InputPort`] of the parent [`Theta`] that feeds into the given variant [`InputParam`]
+    pub fn variant_input_source(&self, variant_input: &InputParam) -> Option<InputPort> {
+        self.variant_inputs
+            .iter()
+            .find(|(_, &input)| input == variant_input.node())
+            .map(|(&input_port, _)| input_port)
+    }
 }
 
 /// Utility functions
@@ -447,8 +484,8 @@ impl Theta {
         let condition_is_false = self
             .body()
             .input_source_node(cond.input())
-            .as_bool()
-            .map_or(false, |(_, value)| value);
+            .as_bool_value()
+            .unwrap_or(false);
 
         condition_is_false
     }
@@ -670,6 +707,7 @@ impl ThetaEffects {
         Self { input, output }
     }
 
+    #[allow(dead_code)]
     pub const fn output(&self) -> OutputPort {
         self.output
     }
@@ -692,32 +730,5 @@ impl ThetaData {
             condition,
             effect,
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ThetaStub {
-    output_effect: Option<OutputPort>,
-    outputs: TinyVec<[OutputPort; 5]>,
-}
-
-impl ThetaStub {
-    pub(in crate::graph) const fn new(
-        output_effect: Option<OutputPort>,
-        outputs: TinyVec<[OutputPort; 5]>,
-    ) -> Self {
-        Self {
-            output_effect,
-            outputs,
-        }
-    }
-
-    /// Get the output effect's port from the theta node if available
-    pub fn output_effect(&self) -> Option<OutputPort> {
-        self.output_effect
-    }
-
-    pub fn outputs(&self) -> &[OutputPort] {
-        &self.outputs
     }
 }

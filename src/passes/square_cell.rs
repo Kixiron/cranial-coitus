@@ -248,7 +248,7 @@ impl SquareCell {
         }
 
         // `src_val := load src_ptr`
-        let src_load = graph.cast_output_dest::<Load>(inner_gamma.effect_out())?;
+        let src_load = graph.cast_output_dest::<Load>(inner_gamma.output_effect())?;
         let src_ptr = graph.input_source(src_load.ptr());
 
         if src_ptr == temp0_ptr {
@@ -715,7 +715,7 @@ impl Pass for SquareCell {
                                 gamma.node(),
                             );
 
-                            let input_effect = graph.input_source(gamma.effect_in());
+                            let input_effect = graph.input_source(gamma.input_effect());
 
                             // `src_val := load src_ptr`
                             let src_load = graph.load(temp0_ptr, input_effect);
@@ -739,7 +739,10 @@ impl Pass for SquareCell {
                                 graph.store(temp1_ptr, zero, zero_temp0.output_effect());
 
                             // Wire the final store into the gamma's output effect
-                            graph.rewire_dependents(gamma.effect_out(), zero_temp1.output_effect());
+                            graph.rewire_dependents(
+                                gamma.output_effect(),
+                                zero_temp1.output_effect(),
+                            );
 
                             // FIXME: Patch up any output ports
 

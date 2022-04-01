@@ -1,7 +1,9 @@
 use crate::{
     graph::{Eq, Gamma, InputPort, Neq, Node, NodeExt, Rvsdg, Sub, Theta},
-    passes::{utils::Changes, Pass},
-    utils::HashMap,
+    passes::{
+        utils::{ChangeReport, Changes},
+        Pass,
+    },
 };
 
 pub struct Equality {
@@ -30,15 +32,15 @@ impl Pass for Equality {
     }
 
     fn did_change(&self) -> bool {
-        self.changes.has_changed()
+        self.changes.did_change()
     }
 
     fn reset(&mut self) {
         self.changes.reset();
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
-        self.changes.as_map()
+    fn report(&self) -> ChangeReport {
+        self.changes.as_report()
     }
 
     // Matches the motif of

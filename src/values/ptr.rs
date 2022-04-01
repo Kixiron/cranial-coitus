@@ -77,11 +77,37 @@ impl Ptr {
     }
 
     #[inline]
+    pub const fn wrapping_add_u8(self, other: u8) -> Self {
+        Self::from_raw(
+            (self.value() as i32 + other as i32).rem_euclid(self.tape_len() as i32) as u16,
+            self.tape_len(),
+        )
+    }
+
+    #[inline]
     pub const fn wrapping_add_u16(self, other: u16) -> Self {
         Self::from_raw(
             (self.value() as i32 + other as i32).rem_euclid(self.tape_len() as i32) as u16,
             self.tape_len(),
         )
+    }
+
+    #[inline]
+    pub const fn checked_add(self, other: Self) -> Option<Self> {
+        debug_assert!(self.tape_len() == other.tape_len());
+
+        match self.value().checked_add(other.value()) {
+            Some(value) if value < self.tape_len() => Some(Self::from_raw(value, self.tape_len())),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub const fn checked_add_u8(self, other: u8) -> Option<Self> {
+        match self.value().checked_add(other as u16) {
+            Some(value) if value < self.tape_len() => Some(Self::from_raw(value, self.tape_len())),
+            _ => None,
+        }
     }
 
     #[inline]
@@ -100,6 +126,48 @@ impl Ptr {
             (self.value() as i32 - other as i32).rem_euclid(self.tape_len() as i32) as u16,
             self.tape_len(),
         )
+    }
+
+    #[inline]
+    pub const fn wrapping_sub_u8(self, other: u8) -> Self {
+        Self::from_raw(
+            (self.value() as i32 - other as i32).rem_euclid(self.tape_len() as i32) as u16,
+            self.tape_len(),
+        )
+    }
+
+    #[inline]
+    pub const fn wrapping_sub_ptr_u8(lhs: u8, rhs: Self) -> Self {
+        Self::from_raw(
+            (lhs as i32 - rhs.value() as i32).rem_euclid(rhs.tape_len() as i32) as u16,
+            rhs.tape_len(),
+        )
+    }
+
+    #[inline]
+    pub const fn checked_sub(self, other: Self) -> Option<Self> {
+        debug_assert!(self.tape_len() == other.tape_len());
+
+        match self.value().checked_sub(other.value()) {
+            Some(value) if value < self.tape_len() => Some(Self::from_raw(value, self.tape_len())),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub const fn checked_sub_u8(self, other: u8) -> Option<Self> {
+        match self.value().checked_sub(other as u16) {
+            Some(value) if value < self.tape_len() => Some(Self::from_raw(value, self.tape_len())),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub const fn checked_sub_ptr_u8(lhs: u8, rhs: Self) -> Option<Self> {
+        match (lhs as u16).checked_sub(rhs.value()) {
+            Some(value) if value < rhs.tape_len() => Some(Self::from_raw(value, rhs.tape_len())),
+            _ => None,
+        }
     }
 
     #[inline]

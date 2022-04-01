@@ -1,7 +1,7 @@
 use crate::{
     graph::{Node, NodeExt, NodeId, Rvsdg},
-    passes::Pass,
-    utils::{HashMap, HashSet},
+    passes::{utils::ChangeReport, Pass},
+    utils::{HashSet},
 };
 use std::collections::VecDeque;
 
@@ -210,7 +210,7 @@ impl Pass for Dce {
         self.changed = false;
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
+    fn report(&self) -> ChangeReport {
         map! {
             "dead nodes" => self.nodes_removed,
         }

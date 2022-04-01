@@ -4,7 +4,10 @@ use crate::{
         Rvsdg, Store, Theta,
     },
     ir::Const,
-    passes::{utils::Changes, Pass},
+    passes::{
+        utils::{ChangeReport, Changes},
+        Pass,
+    },
     utils::{AssertNone, HashMap},
     values::{Cell, Ptr},
 };
@@ -105,7 +108,7 @@ impl Pass for Dataflow {
     }
 
     fn did_change(&self) -> bool {
-        self.changes.has_changed()
+        self.changes.did_change()
     }
 
     fn reset(&mut self) {
@@ -121,8 +124,8 @@ impl Pass for Dataflow {
         }
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
-        self.changes.as_map()
+    fn report(&self) -> ChangeReport {
+        self.changes.as_report()
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {

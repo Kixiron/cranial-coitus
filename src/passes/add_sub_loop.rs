@@ -4,8 +4,11 @@ use crate::{
         Sub, Theta,
     },
     ir::Const,
-    passes::{utils::Changes, Pass},
-    utils::{AssertNone, HashMap},
+    passes::{
+        utils::{ChangeReport, Changes},
+        Pass,
+    },
+    utils::{AssertNone},
     values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
@@ -218,7 +221,7 @@ impl Pass for AddSubLoop {
     }
 
     fn did_change(&self) -> bool {
-        self.changes.has_changed()
+        self.changes.did_change()
     }
 
     fn reset(&mut self) {
@@ -226,8 +229,8 @@ impl Pass for AddSubLoop {
         self.changes.reset();
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
-        self.changes.as_map()
+    fn report(&self) -> ChangeReport {
+        self.changes.as_report()
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {

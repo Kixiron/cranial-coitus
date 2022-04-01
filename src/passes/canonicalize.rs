@@ -1,7 +1,9 @@
 use crate::{
     graph::{Add, Bool, Byte, Eq, Gamma, Int, Mul, Neq, NodeExt, Not, OutputPort, Rvsdg, Theta},
-    passes::{utils::Changes, Pass},
-    utils::HashMap,
+    passes::{
+        utils::{ChangeReport, Changes},
+        Pass,
+    },
     values::{Cell, Ptr},
 };
 use std::{collections::BTreeSet, mem::swap};
@@ -28,7 +30,7 @@ impl Pass for Canonicalize {
     }
 
     fn did_change(&self) -> bool {
-        self.changes.has_changed()
+        self.changes.did_change()
     }
 
     fn reset(&mut self) {
@@ -36,8 +38,8 @@ impl Pass for Canonicalize {
         self.changes.reset();
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
-        self.changes.as_map()
+    fn report(&self) -> ChangeReport {
+        self.changes.as_report()
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, _: Ptr) {

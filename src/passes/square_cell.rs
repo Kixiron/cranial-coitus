@@ -4,8 +4,8 @@ use crate::{
         OutputPort, Rvsdg, Start, Store, Sub, Theta,
     },
     ir::Const,
-    passes::Pass,
-    utils::{AssertNone, HashMap},
+    passes::{utils::ChangeReport, Pass},
+    utils::{AssertNone},
     values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
@@ -515,7 +515,7 @@ impl Pass for SquareCell {
         self.changed = false;
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
+    fn report(&self) -> ChangeReport {
         map! {
             "square loops" => self.squares_removed,
         }

@@ -4,8 +4,8 @@ use crate::{
         Store, Theta,
     },
     ir::Const,
-    passes::Pass,
-    utils::{AssertNone, HashMap},
+    passes::{utils::ChangeReport, Pass},
+    utils::{AssertNone},
     values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
@@ -78,7 +78,7 @@ impl Pass for Mem2Reg {
         self.changed
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
+    fn report(&self) -> ChangeReport {
         map! {
             "constant loads" => self.constant_loads_elided,
             "loads" => self.loads_elided,

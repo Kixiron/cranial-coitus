@@ -4,8 +4,10 @@ use crate::{
         Theta,
     },
     ir::Const,
-    passes::{utils::Changes, Pass},
-    utils::HashMap,
+    passes::{
+        utils::{ChangeReport, Changes},
+        Pass,
+    },
 };
 
 pub struct ScanLoops {
@@ -144,15 +146,15 @@ impl Pass for ScanLoops {
     }
 
     fn did_change(&self) -> bool {
-        self.changes.has_changed()
+        self.changes.did_change()
     }
 
     fn reset(&mut self) {
         self.changes.reset()
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
-        self.changes.as_map()
+    fn report(&self) -> ChangeReport {
+        self.changes.as_report()
     }
 
     // ```

@@ -3,8 +3,10 @@ use crate::{
         Add, Bool, Byte, Gamma, InputParam, Int, Load, Neq, Node, NodeExt, OutputPort, Rvsdg,
         Start, Store, Theta,
     },
-    passes::{utils::ConstantStore, Pass},
-    utils::HashMap,
+    passes::{
+        utils::{ChangeReport, ConstantStore},
+        Pass,
+    },
     values::{Cell, Ptr},
 };
 
@@ -345,7 +347,7 @@ impl Pass for ShiftCell {
         self.changed = false;
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
+    fn report(&self) -> ChangeReport {
         map! {
             "shift loops" => self.shifts_removed,
         }

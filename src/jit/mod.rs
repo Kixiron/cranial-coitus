@@ -14,7 +14,7 @@ pub use ffi::State;
 pub use memory::Executable;
 
 use crate::{
-    args::Args,
+    args::Settings,
     ir::{Block, Pretty, PrettyConfig},
     jit::codegen::Codegen,
 };
@@ -62,7 +62,7 @@ pub struct Jit<'a> {
 
 impl<'a> Jit<'a> {
     /// Create a new jit
-    pub fn new(args: &Args, dump_dir: &'a Path, file_name: &'a str) -> Result<Self> {
+    pub fn new(settings: &Settings, dump_dir: &'a Path, file_name: &'a str) -> Result<Self> {
         let isa = build_isa()?;
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
@@ -75,7 +75,7 @@ impl<'a> Jit<'a> {
         ]);
 
         // If tape wrapping is UB, we can use our functions that take advantage of it
-        if args.tape_wrapping_ub {
+        if settings.tape_wrapping_ub {
             builder.symbols([
                 ("scanr", ffi::scanr_non_wrapping as *const u8),
                 ("scanl", ffi::scanl_non_wrapping as *const u8),
@@ -102,7 +102,7 @@ impl<'a> Jit<'a> {
             ctx,
             data_ctx,
             module,
-            tape_len: args.tape_len,
+            tape_len: settings.tape_len.get(),
             dump_dir,
             file_name,
         })

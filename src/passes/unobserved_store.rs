@@ -1,7 +1,9 @@
 use crate::{
     graph::{Bool, Byte, EdgeKind, Gamma, Int, NodeExt, Rvsdg, Store, Theta},
-    passes::{utils::ConstantStore, Pass},
-    utils::HashMap,
+    passes::{
+        utils::{ChangeReport, ConstantStore},
+        Pass,
+    },
     values::{Cell, Ptr},
 };
 
@@ -55,7 +57,7 @@ impl Pass for UnobservedStore {
         self.within_gamma = false;
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
+    fn report(&self) -> ChangeReport {
         map! {
             "unobserved stores" => self.unobserved_stores_removed,
         }

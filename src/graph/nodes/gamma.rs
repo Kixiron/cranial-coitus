@@ -144,6 +144,40 @@ impl Gamma {
 
         (input, [true_param, false_param])
     }
+
+    pub fn paired_inputs(&self) -> impl Iterator<Item = (InputPort, [NodeId; 2])> + '_ {
+        self.inputs()
+            .iter()
+            .copied()
+            .zip(self.input_params().iter().copied())
+    }
+
+    pub fn true_input_pairs(&self) -> impl Iterator<Item = (InputPort, NodeId)> + '_ {
+        self.paired_inputs()
+            .map(|(input, [true_param, _])| (input, true_param))
+    }
+
+    pub fn false_input_pairs(&self) -> impl Iterator<Item = (InputPort, NodeId)> + '_ {
+        self.paired_inputs()
+            .map(|(input, [_, false_param])| (input, false_param))
+    }
+
+    pub fn paired_outputs(&self) -> impl Iterator<Item = (OutputPort, [NodeId; 2])> + '_ {
+        self.outputs()
+            .iter()
+            .copied()
+            .zip(self.output_params().iter().copied())
+    }
+
+    pub fn true_output_pairs(&self) -> impl Iterator<Item = (OutputPort, NodeId)> + '_ {
+        self.paired_outputs()
+            .map(|(output, [true_param, _])| (output, true_param))
+    }
+
+    pub fn false_output_pairs(&self) -> impl Iterator<Item = (OutputPort, NodeId)> + '_ {
+        self.paired_outputs()
+            .map(|(output, [_, false_param])| (output, false_param))
+    }
 }
 
 impl NodeExt for Gamma {

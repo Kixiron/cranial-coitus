@@ -4,10 +4,9 @@ use crate::{
         Sub, Theta,
     },
     passes::{
-        utils::{Changes, ConstantStore},
+        utils::{ChangeReport, Changes, ConstantStore},
         Pass,
     },
-    utils::HashMap,
     values::{Cell, Ptr},
 };
 
@@ -48,7 +47,7 @@ impl Pass for FoldArithmetic {
     }
 
     fn did_change(&self) -> bool {
-        self.changes.has_changed()
+        self.changes.did_change()
     }
 
     fn reset(&mut self) {
@@ -56,8 +55,8 @@ impl Pass for FoldArithmetic {
         self.changes.reset();
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
-        self.changes.as_map()
+    fn report(&self) -> ChangeReport {
+        self.changes.as_report()
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {

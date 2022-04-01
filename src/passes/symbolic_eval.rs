@@ -2,8 +2,11 @@ use crate::{
     graph::{Bool, Byte, Gamma, Int, Load, NodeExt, OutputPort, PortId, Rvsdg, Store, Theta},
     interpreter::Machine,
     ir::{IrBuilder, Pretty, PrettyConfig, Value, VarId},
-    passes::{utils::ConstantStore, Pass},
-    utils::{self, AssertNone, HashMap},
+    passes::{
+        utils::{ChangeReport, ConstantStore},
+        Pass,
+    },
+    utils::{self, AssertNone},
     values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
@@ -234,7 +237,7 @@ impl Pass for SymbolicEval {
         self.zero_tape();
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
+    fn report(&self) -> ChangeReport {
         map! {
             "evaluated outputs" => self.evaluated_outputs,
             "evaluated thetas" => self.evaluated_thetas,

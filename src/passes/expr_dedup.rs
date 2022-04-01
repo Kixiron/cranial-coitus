@@ -1,7 +1,7 @@
 use crate::{
     graph::{Bool, Gamma, InputParam, Int, Load, NodeExt, OutputPort, Rvsdg, Theta},
     ir::Const,
-    passes::Pass,
+    passes::{utils::ChangeReport, Pass},
     utils::{AssertNone, HashMap},
     values::Ptr,
 };
@@ -57,7 +57,7 @@ impl Pass for ExprDedup {
         self.changed = false;
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
+    fn report(&self) -> ChangeReport {
         map! {
             "deduplicated loads" => self.deduplicated_loads,
         }

@@ -1,7 +1,9 @@
 use crate::{
     graph::{EdgeKind, Gamma, Input, NodeExt, Output, Rvsdg, Theta},
-    passes::{utils::Changes, Pass},
-    utils::HashMap,
+    passes::{
+        utils::{ChangeReport, Changes},
+        Pass,
+    },
 };
 
 pub struct FuseIO {
@@ -22,15 +24,15 @@ impl Pass for FuseIO {
     }
 
     fn did_change(&self) -> bool {
-        self.changes.has_changed()
+        self.changes.did_change()
     }
 
     fn reset(&mut self) {
         self.changes.reset();
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
-        self.changes.as_map()
+    fn report(&self) -> ChangeReport {
+        self.changes.as_report()
     }
 
     // FIXME: Would need to return some sort of aggregate type from the input

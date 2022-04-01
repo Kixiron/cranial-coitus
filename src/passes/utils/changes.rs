@@ -1,5 +1,7 @@
 use crate::utils::{AssertNone, HashMap};
 
+pub type ChangeReport = HashMap<&'static str, usize>;
+
 #[derive(Debug)]
 pub struct Changes<const LEN: usize> {
     changes: [(&'static str, usize); LEN],
@@ -15,7 +17,7 @@ impl<const LEN: usize> Changes<LEN> {
         }
     }
 
-    pub fn has_changed(&self) -> bool {
+    pub fn did_change(&self) -> bool {
         self.has_changed
     }
 
@@ -48,12 +50,12 @@ impl<const LEN: usize> Changes<LEN> {
         }
     }
 
-    pub fn as_map(&self) -> HashMap<&'static str, usize> {
-        let mut map = HashMap::with_capacity_and_hasher(LEN, Default::default());
+    pub fn as_report(&self) -> ChangeReport {
+        let mut report = HashMap::with_capacity_and_hasher(LEN, Default::default());
         for (name, total) in self.changes {
-            map.insert(name, total).debug_unwrap_none();
+            report.insert(name, total).debug_unwrap_none();
         }
 
-        map
+        report
     }
 }

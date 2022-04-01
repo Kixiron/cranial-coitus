@@ -31,7 +31,7 @@ mod tests;
 mod values;
 
 use crate::{
-    args::{Args, Command},
+    args::{Args, Settings},
     graph::{EdgeKind, Node, NodeExt, Rvsdg},
     interpreter::EvaluationError,
     ir::{IrBuilder, Pretty, PrettyConfig},
@@ -51,54 +51,39 @@ use std::{
     time::{Duration, Instant},
 };
 
-// TODO: Write an evaluator so that we can actually verify optimizations
-// TODO: Codegen via https://docs.rs/iced-x86/1.15.0/iced_x86/index.html
 // TODO: Generate ELK text files
-//       https://rtsys.informatik.uni-kiel.de/elklive/elkgraph.html
-//       https://github.com/eclipse/elk/pull/106
-//       https://rtsys.informatik.uni-kiel.de/elklive/examples.html
-//       https://rtsys.informatik.uni-kiel.de/elklive/elkgraph.html?compressedContent=IYGw5g9gTglgLgCwLYC4AEJgE8CmUcAmAUEQHYQE5qI5zBoDeRaLaOIA1gHQEz4DGcGBFLoAIgHkA6gDlmrAA7Q4AYREBnOFGAxScdegBiAJQCip+S3KUAMsABG7dVwWZ+OJDj3oARAEkZAGU-MVM0ADUAfQAVCQAFNAAJSJtTQ2ifSzQlKDgAQRAYMFJPPR4cADNgAFcQOHE-QOjjPwAhAFVo0zEs3XUYSkD2CpsICAVnYEEYADdgOBx0LWqcElYMB3Y0HwBxYCQkYEysnLg0XQVquABGRiz1gD1Trn7KdBkJY2jErIBfE+U51IlzgACY7utHs9Xos0B8vj91v91qc0Jp5jhIroIZCWE9lC8BrD4d8-mtWNYqMACAQcbjKXZHCBnK4ph4vPVtgFgqEIpEVKYZF1jEl+YLhZlcSxTgUiiUOeUqrVOWJGs02p1uuTcZgmds8jTjlLsoCQAh1HTjWh8blCW84Z9SVbWLqtj4zepJVLkVLUVBzZbjTa4HbiY7Ec6NnqfP7PfdWP949LAXMQCtA1Lg6H0IEJJ0I7ifSxEyjARAriDbkwg9CiTm806EwDcmi6AtIuWztXM7X7bn82SsoQwFQaHQuBcrrcALQAPjQ1IIXA9Q4II+oCFowAnwKu4LnC5pXFjq-Xi64qfTB7H287laIieHo8347vU7Q15f28nYKIT43W4vG2mLYp+gHou2naWn0RJDCAIxjBMXBYBASxQCsD5EEAA
+// https://rtsys.informatik.uni-kiel.de/elklive/elkgraph.html
+// https://github.com/eclipse/elk/pull/106
+// https://rtsys.informatik.uni-kiel.de/elklive/examples.html
+// https://rtsys.informatik.uni-kiel.de/elklive/elkgraph.html?compressedContent=IYGw5g9gTglgLgCwLYC4AEJgE8CmUcAmAUEQHYQE5qI5zBoDeRaLaOIA1gHQEz4DGcGBFLoAIgHkA6gDlmrAA7Q4AYREBnOFGAxScdegBiAJQCip+S3KUAMsABG7dVwWZ+OJDj3oARAEkZAGU-MVM0ADUAfQAVCQAFNAAJSJtTQ2ifSzQlKDgAQRAYMFJPPR4cADNgAFcQOHE-QOjjPwAhAFVo0zEs3XUYSkD2CpsICAVnYEEYADdgOBx0LWqcElYMB3Y0HwBxYCQkYEysnLg0XQVquABGRiz1gD1Trn7KdBkJY2jErIBfE+U51IlzgACY7utHs9Xos0B8vj91v91qc0Jp5jhIroIZCWE9lC8BrD4d8-mtWNYqMACAQcbjKXZHCBnK4ph4vPVtgFgqEIpEVKYZF1jEl+YLhZlcSxTgUiiUOeUqrVOWJGs02p1uuTcZgmds8jTjlLsoCQAh1HTjWh8blCW84Z9SVbWLqtj4zepJVLkVLUVBzZbjTa4HbiY7Ec6NnqfP7PfdWP949LAXMQCtA1Lg6H0IEJJ0I7ifSxEyjARAriDbkwg9CiTm806EwDcmi6AtIuWztXM7X7bn82SsoQwFQaHQuBcrrcALQAPjQ1IIXA9Q4II+oCFowAnwKu4LnC5pXFjq-Xi64qfTB7H287laIieHo8347vU7Q15f28nYKIT43W4vG2mLYp+gHou2naWn0RJDCAIxjBMXBYBASxQCsD5EEAA
 fn main() -> Result<()> {
     utils::set_logger();
 
     let start_time = Instant::now();
 
     let args = Args::parse();
-    match &args.command {
-        Command::Run { file, no_opt } => run(&args, file, *no_opt, start_time),
-        &Command::Debug {
-            ref file,
-            only_final_run,
-            no_step_limit,
-        } => debug(&args, file, only_final_run, no_step_limit, start_time),
+    tracing::info!(?args, "launched with cli arguments");
+
+    match &args {
+        Args::Run { file, settings } => run(settings, file, start_time),
+        Args::Debug { file, settings } => debug(settings, file, start_time),
     }
 }
 
-fn debug(
-    args: &Args,
-    file: &Path,
-    only_final_run: bool,
-    no_step_limit: bool,
-    start_time: Instant,
-) -> Result<()> {
-    let step_limit = if no_step_limit {
-        usize::MAX
-    } else {
-        args.step_limit.unwrap_or(300_000)
-    };
-
+fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
+    let step_limit = settings.step_limit();
     let source = fs::read_to_string(file).expect("failed to read file");
-    let dump_dir = Path::new("./dumps").join(file.with_extension("").file_name().unwrap());
 
+    let dump_dir = Path::new("./dumps").join(file.with_extension("").file_name().unwrap());
     driver::create_dump_dir(&dump_dir)?;
 
     // Parse the input program and turn it into a graph
     let tokens = driver::parse_source(file, &source);
-    let mut graph = driver::build_graph(&tokens, args.tape_len);
+    let mut graph = driver::build_graph(&tokens, settings.tape_len.get());
 
     // Sequentialize the input program
     let (mut input_program, input_program_ir) = driver::sequentialize_graph(
-        args,
+        settings,
         &graph,
         Some(&dump_dir.join("input.cir")),
         PrettyConfig::minimal(),
@@ -109,11 +94,11 @@ fn debug(
     // Note: This happens *after* we print out the initial graph for better debugging
     validate(&graph);
 
-    let unoptimized_execution = if !only_final_run {
+    let unoptimized_execution = if settings.run_unoptimized_program {
         let compile_attempt: Result<Result<_>, _> = panic::catch_unwind(|| {
-            let jit = Jit::new(args, &dump_dir, "input")?.compile(&input_program)?;
+            let jit = Jit::new(settings, &dump_dir, "input")?.compile(&input_program)?;
 
-            let mut tape = vec![0x00; args.tape_len as usize];
+            let mut tape = vec![0x00; settings.tape_len.get() as usize];
             let start = Instant::now();
 
             // Safety: Decidedly not safe in the slightest
@@ -149,7 +134,7 @@ fn debug(
 
         let (result, tape, stats, execution_duration) = driver::execute(
             step_limit,
-            args.tape_len,
+            settings.tape_len.get(),
             input,
             output,
             false,
@@ -223,7 +208,11 @@ fn debug(
     let mut evolution = BufWriter::new(File::create(dump_dir.join("evolution.diff")).unwrap());
     write!(evolution, ">>>>> input\n{}", input_program_ir).unwrap();
 
-    let mut passes = passes::default_passes(args.tape_len);
+    let mut passes = passes::default_passes(
+        settings.tape_len.get(),
+        !settings.tape_wrapping_ub,
+        !settings.cell_wrapping_ub,
+    );
     let (mut pass_stats, mut pass_num, mut stack, mut visited, mut buffer, mut previous_program_ir) = (
         HashMap::with_capacity_and_hasher(passes.len(), Default::default()),
         1,
@@ -277,7 +266,7 @@ fn debug(
                 stack.clear();
 
                 let (_output_program, output_program_ir) =
-                    driver::sequentialize_graph(args, &graph, None, PrettyConfig::minimal())?;
+                    driver::sequentialize_graph(settings, &graph, None, PrettyConfig::minimal())?;
 
                 let diff = utils::diff_ir(&previous_program_ir, &output_program_ir);
 
@@ -311,7 +300,7 @@ fn debug(
         }
 
         pass_num += 1;
-        if !changed || pass_num >= args.iteration_limit.unwrap_or(usize::MAX) {
+        if !changed || pass_num >= settings.iteration_limit.unwrap_or(usize::MAX) {
             break;
         }
     }
@@ -394,13 +383,13 @@ fn debug(
 
     let output_graph_stats = graph.stats();
     let (mut output_program, output_program_ir) = driver::sequentialize_graph(
-        args,
+        settings,
         &graph,
         Some(&dump_dir.join("output.cir")),
         PrettyConfig::instrumented(output_graph_stats.instructions),
     )?;
 
-    if args.print_output_ir {
+    if settings.print_output_ir {
         print!("{}", output_program_ir);
     }
 
@@ -424,7 +413,7 @@ fn debug(
 
         let (result, tape, stats, execution_duration) = driver::execute(
             step_limit,
-            args.tape_len,
+            settings.tape_len.get(),
             input,
             output,
             true,
@@ -565,9 +554,9 @@ fn debug(
         output_program.pretty_print(PrettyConfig::instrumented(optimized_stats.instructions));
     fs::write(dump_dir.join("annotated_output.cir"), annotated_program)?;
 
-    let jit = Jit::new(args, &dump_dir, "output")?.compile(&output_program)?;
+    let jit = Jit::new(settings, &dump_dir, "output")?.compile(&output_program)?;
 
-    let mut tape = vec![0x00; args.tape_len as usize];
+    let mut tape = vec![0x00; settings.tape_len.get() as usize];
     let start = Instant::now();
 
     // Safety: It probably isn't lol, my codegen is garbage
@@ -580,9 +569,8 @@ fn debug(
     Ok(())
 }
 
-fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()> {
-    let step_limit = args.step_limit.unwrap_or(usize::MAX);
-
+fn run(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
+    let step_limit = settings.step_limit();
     let contents = fs::read_to_string(file).expect("failed to read file");
 
     let mut graph = {
@@ -605,10 +593,10 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
         let start = graph.start();
 
         let effect = start.effect();
-        let ptr = graph.int(Ptr::zero(args.tape_len)).value();
+        let ptr = graph.int(Ptr::zero(settings.tape_len.get())).value();
 
         let (_ptr, effect) =
-            lower_tokens::lower_tokens(&mut graph, ptr, effect, &tokens, args.tape_len);
+            lower_tokens::lower_tokens(&mut graph, ptr, effect, &tokens, settings.tape_len.get());
         graph.end(effect);
 
         let elapsed = graph_building_start.elapsed();
@@ -620,17 +608,19 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
     let input_stats = graph.stats();
     validate(&graph);
 
-    let opt_iters = if no_opt {
+    let opt_iters = if settings.disable_optimizations {
         0
     } else {
         driver::run_opt_passes(
             &mut graph,
-            args.tape_len,
-            args.iteration_limit.unwrap_or(usize::MAX),
+            settings.tape_len.get(),
+            settings.iteration_limit.unwrap_or(usize::MAX),
+            !settings.tape_wrapping_ub,
+            !settings.cell_wrapping_ub,
         )
     };
 
-    let mut program = IrBuilder::new(!args.dont_inline_constants).translate(&graph);
+    let mut program = IrBuilder::new(!settings.dont_inline_constants).translate(&graph);
     let elapsed = start_time.elapsed();
 
     let output_stats = graph.stats();
@@ -697,8 +687,14 @@ fn run(args: &Args, file: &Path, no_opt: bool, start_time: Instant) -> Result<()
 
     let input = driver::stdin_input();
     let output = driver::stdout_output();
-    let (result, _, stats, execution_duration) =
-        driver::execute(step_limit, args.tape_len, input, output, true, &mut program);
+    let (result, _, stats, execution_duration) = driver::execute(
+        step_limit,
+        settings.tape_len.get(),
+        input,
+        output,
+        true,
+        &mut program,
+    );
 
     // FIXME: Utility function
     match result {

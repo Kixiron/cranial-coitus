@@ -4,5 +4,5 @@ mod constant_store;
 // mod domain;
 
 pub use bin_op::BinOp;
-pub use changes::Changes;
+pub use changes::{ChangeReport, Changes};
 pub use constant_store::ConstantStore;

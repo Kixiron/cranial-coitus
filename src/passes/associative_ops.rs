@@ -4,10 +4,10 @@ use crate::{
     },
     ir::Const,
     passes::{
-        utils::{BinOp, Changes, ConstantStore},
+        utils::{BinOp, ChangeReport, Changes, ConstantStore},
         Pass,
     },
-    utils::{HashMap, HashSet},
+    utils::HashSet,
     values::{Cell, Ptr},
 };
 
@@ -135,7 +135,7 @@ impl Pass for AssociativeOps {
     }
 
     fn did_change(&self) -> bool {
-        self.changes.has_changed()
+        self.changes.did_change()
     }
 
     fn reset(&mut self) {
@@ -144,8 +144,8 @@ impl Pass for AssociativeOps {
         self.changes.reset();
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
-        self.changes.as_map()
+    fn report(&self) -> ChangeReport {
+        self.changes.as_report()
     }
 
     fn post_visit_graph(&mut self, graph: &mut Rvsdg, _visited: &HashSet<NodeId>) {

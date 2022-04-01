@@ -1,16 +1,34 @@
 use clap::Parser;
-use std::path::PathBuf;
+use std::{num::NonZeroU16, path::PathBuf};
 
 #[derive(Debug, Parser)]
 #[clap(rename_all = "kebab-case")]
-pub struct Args {
-    /// The command to run
-    #[clap(subcommand)]
-    pub command: Command,
+pub enum Args {
+    /// Optimize and execute a brainfuck file
+    Run {
+        /// The file to run
+        file: PathBuf,
 
+        #[clap(flatten)]
+        settings: Settings,
+    },
+
+    /// Optimize and run a brainfuck file along with all intermediate steps
+    Debug {
+        /// The file to debug
+        file: PathBuf,
+
+        #[clap(flatten)]
+        settings: Settings,
+    },
+}
+
+#[derive(Debug, Parser)]
+#[clap(rename_all = "kebab-case")]
+pub struct Settings {
     /// The length of the program tape
     #[clap(long, default_value = "30000")]
-    pub tape_len: u16,
+    pub tape_len: NonZeroU16,
 
     /// The maximum number of optimization iterations
     #[clap(long)]
@@ -36,82 +54,32 @@ pub struct Args {
     /// or below zero the operation will instead be UB
     #[clap(long)]
     pub tape_wrapping_ub: bool,
-}
 
-#[derive(Debug, Parser)]
-#[clap(rename_all = "kebab-case")]
-pub enum Command {
-    /// Optimize and execute a brainfuck file
-    Run {
-        /// The file to run
-        file: PathBuf,
-
-        /// Disable optimizations
-        #[clap(long)]
-        no_opt: bool,
-    },
-
-    /// Optimize and run a brainfuck file along with all intermediate steps
-    Debug {
-        /// The file to debug
-        file: PathBuf,
-
-        /// Only run the final optimized program
-        #[clap(long)]
-        only_final_run: bool,
-
-        /// Remove the interpreter's step limit
-        #[clap(long)]
-        no_step_limit: bool,
-    },
-}
-
-#[derive(Parser)]
-#[clap(rename_all = "kebab-case")]
-pub struct Run {
-    /// The file to execute
-    pub file: PathBuf,
-
-    /// The length of the program tape
-    #[clap(long, default_value = "30000")]
-    pub cells: u16,
-
-    /// The maximum number of optimization iterations
+    /// If this is set, then cell wrapping is disabled. This allows
+    /// greater optimizations and forbids programs that overflow
+    /// or underflow within cells
     #[clap(long)]
-    pub iteration_limit: Option<usize>,
+    pub cell_wrapping_ub: bool,
 
-    /// The interpreter's step limit
+    /// Disables all optimizations
     #[clap(long)]
-    pub step_limit: Option<usize>,
-}
+    pub disable_optimizations: bool,
 
-#[derive(Parser)]
-#[clap(rename_all = "kebab-case")]
-pub struct Debug {
-    /// The file to debug
-    pub file: PathBuf,
-
-    /// The length of the program tape
-    #[clap(long, default_value = "30000")]
-    pub tape_len: u16,
-
-    /// The maximum number of optimization iterations
+    /// Run the unoptimized program before optimizing and running it again
     #[clap(long)]
-    pub iteration_limit: Option<usize>,
+    pub run_unoptimized_program: bool,
 
-    /// The interpreter's step limit
-    #[clap(long, default_value = "300000")]
-    pub step_limit: usize,
-
-    /// Only run the final optimized program
-    #[clap(long)]
-    pub only_final_run: bool,
-
-    /// Removes execution step limits
+    /// Remove the interpreter's step limit
     #[clap(long)]
     pub no_step_limit: bool,
+}
 
-    /// Prints the final optimized IR
-    #[clap(long)]
-    pub print_output_ir: bool,
+impl Settings {
+    pub fn step_limit(&self) -> usize {
+        if self.no_step_limit {
+            usize::MAX
+        } else {
+            self.step_limit.unwrap_or(usize::MAX)
+        }
+    }
 }

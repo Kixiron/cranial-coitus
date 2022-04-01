@@ -3,8 +3,10 @@ use crate::{
         AddOrSub, Bool, Byte, EdgeKind, End, Eq, Gamma, InputParam, InputPort, Int, Load, Neq,
         Node, NodeExt, OutputPort, Rvsdg, Start, Store, Theta,
     },
-    passes::{utils::ConstantStore, Pass},
-    utils::HashMap,
+    passes::{
+        utils::{ChangeReport, ConstantStore},
+        Pass,
+    },
     values::{Cell, Ptr},
 };
 
@@ -310,7 +312,7 @@ impl Pass for ZeroLoop {
         self.changed = false;
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
+    fn report(&self) -> ChangeReport {
         map! {
             "zero loops" => self.zero_loops_removed,
             "zero gammas" => self.zero_gammas_removed,

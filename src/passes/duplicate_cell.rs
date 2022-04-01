@@ -4,7 +4,10 @@ use crate::{
         Sub, Theta,
     },
     ir::Const,
-    passes::{utils::BinOp, Pass},
+    passes::{
+        utils::{BinOp, ChangeReport},
+        Pass,
+    },
     utils::{AssertNone, HashMap},
     values::{Cell, Ptr},
 };
@@ -406,7 +409,7 @@ impl Pass for DuplicateCell {
         self.changed = false;
     }
 
-    fn report(&self) -> HashMap<&'static str, usize> {
+    fn report(&self) -> ChangeReport {
         map! {
             "cell duplications" => self.duplicates_removed,
         }

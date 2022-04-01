@@ -3,6 +3,7 @@ mod associative_ops;
 mod canonicalize;
 mod const_folding;
 mod dataflow;
+mod dataflow_v2;
 mod dce;
 mod duplicate_cell;
 mod eliminate_const_gamma;
@@ -25,6 +26,7 @@ pub use associative_ops::AssociativeOps;
 pub use canonicalize::Canonicalize;
 pub use const_folding::ConstFolding;
 pub use dataflow::Dataflow;
+pub use dataflow_v2::{Dataflow as DataflowV2, DataflowSettings};
 pub use dce::Dce;
 pub use duplicate_cell::DuplicateCell;
 pub use eliminate_const_gamma::ElimConstGamma;
@@ -46,14 +48,19 @@ use crate::{
         Add, Bool, Byte, End, Eq, Gamma, Input, InputParam, Int, Load, Mul, Neg, Neq, Node,
         NodeExt, NodeId, Not, Output, OutputParam, Rvsdg, Scan, Start, Store, Sub, Theta,
     },
-    utils::{HashMap, HashSet},
+    passes::utils::ChangeReport,
+    utils::HashSet,
     values::{Cell, Ptr},
 };
-use std::collections::VecDeque;
+use std::{cell::RefCell, collections::VecDeque};
 
 // TODO: Genetic algorithm for pass ordering
 //       https://kunalspathak.github.io/2021-07-22-Genetic-Algorithms-In-LSRA/
-pub fn default_passes(tape_len: u16) -> Vec<Box<dyn Pass>> {
+pub fn default_passes(
+    tape_len: u16,
+    tape_operations_wrap: bool,
+    cell_operations_wrap: bool,
+) -> Vec<Box<dyn Pass>> {
     bvec![
         UnobservedStore::new(tape_len),
         ConstFolding::new(tape_len),
@@ -66,7 +73,7 @@ pub fn default_passes(tape_len: u16) -> Vec<Box<dyn Pass>> {
         FuseIO::new(),
         ScanLoops::new(),
         Dce::new(),
-        Dataflow::new(tape_len),
+        // Dataflow::new(tape_len),
         ElimConstGamma::new(),
         ConstFolding::new(tape_len),
         SquareCell::new(tape_len),
@@ -75,17 +82,23 @@ pub fn default_passes(tape_len: u16) -> Vec<Box<dyn Pass>> {
         DuplicateCell::new(tape_len),
         Equality::new(),
         ExprDedup::new(),
-        Dce::new(),
+        DataflowV2::new(DataflowSettings::new(
+            tape_len,
+            tape_operations_wrap,
+            cell_operations_wrap
+        )),
         Canonicalize::new(),
+        Dce::new(),
     ]
 }
 
+thread_local! {
+    /// A cache to hold buffers for visitors to reuse
+    #[allow(clippy::type_complexity)]
+    static VISIT_GRAPH_CACHE: RefCell<Vec<(VecDeque<NodeId>, HashSet<NodeId>, Vec<NodeId>)>> = RefCell::new(Vec::new());
+}
+
 // TODO:
-// - Normalization pass
-// - Addition https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.2B_y
-// - Subtraction https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_-_y
-// - Copy https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_y
-// - Multiplication https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.2A_y
 // - Squared https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.2A_x
 // - Division https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.2F_y
 // - Xor https://esolangs.org/wiki/Brainfuck_algorithms#x_.3D_x_.5E_y
@@ -118,7 +131,6 @@ pub fn default_passes(tape_len: u16) -> Vec<Box<dyn Pass>> {
 //   evaluate loops in more generalized situations
 // - Removing equivalent nodes (CSE)
 // - Build dataflow lattices of variant theta values
-// - Lower "find next cell with a value of `N`" to to a `memchr()` invocation
 pub trait Pass {
     /// The name of the current pass
     fn pass_name(&self) -> &str;
@@ -127,18 +139,32 @@ pub trait Pass {
 
     fn reset(&mut self);
 
-    fn report(&self) -> HashMap<&'static str, usize> {
-        HashMap::default()
+    fn report(&self) -> ChangeReport {
+        ChangeReport::default()
     }
 
     fn visit_graph(&mut self, graph: &mut Rvsdg) -> bool {
-        let (mut stack, mut visited, mut buffer) = (
-            VecDeque::with_capacity(graph.node_len() / 2),
-            HashSet::with_capacity_and_hasher(graph.node_len(), Default::default()),
-            Vec::new(),
-        );
+        // Attempt to reuse any available buffers
+        let (mut stack, mut visited, mut buffer) = VISIT_GRAPH_CACHE
+            .with(|buffers| buffers.borrow_mut().pop())
+            // If we couldn't reuse a buffer, make new ones
+            .unwrap_or_else(|| {
+                (
+                    VecDeque::with_capacity(graph.node_len() / 2),
+                    HashSet::with_capacity_and_hasher(graph.node_len(), Default::default()),
+                    Vec::new(),
+                )
+            });
 
-        self.visit_graph_inner(graph, &mut stack, &mut visited, &mut buffer)
+        let result = self.visit_graph_inner(graph, &mut stack, &mut visited, &mut buffer);
+
+        // Clear the buffers before inserting them into the cache
+        stack.clear();
+        visited.clear();
+        buffer.clear();
+        VISIT_GRAPH_CACHE.with(|buffers| buffers.borrow_mut().push((stack, visited, buffer)));
+
+        result
     }
 
     // TODO: We really want to be doing post-ordered construction of the work list,
@@ -279,26 +305,35 @@ pub trait Pass {
     fn visit_int(&mut self, _graph: &mut Rvsdg, _int: Int, _value: Ptr) {}
     fn visit_byte(&mut self, _graph: &mut Rvsdg, _byte: Byte, _value: Cell) {}
     fn visit_bool(&mut self, _graph: &mut Rvsdg, _bool: Bool, _value: bool) {}
+
     fn visit_add(&mut self, _graph: &mut Rvsdg, _add: Add) {}
     fn visit_sub(&mut self, _graph: &mut Rvsdg, _sub: Sub) {}
     fn visit_mul(&mut self, _graph: &mut Rvsdg, _mul: Mul) {}
-    fn visit_load(&mut self, _graph: &mut Rvsdg, _load: Load) {}
-    fn visit_store(&mut self, _graph: &mut Rvsdg, _store: Store) {}
-    fn visit_scan(&mut self, _graph: &mut Rvsdg, _scan: Scan) {}
-    fn visit_start(&mut self, _graph: &mut Rvsdg, _start: Start) {}
-    fn visit_end(&mut self, _graph: &mut Rvsdg, _end: End) {}
-    fn visit_input(&mut self, _graph: &mut Rvsdg, _input: Input) {}
-    fn visit_output(&mut self, _graph: &mut Rvsdg, _output: Output) {}
-    // TODO: Cow
-    fn visit_theta(&mut self, _graph: &mut Rvsdg, _theta: Theta) {}
-    fn visit_eq(&mut self, _graph: &mut Rvsdg, _eq: Eq) {}
-    fn visit_neq(&mut self, _graph: &mut Rvsdg, _neq: Neq) {}
+
     fn visit_not(&mut self, _graph: &mut Rvsdg, _not: Not) {}
     fn visit_neg(&mut self, _graph: &mut Rvsdg, _neg: Neg) {}
-    // TODO: Cow
+
+    fn visit_eq(&mut self, _graph: &mut Rvsdg, _eq: Eq) {}
+    fn visit_neq(&mut self, _graph: &mut Rvsdg, _neq: Neq) {}
+
+    fn visit_load(&mut self, _graph: &mut Rvsdg, _load: Load) {}
+    fn visit_store(&mut self, _graph: &mut Rvsdg, _store: Store) {}
+
+    fn visit_scan(&mut self, _graph: &mut Rvsdg, _scan: Scan) {}
+    fn visit_input(&mut self, _graph: &mut Rvsdg, _input: Input) {}
+    fn visit_output(&mut self, _graph: &mut Rvsdg, _output: Output) {}
+
+    // TODO: To somewhat address the cloning problem we could have two methods,
+    //       one that takes an immutable reference to both the graph and the node
+    //       and one that gives a mutable reference to the graph and the node's id
+    fn visit_theta(&mut self, _graph: &mut Rvsdg, _theta: Theta) {}
     fn visit_gamma(&mut self, _graph: &mut Rvsdg, _gamma: Gamma) {}
+
     fn visit_input_param(&mut self, _graph: &mut Rvsdg, _input_param: InputParam) {}
     fn visit_output_param(&mut self, _graph: &mut Rvsdg, _output_param: OutputParam) {}
+
+    fn visit_start(&mut self, _graph: &mut Rvsdg, _start: Start) {}
+    fn visit_end(&mut self, _graph: &mut Rvsdg, _end: End) {}
 }
 
 // FIXME: Lower this to a `memchr()` invocation

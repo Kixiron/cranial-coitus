@@ -22,6 +22,9 @@ use crate::{
 pub type HashSet<K> = std::collections::HashSet<K, BuildHasherDefault<Xxh3>>;
 pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<Xxh3>>;
 
+// pub type ImHashSet<K> = im_rc::HashSet<K, BuildHasherDefault<Xxh3>>;
+pub type ImHashMap<K, V> = im_rc::HashMap<K, V, BuildHasherDefault<Xxh3>>;
+
 pub(crate) enum Element<T> {
     Single(T),
     Many(T, usize, usize),
@@ -460,7 +463,7 @@ macro_rules! test_opts {
             )?
             $(
                 if $use_default_passes {
-                    passes = $crate::passes::default_passes(tape_len);
+                    passes = $crate::passes::default_passes(tape_len, false, false);
                 }
             )?
 

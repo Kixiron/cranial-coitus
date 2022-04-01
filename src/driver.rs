@@ -1,5 +1,5 @@
 use crate::{
-    args::Args,
+    args::Settings,
     graph::Rvsdg,
     interpreter::{EvaluationError, ExecutionStats, Machine},
     ir::{Block, IrBuilder, Pretty, PrettyConfig},
@@ -19,8 +19,14 @@ use std::{
 };
 
 #[tracing::instrument(skip_all)]
-pub fn run_opt_passes(graph: &mut Rvsdg, cells: u16, iteration_limit: usize) -> usize {
-    let mut passes = passes::default_passes(cells);
+pub fn run_opt_passes(
+    graph: &mut Rvsdg,
+    cells: u16,
+    iteration_limit: usize,
+    tape_operations_wrap: bool,
+    cell_operations_wrap: bool,
+) -> usize {
+    let mut passes = passes::default_passes(cells, tape_operations_wrap, cell_operations_wrap);
     let (mut pass_num, mut stack, mut visited, mut buffer) = (
         1,
         VecDeque::new(),
@@ -32,6 +38,10 @@ pub fn run_opt_passes(graph: &mut Rvsdg, cells: u16, iteration_limit: usize) -> 
         let mut changed = false;
 
         for (pass_idx, pass) in passes.iter_mut().enumerate() {
+            if pass.pass_name() == "dataflow-v2" && pass_num % 5 != 0 {
+                continue;
+            }
+
             let span = tracing::info_span!("optimization-pass", pass = pass.pass_name());
             span.in_scope(|| {
                 tracing::info!(
@@ -171,7 +181,7 @@ where
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub fn sequentialize_graph(
-    args: &Args,
+    args: &Settings,
     graph: &Rvsdg,
     dump_dir: Option<&Path>,
     config: PrettyConfig,

@@ -3,7 +3,6 @@ mod associative_ops;
 mod canonicalize;
 mod const_folding;
 mod dataflow;
-mod dataflow_v2;
 mod dce;
 mod duplicate_cell;
 mod eliminate_const_gamma;
@@ -25,8 +24,7 @@ pub use add_sub_loop::AddSubLoop;
 pub use associative_ops::AssociativeOps;
 pub use canonicalize::Canonicalize;
 pub use const_folding::ConstFolding;
-pub use dataflow::Dataflow;
-pub use dataflow_v2::{Dataflow as DataflowV2, DataflowSettings};
+pub use dataflow::{Dataflow, DataflowSettings};
 pub use dce::Dce;
 pub use duplicate_cell::DuplicateCell;
 pub use eliminate_const_gamma::ElimConstGamma;
@@ -73,7 +71,6 @@ pub fn default_passes(
         FuseIO::new(),
         ScanLoops::new(),
         Dce::new(),
-        // Dataflow::new(tape_len),
         ElimConstGamma::new(),
         ConstFolding::new(tape_len),
         SquareCell::new(tape_len),
@@ -82,7 +79,7 @@ pub fn default_passes(
         DuplicateCell::new(tape_len),
         Equality::new(),
         ExprDedup::new(),
-        DataflowV2::new(DataflowSettings::new(
+        Dataflow::new(DataflowSettings::new(
             tape_len,
             tape_operations_wrap,
             cell_operations_wrap

@@ -1,7 +1,7 @@
 use crate::{
     graph::{NodeExt, Rvsdg, Theta},
     passes::{
-        dataflow_v2::{
+        dataflow::{
             domain::{Domain, NormalizedDomains},
             Dataflow,
         },
@@ -11,9 +11,9 @@ use crate::{
 
 impl Dataflow {
     pub(super) fn compute_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
-        let span = tracing::info_span!("theta fixpoint", theta = %theta.node());
-        let _span = span.enter();
-        tracing::info!("started fixpoint of theta {}", theta.node());
+        // let span = tracing::info_span!("theta fixpoint", theta = %theta.node());
+        // let _span = span.enter();
+        // tracing::info!("started fixpoint of theta {}", theta.node());
 
         let inputs = self.collect_subgraph_inputs(graph, theta.body(), theta.input_pair_ids());
         // The visitor we create for the theta's body cannot mutate, as we need to
@@ -119,7 +119,7 @@ impl Dataflow {
 
                 // Otherwise we've hit a fixpoint!
                 } else {
-                    tracing::info!(
+                    tracing::debug!(
                         "theta {} hit fixpoint in {fixpoint_iters} iteration{}",
                         theta.node(),
                         if fixpoint_iters == 1 { "" } else { "s" },
@@ -147,6 +147,6 @@ impl Dataflow {
         // Use the body's fixpoint-ed tape as our tape
         self.tape = visitor.tape;
 
-        tracing::info!("finished fixpoint of theta {}", theta.node());
+        // tracing::info!("finished fixpoint of theta {}", theta.node());
     }
 }

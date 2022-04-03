@@ -4,7 +4,7 @@ use crate::{
         Store, Sub, Theta,
     },
     passes::{
-        dataflow_v2::{domain::ByteSet, Dataflow},
+        dataflow::{domain::ByteSet, Dataflow},
         utils::ChangeReport,
         Pass,
     },
@@ -71,7 +71,9 @@ impl Pass for Dataflow {
         self.compute_store(graph, store);
     }
 
-    fn visit_scan(&mut self, _graph: &mut Rvsdg, _scan: Scan) {}
+    fn visit_scan(&mut self, graph: &mut Rvsdg, scan: Scan) {
+        self.compute_scan(graph, scan);
+    }
 
     fn visit_input(&mut self, _graph: &mut Rvsdg, input: Input) {
         // Input calls are wildcards that can produce any value

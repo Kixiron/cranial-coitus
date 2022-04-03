@@ -1,7 +1,11 @@
 use crate::{
-    graph::{Load, Rvsdg, Store},
-    passes::dataflow_v2::{domain::ByteSet, Dataflow},
+    graph::{Load, Rvsdg, Scan, ScanDirection, Store},
+    passes::dataflow::{
+        domain::{ByteSet, Domain, IntSet},
+        Dataflow,
+    },
 };
+use std::borrow::Cow;
 
 impl Dataflow {
     // Note: This is an *incredibly* hot function so any optimizations we can possibly do
@@ -107,5 +111,110 @@ impl Dataflow {
         }
 
         self.add_domain(load.output_value(), loaded);
+    }
+
+    pub(super) fn compute_scan(&mut self, graph: &mut Rvsdg, scan: Scan) {
+        let _: Option<()> = try {
+            let (ptr, step, needle) = (
+                graph.input_source(scan.ptr()),
+                graph.input_source(scan.step()),
+                graph.input_source(scan.needle()),
+            );
+            let (ptr, step, needle) = (
+                self.domain(ptr)
+                    .map(|domain| domain.into_int_set(self.tape_len()))
+                    .unwrap_or_else(|| Cow::Owned(IntSet::full(self.tape_len()))),
+                self.domain(step)
+                    .map(|domain| domain.into_int_set(self.tape_len()))
+                    .unwrap_or_else(|| Cow::Owned(IntSet::full(self.tape_len()))),
+                self.domain(needle)
+                    .map(Domain::into_byte_set)
+                    .unwrap_or_else(ByteSet::full),
+            );
+
+            // This algorithm is pretty naive, we basically compute a cartesian product
+            // of all three variables
+            let mut possible_values = IntSet::empty(self.tape_len());
+
+            if let Some(step) = step.as_singleton() {
+                for mut ptr in ptr.iter() {
+                    loop {
+                        if self.tape[ptr.value() as usize].intersects(&needle) {
+                            possible_values.add(ptr);
+                        }
+
+                        if self.settings.tape_operations_wrap {
+                            let next = match scan.direction() {
+                                ScanDirection::Forward => ptr.checked_add(step),
+                                ScanDirection::Backward => ptr.checked_sub(step),
+                            };
+
+                            match next {
+                                Some(next) => ptr = next,
+                                None => break,
+                            }
+                        } else {
+                            ptr = match scan.direction() {
+                                ScanDirection::Forward => ptr.wrapping_add(step),
+                                ScanDirection::Backward => ptr.wrapping_sub(step),
+                            };
+                        }
+                    }
+                }
+            } else if step.is_full() {
+                todo!("optimize for full steps")
+            } else {
+                todo!("optimize for domain'd set")
+            }
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::passes::{Dataflow, DataflowSettings};
+
+    test_opts! {
+        scanl_terminates,
+        passes = |tape_len| bvec![Dataflow::new(DataflowSettings::new(tape_len, true, true))],
+        input = [10],
+        output = [10],
+        |graph, effect, tape_len| {
+            let ptr = graph.int(Ptr::new(356, tape_len));
+            let step = graph.int(Ptr::new(1, tape_len));
+            let needle = graph.input(effect);
+
+            let scan = graph.scanl(
+                ptr.value(),
+                step.value(),
+                needle.output_value(),
+                needle.output_effect(),
+            );
+            let effect = scan.output_effect();
+
+            graph.output(step.value(), effect).output_effect()
+        },
+    }
+
+    test_opts! {
+        scanr_terminates,
+        passes = |tape_len| bvec![DataflowV2::new(DataflowSettings::new(tape_len, true, true))],
+        input = [10],
+        output = [10],
+        |graph, effect, tape_len| {
+            let ptr = graph.int(Ptr::new(356, tape_len));
+            let step = graph.int(Ptr::new(1, tape_len));
+            let needle = graph.input(effect);
+
+            let scan = graph.scanr(
+                ptr.value(),
+                step.value(),
+                needle.output_value(),
+                needle.output_effect(),
+            );
+            let effect = scan.output_effect();
+
+            graph.output(step.value(), effect).output_effect()
+        },
     }
 }

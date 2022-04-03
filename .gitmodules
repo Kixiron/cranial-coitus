@@ -1,3 +1,0 @@
-[submodule "crates/ranges"]
-	path = crates/ranges
-	url = https://gitlab.com/bit-refined/ranges/

@@ -1,6 +1,6 @@
 use crate::{
     graph::{Eq, Neq, Rvsdg},
-    passes::dataflow_v2::{
+    passes::dataflow::{
         domain::{differential_product, BoolSet},
         Dataflow,
     },

@@ -44,6 +44,7 @@ impl DataflowSettings {
 pub struct Dataflow {
     changes: Changes<6>,
     values: ImHashMap<OutputPort, Domain>,
+    port_provenance: ImHashMap<OutputPort, Domain>,
     constraints: ImHashMap<(OutputPort, OutputPort), (Domain, Domain)>,
     // TODO: Memory location constraints, constraints that pointers have on
     //       the cell they point to
@@ -59,7 +60,10 @@ impl Dataflow {
             HashMapPool::new(256),
             RRBPool::new(settings.tape_len as usize),
         );
-        let values = ImHashMap::with_pool_hasher(&value_pool, Rc::new(Default::default()));
+        let (values, port_provenance) = (
+            ImHashMap::with_pool_hasher(&value_pool, Rc::new(Default::default())),
+            ImHashMap::with_pool_hasher(&value_pool, Rc::new(Default::default())),
+        );
         let constraints =
             ImHashMap::with_pool_hasher(&constraint_pool, Rc::new(Default::default()));
 
@@ -70,6 +74,7 @@ impl Dataflow {
         Self {
             changes: Self::new_changes(),
             values,
+            port_provenance,
             constraints,
             tape,
             settings,
@@ -78,9 +83,21 @@ impl Dataflow {
     }
 
     fn clone_for_subscope(&self, values: ImHashMap<OutputPort, Domain>) -> Self {
+        let mut port_provenance = ImHashMap::with_pool_hasher(
+            self.port_provenance.pool(),
+            self.port_provenance.hasher().clone(),
+        );
+        port_provenance.extend(values.keys().filter_map(|output| {
+            self.port_provenance
+                .get(output)
+                .cloned()
+                .map(|domain| (*output, domain))
+        }));
+
         Self {
             changes: Self::new_changes(),
             values,
+            port_provenance,
             tape: self.tape.clone(),
             constraints: self.constraints.clone(),
             settings: self.settings,

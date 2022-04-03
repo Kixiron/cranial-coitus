@@ -1,7 +1,7 @@
 use crate::{
     graph::{Gamma, InputParam, NodeExt, OutputParam, Rvsdg},
     passes::{
-        dataflow_v2::{domain::Domain, Dataflow},
+        dataflow::{domain::Domain, Dataflow},
         Pass,
     },
 };

@@ -1,12 +1,11 @@
 use crate::{
     graph::{Add, Rvsdg, Sub},
-    passes::dataflow_v2::{
+    passes::dataflow::{
         domain::{ByteSet, Domain, IntSet},
         Dataflow,
     },
     values::Ptr,
 };
-use std::cmp::max;
 
 impl Dataflow {
     pub(super) fn compute_add(&mut self, graph: &mut Rvsdg, add: Add) -> Option<()> {
@@ -44,7 +43,7 @@ impl Dataflow {
 
             // Byte & integer additions always produce an integer
             (Domain::Int(lhs), Domain::Byte(rhs)) | (Domain::Byte(rhs), Domain::Int(lhs)) => {
-                let mut output = IntSet::with_capacity(self.tape_len(), max(lhs.len(), rhs.len()));
+                let mut output = IntSet::empty(self.tape_len());
 
                 // We have to do a cartesian product of both sets in order to create the possible outputs
                 if self.settings.tape_operations_wrap {
@@ -70,7 +69,7 @@ impl Dataflow {
             }
 
             (Domain::Int(lhs), Domain::Int(rhs)) => {
-                let mut output = IntSet::with_capacity(self.tape_len(), max(lhs.len(), rhs.len()));
+                let mut output = IntSet::empty(self.tape_len());
 
                 // We have to do a cartesian product of both sets in order to create the possible outputs
                 if self.settings.tape_operations_wrap {
@@ -162,7 +161,7 @@ impl Dataflow {
 
             // Byte & integer subtractions always produce an integer
             (Domain::Int(lhs), Domain::Byte(rhs)) => {
-                let mut output = IntSet::with_capacity(self.tape_len(), max(lhs.len(), rhs.len()));
+                let mut output = IntSet::empty(self.tape_len());
 
                 // We have to do a cartesian product of both sets in order to create the possible outputs
                 if self.settings.tape_operations_wrap {
@@ -187,7 +186,7 @@ impl Dataflow {
                 Domain::Int(output)
             }
             (Domain::Byte(lhs), Domain::Int(rhs)) => {
-                let mut output = IntSet::with_capacity(self.tape_len(), max(lhs.len(), rhs.len()));
+                let mut output = IntSet::empty(self.tape_len());
 
                 // We have to do a cartesian product of both sets in order to create the possible outputs
                 if self.settings.tape_operations_wrap {
@@ -213,7 +212,7 @@ impl Dataflow {
             }
 
             (Domain::Int(lhs), Domain::Int(rhs)) => {
-                let mut output = IntSet::with_capacity(self.tape_len(), max(lhs.len(), rhs.len()));
+                let mut output = IntSet::empty(self.tape_len());
 
                 // We have to do a cartesian product of both sets in order to create the possible outputs
                 if self.settings.tape_operations_wrap {

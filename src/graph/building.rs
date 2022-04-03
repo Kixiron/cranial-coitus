@@ -782,9 +782,9 @@ impl Rvsdg {
         let scan_id = self.next_node();
 
         // Create the scan inputs
-        let ptr = self.create_effect_input_edge(scan_id, ptr);
-        let step = self.create_effect_input_edge(scan_id, step);
-        let needle = self.create_effect_input_edge(scan_id, needle);
+        let ptr = self.create_value_input_edge(scan_id, ptr);
+        let step = self.create_value_input_edge(scan_id, step);
+        let needle = self.create_value_input_edge(scan_id, needle);
         let input_effect = self.create_effect_input_edge(scan_id, input_effect);
 
         // Create the scan outputs

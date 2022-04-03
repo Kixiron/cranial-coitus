@@ -2,7 +2,7 @@ use crate::{
     ir::Const,
     values::{Cell, Ptr},
 };
-use ranges::{GenericRange, Ranges};
+use roaring::RoaringBitmap;
 use std::{
     borrow::Cow,
     fmt::{self, Debug, Display},
@@ -61,23 +61,22 @@ impl Domain {
         match (self, other) {
             (Self::Bool(lhs), Self::Bool(rhs)) => lhs.union(rhs),
             (Self::Byte(lhs), Self::Byte(rhs)) => lhs.union(*rhs),
-            (Self::Int(lhs), Self::Int(rhs)) => {
-                lhs.values = take(&mut lhs.values).union(rhs.values.clone());
-            }
+            (Self::Int(lhs), Self::Int(rhs)) => lhs.union(rhs),
 
             // TODO: Efficiency
             (Self::Int(lhs), Self::Byte(rhs)) => {
-                lhs.values = take(&mut lhs.values).union(rhs.into_int_set(lhs.tape_len).values);
+                let mut rhs = rhs.into_int_set(lhs.tape_len);
+                lhs.union_mut(&mut rhs);
             }
-            (lhs, Self::Int(rhs)) => {
-                *lhs = Self::Int(IntSet {
-                    values: lhs
-                        .into_int_set(rhs.tape_len)
-                        .into_owned()
-                        .values
-                        .union(rhs.values.clone()),
-                    tape_len: rhs.tape_len,
-                });
+            (lhs @ Self::Byte(_), Self::Int(rhs)) => {
+                let mut lhs_set = if let Cow::Owned(lhs) = lhs.into_int_set(rhs.tape_len) {
+                    lhs
+                } else {
+                    unreachable!()
+                };
+                lhs_set.union(rhs);
+
+                *lhs = Self::Int(lhs_set);
             }
 
             (Self::Bool(_), _) | (_, Self::Bool(_)) => unreachable!(),
@@ -88,20 +87,21 @@ impl Domain {
         match (self, other) {
             (Self::Bool(lhs), Self::Bool(rhs)) => lhs.union(rhs),
             (Self::Byte(lhs), Self::Byte(rhs)) => lhs.union_mut(rhs),
-            (Self::Int(lhs), Self::Int(rhs)) => {
-                lhs.values = take(&mut lhs.values).union(take(&mut rhs.values));
-            }
+            (Self::Int(lhs), Self::Int(rhs)) => lhs.union_mut(rhs),
 
-            // TODO: Efficiency
             (Self::Int(lhs), Self::Byte(rhs)) => {
-                lhs.union_mut(&mut rhs.into_int_set(lhs.tape_len));
+                let mut rhs = rhs.into_int_set(lhs.tape_len);
+                lhs.union_mut(&mut rhs);
             }
-            (lhs, Self::Int(rhs)) => {
-                *lhs = Self::Int(
-                    lhs.into_int_set(rhs.tape_len)
-                        .into_owned()
-                        .intersect_ref(rhs),
-                )
+            (lhs @ Self::Byte(_), Self::Int(rhs)) => {
+                let mut lhs_set = if let Cow::Owned(lhs) = lhs.into_int_set(rhs.tape_len) {
+                    lhs
+                } else {
+                    unreachable!()
+                };
+                lhs_set.union_mut(rhs);
+
+                *lhs = Self::Int(lhs_set);
             }
 
             (Self::Bool(_), _) | (_, Self::Bool(_)) => unreachable!(),
@@ -332,10 +332,6 @@ impl ByteSet {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
@@ -374,13 +370,17 @@ impl ByteSet {
 
     #[allow(clippy::wrong_self_convention)]
     pub fn into_int_set(&self, tape_len: u16) -> IntSet {
-        let mut ints = IntSet::with_capacity(tape_len, self.len());
+        let mut ints = IntSet::empty(tape_len);
         // TODO: Efficiency
         for byte in self.iter() {
             ints.add(Ptr::new(byte as u16, tape_len));
         }
 
         ints
+    }
+
+    pub fn intersects(&self, other: &Self) -> bool {
+        self.values.contains_any(&other.values)
     }
 }
 
@@ -408,36 +408,34 @@ impl Display for ByteSet {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Default)]
 pub struct IntSet {
-    values: Ranges<u16>,
+    values: RoaringBitmap,
     tape_len: u16,
 }
 
 impl IntSet {
     pub fn empty(tape_len: u16) -> Self {
         Self {
-            values: Ranges::new(),
+            values: RoaringBitmap::new(),
             tape_len,
         }
+    }
+
+    pub fn full(tape_len: u16) -> Self {
+        let mut this = Self::empty(tape_len);
+        this.values.insert_range(u16::MIN as u32..=u16::MAX as u32);
+        this
+    }
+
+    pub fn is_full(&self) -> bool {
+        todo!()
     }
 
     pub fn singleton(value: Ptr) -> Self {
-        Self {
-            values: Ranges::from(GenericRange::singleton(value.value())),
-            tape_len: value.tape_len(),
-        }
-    }
-
-    pub fn with_capacity(tape_len: u16, capacity: usize) -> Self {
-        Self {
-            values: Ranges::with_capacity(capacity),
-            tape_len,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.values.len()
+        let mut this = Self::empty(value.tape_len());
+        this.values.insert(value.value() as u32);
+        this
     }
 
     pub fn is_empty(&self) -> bool {
@@ -446,36 +444,32 @@ impl IntSet {
 
     pub fn add(&mut self, value: Ptr) {
         debug_assert_eq!(self.tape_len, value.tape_len());
-        self.values.insert(GenericRange::singleton(value.value()));
+        self.values.insert(value.value() as u32);
+    }
+
+    fn union(&mut self, other: &Self) {
+        self.values &= &other.values;
     }
 
     pub fn union_mut(&mut self, other: &mut Self) {
-        self.values = take(&mut self.values).union(take(&mut other.values));
+        self.values &= take(&mut other.values);
     }
 
     pub fn as_singleton(&self) -> Option<Ptr> {
-        match self.values.as_slice() {
-            [range] if range.is_singleton() => {
-                Some(Ptr::new(range.into_iter().next().unwrap(), self.tape_len))
-            }
-            _ => None,
-        }
+        (self.values.len() == 1).then(|| self.iter().next().unwrap())
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Ptr> + '_ {
         self.values
-            .as_slice()
             .iter()
-            .flat_map(|range| range.into_iter())
-            .map(|value| Ptr::new(value, self.tape_len))
+            .map(|value| Ptr::new(value as u16, self.tape_len))
     }
 
     pub fn intersect(&self, other: &Self) -> Self {
         debug_assert_eq!(self.tape_len, other.tape_len);
 
         Self {
-            // FIXME: Efficiency
-            values: self.values.clone().intersect(other.values.clone()),
+            values: &self.values | &other.values,
             tape_len: self.tape_len,
         }
     }
@@ -484,8 +478,7 @@ impl IntSet {
         debug_assert_eq!(self.tape_len, other.tape_len);
 
         Self {
-            // FIXME: Efficiency
-            values: self.values.intersect(other.values.clone()),
+            values: self.values | &other.values,
             tape_len: self.tape_len,
         }
     }
@@ -499,13 +492,13 @@ impl From<Ptr> for IntSet {
 
 impl Debug for IntSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Display::fmt(&self.values, f)
+        f.debug_set().entries(self.iter()).finish()
     }
 }
 
 impl Display for IntSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Display::fmt(&self.values, f)
+        f.debug_set().entries(self.iter()).finish()
     }
 }
 

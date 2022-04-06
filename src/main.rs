@@ -1,15 +1,23 @@
 #![feature(
+    stdsimd,
     let_chains,
+    new_uninit,
     try_blocks,
+    cell_update,
+    entry_insert,
+    array_chunks,
     drain_filter,
     array_windows,
     slice_ptr_get,
     slice_ptr_len,
     str_internals,
+    portable_simd,
     bool_to_option,
     adt_const_params,
     hash_drain_filter,
     vec_into_raw_parts,
+    local_key_cell_methods,
+    maybe_uninit_write_slice,
     nonnull_slice_from_raw_parts
 )]
 #![allow(incomplete_features)]
@@ -72,6 +80,9 @@ fn main() -> Result<()> {
 
 fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
     let step_limit = settings.step_limit();
+    let pretty_config =
+        PrettyConfig::minimal().with_hide_const_assignments(!settings.dont_inline_constants);
+
     let source = fs::read_to_string(file).expect("failed to read file");
 
     let dump_dir = Path::new("./dumps").join(file.with_extension("").file_name().unwrap());
@@ -86,7 +97,7 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
         settings,
         &graph,
         Some(&dump_dir.join("input.cir")),
-        PrettyConfig::minimal(),
+        pretty_config,
     )?;
     let input_graph_stats = graph.stats();
 
@@ -266,7 +277,7 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
                 stack.clear();
 
                 let (_output_program, output_program_ir) =
-                    driver::sequentialize_graph(settings, &graph, None, PrettyConfig::minimal())?;
+                    driver::sequentialize_graph(settings, &graph, None, pretty_config)?;
 
                 let diff = utils::diff_ir(&previous_program_ir, &output_program_ir);
 
@@ -386,7 +397,7 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
         settings,
         &graph,
         Some(&dump_dir.join("output.cir")),
-        PrettyConfig::instrumented(output_graph_stats.instructions),
+        pretty_config.with_instrumented(output_graph_stats.instructions),
     )?;
 
     if settings.print_output_ir {
@@ -551,7 +562,7 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
     fs::write(dump_dir.join("change.txt"), change)?;
 
     let annotated_program =
-        output_program.pretty_print(PrettyConfig::instrumented(optimized_stats.instructions));
+        output_program.pretty_print(pretty_config.with_instrumented(optimized_stats.instructions));
     fs::write(dump_dir.join("annotated_output.cir"), annotated_program)?;
 
     let jit = Jit::new(settings, &dump_dir, "output")?.compile(&output_program)?;

@@ -223,3 +223,15 @@ impl<'a> TryInto<&'a Theta> for &'a Node {
         }
     }
 }
+
+impl<'a> TryInto<&'a Bool> for &'a Node {
+    type Error = Self;
+
+    fn try_into(self) -> Result<&'a Bool, Self::Error> {
+        if let Node::Bool(node, _) = self {
+            Ok(node)
+        } else {
+            Err(self)
+        }
+    }
+}

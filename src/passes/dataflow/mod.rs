@@ -8,11 +8,11 @@ mod theta;
 
 use crate::{
     graph::{InputParam, InputPort, NodeId, OutputPort, Rvsdg},
-    passes::utils::Changes,
+    passes::{dataflow::domain::ProgramTape, utils::Changes},
     utils::{AssertNone, ImHashMap},
 };
 use domain::{ByteSet, Domain};
-use im_rc::{hashmap::HashMapPool, vector::RRBPool, Vector};
+use im_rc::hashmap::HashMapPool;
 use std::{fmt::Debug, rc::Rc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,42 +41,38 @@ impl DataflowSettings {
     }
 }
 
+#[derive(Debug)]
 pub struct Dataflow {
-    changes: Changes<6>,
+    changes: Changes<7>,
     values: ImHashMap<OutputPort, Domain>,
-    port_provenance: ImHashMap<OutputPort, Domain>,
+    port_provenance: ImHashMap<OutputPort, ByteSet>,
     constraints: ImHashMap<(OutputPort, OutputPort), (Domain, Domain)>,
     // TODO: Memory location constraints, constraints that pointers have on
     //       the cell they point to
-    tape: Vector<ByteSet>,
+    tape: ProgramTape,
     settings: DataflowSettings,
     can_mutate: bool,
 }
 
 impl Dataflow {
     pub fn new(settings: DataflowSettings) -> Self {
-        let (value_pool, constraint_pool, tape_pool) = (
+        let (value_pool, provenance_pool, constraint_pool) = (
             HashMapPool::new(1024),
             HashMapPool::new(256),
-            RRBPool::new(settings.tape_len as usize),
+            HashMapPool::new(256),
         );
-        let (values, port_provenance) = (
+        let (values, port_provenance, constraints) = (
             ImHashMap::with_pool_hasher(&value_pool, Rc::new(Default::default())),
-            ImHashMap::with_pool_hasher(&value_pool, Rc::new(Default::default())),
+            ImHashMap::with_pool_hasher(&provenance_pool, Rc::new(Default::default())),
+            ImHashMap::with_pool_hasher(&constraint_pool, Rc::new(Default::default())),
         );
-        let constraints =
-            ImHashMap::with_pool_hasher(&constraint_pool, Rc::new(Default::default()));
-
-        // Zero-initialize the program tape
-        let mut tape = Vector::with_pool(&tape_pool);
-        tape.extend((0..settings.tape_len).map(|_| ByteSet::singleton(0)));
 
         Self {
             changes: Self::new_changes(),
             values,
             port_provenance,
             constraints,
-            tape,
+            tape: ProgramTape::zeroed(settings.tape_len),
             settings,
             can_mutate: true,
         }
@@ -114,13 +110,14 @@ impl Dataflow {
         self
     }
 
-    fn new_changes() -> Changes<6> {
+    fn new_changes() -> Changes<7> {
         Changes::new([
             "const-eq",
             "const-neq",
             "const-add",
             "const-sub",
             "const-load",
+            "const-theta-cond",
             "gamma-branch-elision",
         ])
     }
@@ -160,6 +157,17 @@ impl Dataflow {
                 second.union_mut(&mut false_domain);
             })
             .or_insert((true_domain, false_domain));
+    }
+
+    fn add_provenance(&mut self, output: OutputPort, value: ByteSet) {
+        self.port_provenance
+            .entry(output)
+            .and_modify(|domain| domain.union(value))
+            .or_insert(value);
+    }
+
+    fn provenance(&self, port: OutputPort) -> Option<&ByteSet> {
+        self.port_provenance.get(&port)
     }
 
     fn collect_subgraph_inputs(

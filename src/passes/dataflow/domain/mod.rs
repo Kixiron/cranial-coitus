@@ -1,12 +1,16 @@
+mod byte_set;
+mod int_set;
+
+pub use byte_set::{ByteSet, ProgramTape};
+pub use int_set::IntSet;
+
 use crate::{
     ir::Const,
     values::{Cell, Ptr},
 };
-use roaring::RoaringBitmap;
 use std::{
     borrow::Cow,
     fmt::{self, Debug, Display},
-    mem::take,
 };
 
 #[derive(Debug, Clone)]
@@ -39,7 +43,7 @@ impl Domain {
             Self::Int(ints) => {
                 let mut bytes = ByteSet::empty();
                 for int in ints.iter() {
-                    bytes.add(int.into_cell().into_inner());
+                    bytes.insert(int.into_cell().into_inner());
                 }
 
                 bytes
@@ -86,7 +90,7 @@ impl Domain {
     pub fn union_mut(&mut self, other: &mut Domain) {
         match (self, other) {
             (Self::Bool(lhs), Self::Bool(rhs)) => lhs.union(rhs),
-            (Self::Byte(lhs), Self::Byte(rhs)) => lhs.union_mut(rhs),
+            (Self::Byte(lhs), Self::Byte(rhs)) => lhs.union(*rhs),
             (Self::Int(lhs), Self::Int(rhs)) => lhs.union_mut(rhs),
 
             (Self::Int(lhs), Self::Byte(rhs)) => {
@@ -111,7 +115,7 @@ impl Domain {
     pub fn intersect(&self, other: &Self) -> Self {
         match (self, other) {
             (Self::Bool(lhs), Self::Bool(rhs)) => Self::Bool(lhs.intersect(*rhs)),
-            (Self::Byte(lhs), Self::Byte(rhs)) => Self::Byte(lhs.intersect(rhs)),
+            (Self::Byte(lhs), Self::Byte(rhs)) => Self::Byte(lhs.intersection(rhs)),
             (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs.intersect(rhs)),
 
             (Self::Int(ints), Self::Byte(bytes)) | (Self::Byte(bytes), Self::Int(ints)) => {
@@ -303,205 +307,6 @@ impl Display for BoolSet {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(transparent)]
-pub struct ByteSet {
-    values: byte_set::ByteSet,
-}
-
-impl ByteSet {
-    pub fn empty() -> Self {
-        Self {
-            values: byte_set::ByteSet::new(),
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.values.clear();
-    }
-
-    pub fn singleton(value: u8) -> Self {
-        Self {
-            values: byte_set::ByteSet::from_byte(value),
-        }
-    }
-
-    pub fn full() -> Self {
-        Self {
-            values: byte_set::ByteSet::full(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-
-    pub fn add(&mut self, value: u8) {
-        self.values.insert(value);
-    }
-
-    pub fn make_full(&mut self) {
-        *self = Self::full();
-    }
-
-    pub fn union(&mut self, other: Self) {
-        // FIXME: Remove this clone
-        self.values = self.values.union(other.values);
-    }
-
-    pub(crate) fn union_mut(&mut self, other: &mut ByteSet) {
-        self.values = take(&mut self.values).union(take(&mut other.values));
-    }
-
-    pub fn as_singleton(&self) -> Option<u8> {
-        (self.values.len() == 1).then(|| self.values.first().unwrap())
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = u8> + '_ {
-        self.values.into_iter()
-    }
-
-    pub fn intersect(&self, other: &Self) -> Self {
-        Self {
-            // FIXME: Efficiency
-            values: self.values.intersection(other.values),
-        }
-    }
-
-    #[allow(clippy::wrong_self_convention)]
-    pub fn into_int_set(&self, tape_len: u16) -> IntSet {
-        let mut ints = IntSet::empty(tape_len);
-        // TODO: Efficiency
-        for byte in self.iter() {
-            ints.add(Ptr::new(byte as u16, tape_len));
-        }
-
-        ints
-    }
-
-    pub fn intersects(&self, other: &Self) -> bool {
-        self.values.contains_any(&other.values)
-    }
-}
-
-impl From<u8> for ByteSet {
-    fn from(byte: u8) -> Self {
-        Self::singleton(byte)
-    }
-}
-
-impl From<Cell> for ByteSet {
-    fn from(cell: Cell) -> Self {
-        Self::singleton(cell.into_inner())
-    }
-}
-
-impl Debug for ByteSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_set().entries(self.iter()).finish()
-    }
-}
-
-impl Display for ByteSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_set().entries(self.iter()).finish()
-    }
-}
-
-#[derive(Clone, PartialEq, Default)]
-pub struct IntSet {
-    values: RoaringBitmap,
-    tape_len: u16,
-}
-
-impl IntSet {
-    pub fn empty(tape_len: u16) -> Self {
-        Self {
-            values: RoaringBitmap::new(),
-            tape_len,
-        }
-    }
-
-    pub fn full(tape_len: u16) -> Self {
-        let mut this = Self::empty(tape_len);
-        this.values.insert_range(u16::MIN as u32..=u16::MAX as u32);
-        this
-    }
-
-    pub fn is_full(&self) -> bool {
-        todo!()
-    }
-
-    pub fn singleton(value: Ptr) -> Self {
-        let mut this = Self::empty(value.tape_len());
-        this.values.insert(value.value() as u32);
-        this
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-
-    pub fn add(&mut self, value: Ptr) {
-        debug_assert_eq!(self.tape_len, value.tape_len());
-        self.values.insert(value.value() as u32);
-    }
-
-    fn union(&mut self, other: &Self) {
-        self.values &= &other.values;
-    }
-
-    pub fn union_mut(&mut self, other: &mut Self) {
-        self.values &= take(&mut other.values);
-    }
-
-    pub fn as_singleton(&self) -> Option<Ptr> {
-        (self.values.len() == 1).then(|| self.iter().next().unwrap())
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = Ptr> + '_ {
-        self.values
-            .iter()
-            .map(|value| Ptr::new(value as u16, self.tape_len))
-    }
-
-    pub fn intersect(&self, other: &Self) -> Self {
-        debug_assert_eq!(self.tape_len, other.tape_len);
-
-        Self {
-            values: &self.values | &other.values,
-            tape_len: self.tape_len,
-        }
-    }
-
-    pub fn intersect_ref(self, other: &Self) -> Self {
-        debug_assert_eq!(self.tape_len, other.tape_len);
-
-        Self {
-            values: self.values | &other.values,
-            tape_len: self.tape_len,
-        }
-    }
-}
-
-impl From<Ptr> for IntSet {
-    fn from(int: Ptr) -> Self {
-        Self::singleton(int)
-    }
-}
-
-impl Debug for IntSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_set().entries(self.iter()).finish()
-    }
-}
-
-impl Display for IntSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_set().entries(self.iter()).finish()
-    }
-}
-
 // Calculates the filtered cartesian product of both domains where the values are inequal
 // (a, b) := { (a, b) ∈ A × B | A ≠ B }
 pub fn differential_product(lhs: &Domain, rhs: &Domain) -> (Domain, Domain) {
@@ -525,8 +330,8 @@ pub fn differential_product(lhs: &Domain, rhs: &Domain) -> (Domain, Domain) {
             for lhs in lhs.iter() {
                 for rhs in rhs.iter() {
                     if lhs != rhs {
-                        lhs_false.add(lhs);
-                        rhs_false.add(rhs);
+                        lhs_false.insert(lhs);
+                        rhs_false.insert(rhs);
                     }
                 }
             }

@@ -69,7 +69,7 @@ pub fn default_passes(
         AddSubLoop::new(tape_len),
         ShiftCell::new(tape_len),
         FuseIO::new(),
-        ScanLoops::new(),
+        ScanLoops::new(tape_len),
         Dce::new(),
         ElimConstGamma::new(),
         ConstFolding::new(tape_len),
@@ -323,6 +323,10 @@ pub trait Pass {
     // TODO: To somewhat address the cloning problem we could have two methods,
     //       one that takes an immutable reference to both the graph and the node
     //       and one that gives a mutable reference to the graph and the node's id
+    // fn visit_theta(&mut self, _graph: &Rvsdg, _theta: &Theta) -> Option<bool> {
+    //     Some(true)
+    // }
+    // fn mutate_theta(&mut self, _graph: &mut Rvsdg, _theta: NodeId) {}
     fn visit_theta(&mut self, _graph: &mut Rvsdg, _theta: Theta) {}
     fn visit_gamma(&mut self, _graph: &mut Rvsdg, _gamma: Gamma) {}
 

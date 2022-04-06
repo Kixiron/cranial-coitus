@@ -9,9 +9,9 @@ mod subgraph;
 pub use building::ConstNode;
 pub use edge::{EdgeCount, EdgeDescriptor, EdgeKind};
 pub use nodes::{
-    Add, AddOrSub, Bool, Byte, End, Eq, Gamma, GammaData, Input, InputParam, Int, Load, Mul, Neg,
-    Neq, Node, NodeExt, NodeId, Not, Output, OutputParam, Scan, ScanDirection, Start, Store, Sub,
-    Theta, ThetaData,
+    Add, AddOrSub, Bool, Byte, End, Eq, EqOrNeq, Gamma, GammaData, Input, InputParam, Int, Load,
+    Mul, Neg, Neq, Node, NodeExt, NodeId, Not, Output, OutputParam, Scan, ScanDirection, Start,
+    Store, Sub, Theta, ThetaData,
 };
 pub use ports::{InputPort, OutputPort, Port, PortData, PortId, PortKind};
 pub use subgraph::Subgraph;

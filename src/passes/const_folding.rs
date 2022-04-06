@@ -14,7 +14,7 @@ use crate::{
 /// Evaluates constant operations within the program
 pub struct ConstFolding {
     values: ConstantStore,
-    changes: Changes<2>,
+    changes: Changes<4>,
     tape_len: u16,
 }
 
@@ -22,7 +22,12 @@ impl ConstFolding {
     pub fn new(tape_len: u16) -> Self {
         Self {
             values: ConstantStore::new(tape_len),
-            changes: Changes::new(["exprs-folded", "propagated-inputs"]),
+            changes: Changes::new([
+                "exprs-folded",
+                "propagated-inputs",
+                "invariant-theta-output",
+                "invariant-theta-feedback",
+            ]),
             tape_len,
         }
     }
@@ -298,11 +303,7 @@ impl Pass for ConstFolding {
         let invariant_inputs: Vec<_> = theta.invariant_input_pairs().collect();
         for (input, param) in invariant_inputs {
             if let Some(constant) = self.values.get(graph.input_source(input)) {
-                let value = match constant {
-                    Const::Ptr(ptr) => theta.body_mut().int(ptr).value(),
-                    Const::Cell(cell) => theta.body_mut().byte(cell).value(),
-                    Const::Bool(bool) => theta.body_mut().bool(bool).value(),
-                };
+                let value = theta.body_mut().constant(constant).value();
                 visitor.values.add(value, constant);
                 theta.body_mut().rewire_dependents(param.output(), value);
 
@@ -313,6 +314,37 @@ impl Pass for ConstFolding {
 
         changed |= visitor.visit_graph(theta.body_mut());
         self.changes.combine(&visitor.changes);
+
+        // Deduplicate variant inputs with identical values (currently only for constants)
+        // and pull constant outputs out of the theta's body
+        let variant_inputs: Vec<_> = theta
+            .variant_input_pairs()
+            .zip(theta.output_pairs())
+            .collect();
+        for ((input, input_param), (output, output_param)) in variant_inputs {
+            let output_source = theta.body().input_source(output_param.input());
+            if let Some(feedback_value) = visitor.values.get(output_source) {
+                // If the input and feedback values are identical, deduplicate them
+                if let Some(input_value) = self.values.get(graph.input_source(input))
+                    && input_value == feedback_value
+                {
+                    // Rewire dependents on the parameters to the constant value and
+                    // remove the parameters from the theta
+                    theta.body_mut().rewire_dependents(input_param.output(), output_source);
+                    theta.body_mut().remove_node(output_param.node());
+                    theta.remove_variant_input(input);
+
+                    self.changes.inc::<"invariant-theta-feedback">();
+                }
+
+                // Rewire any dependents of the output port to the constant value
+                let constant = graph.constant(feedback_value);
+                graph.rewire_dependents(output, constant.value());
+
+                self.changes.inc::<"invariant-theta-output">();
+                changed = true;
+            }
+        }
 
         if changed {
             graph.replace_node(theta.node(), theta);

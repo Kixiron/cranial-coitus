@@ -22,7 +22,7 @@ impl Dataflow {
                 if self.settings.cell_operations_wrap {
                     for lhs in lhs.iter() {
                         for rhs in rhs.iter() {
-                            output.add(lhs.wrapping_add(rhs));
+                            output.insert(lhs.wrapping_add(rhs));
                         }
                     }
 
@@ -32,7 +32,7 @@ impl Dataflow {
                         for rhs in rhs.iter() {
                             // If an overflow occurs when cell operations cannot wrap, ignore the sum
                             if let Some(sum) = lhs.checked_add(rhs) {
-                                output.add(sum);
+                                output.insert(sum);
                             }
                         }
                     }
@@ -140,7 +140,7 @@ impl Dataflow {
                 if self.settings.cell_operations_wrap {
                     for lhs in lhs.iter() {
                         for rhs in rhs.iter() {
-                            output.add(lhs.wrapping_sub(rhs));
+                            output.insert(lhs.wrapping_sub(rhs));
                         }
                     }
 
@@ -150,7 +150,7 @@ impl Dataflow {
                         for rhs in rhs.iter() {
                             // If an overflow occurs when cell operations cannot wrap, ignore the difference
                             if let Some(difference) = lhs.checked_sub(rhs) {
-                                output.add(difference);
+                                output.insert(difference);
                             }
                         }
                     }

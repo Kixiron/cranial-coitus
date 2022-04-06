@@ -1,5 +1,5 @@
 use crate::{
-    graph::{NodeExt, Rvsdg, Theta},
+    graph::{Bool, NodeExt, Rvsdg, Theta},
     passes::{
         dataflow::{
             domain::{Domain, NormalizedDomains},
@@ -11,9 +11,7 @@ use crate::{
 
 impl Dataflow {
     pub(super) fn compute_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
-        // let span = tracing::info_span!("theta fixpoint", theta = %theta.node());
-        // let _span = span.enter();
-        // tracing::info!("started fixpoint of theta {}", theta.node());
+        let mut theta_changed = false;
 
         let inputs = self.collect_subgraph_inputs(graph, theta.body(), theta.input_pair_ids());
         // The visitor we create for the theta's body cannot mutate, as we need to
@@ -31,13 +29,20 @@ impl Dataflow {
             }
         }
 
-        // TODO: We can actually check to see if the theta's condition is impossible to satisfy
-        //       and if it is we can skip all of the fixpoint-ing
+        // Check if the theta can possibly iterate more than once
+        let condition_src = theta.body().input_source(theta.condition().input());
+        let can_iterate = visitor
+            .domain(condition_src)
+            .and_then(Domain::as_bool_set)
+            // If it's possible for the theta's condition to be true, we must
+            // iterate on it
+            .map_or(true, |domain| domain.contains(true));
 
         // Note that we don't apply any constraints to the theta's initial inputs, this
         // is because the theta's condition is checked *after* each iteration
 
-        {
+        // If the theta can iterate any, run its body to fixpoint
+        if can_iterate {
             let (mut accrued_tape, mut accrued_values, mut fixpoint_iters) =
                 (visitor.tape.clone(), visitor.values.clone(), 1usize);
 
@@ -47,20 +52,8 @@ impl Dataflow {
 
                 let mut did_change = false;
 
-                // Iterate over every cell in the program tape, seeing if anything has changed
-                assert_eq!(accrued_tape.len(), visitor.tape.len());
-                for (accrued, cell) in accrued_tape.iter_mut().zip(visitor.tape.iter()) {
-                    if accrued != cell {
-                        let old = *accrued;
-                        accrued.union_mut(&mut cell.clone());
-
-                        // Make sure union-ing the values actually changed it,
-                        // this won't happen in cases like `{ 1..10 } ∪ { 2..4 } = { 1..10 }`
-                        if accrued != &old {
-                            did_change = true;
-                        }
-                    }
-                }
+                // Union the accrued tape and this iteration's tape
+                did_change |= accrued_tape.union(&visitor.tape);
 
                 // Apply feedback parameters
                 for (input, output) in theta.variant_inputs_loopback() {
@@ -85,10 +78,10 @@ impl Dataflow {
                                 Domain::Bool(new)
                             }
 
-                            NormalizedDomains::Byte(mut accrued, mut domain) => {
+                            NormalizedDomains::Byte(mut accrued, domain) => {
                                 if accrued != domain {
                                     let old = accrued;
-                                    accrued.union_mut(&mut domain);
+                                    accrued.union(domain);
 
                                     if accrued != old {
                                         did_change = true;
@@ -127,12 +120,27 @@ impl Dataflow {
                     break;
                 }
             }
+
+        // If the theta's body can't ever run more than once,
+        // change its condition to false to indicate that.
+        // Additionally we want to make sure the theta's condition
+        // isn't already a boolean literal so that we don't cause
+        // more churn than we have to
+        } else if self.can_mutate && theta.body().cast_parent::<_, Bool>(condition_src).is_none() {
+            let cond = theta.body_mut().bool(false);
+            theta
+                .body_mut()
+                .rewire_dependents(condition_src, cond.value());
+
+            self.changes.inc::<"const-theta-cond">();
+            theta_changed = true;
         }
 
         // Finally, after running the body to a fixpoint we can optimize the innards with
         // the fixpoint-ed values
         visitor.allow_mutation();
-        visitor.visit_graph(theta.body_mut());
+        theta_changed |= visitor.visit_graph(theta.body_mut());
+        self.changes.combine(&visitor.changes);
 
         // TODO: Pull out fixpoint-ed constraints from the body
 
@@ -147,6 +155,9 @@ impl Dataflow {
         // Use the body's fixpoint-ed tape as our tape
         self.tape = visitor.tape;
 
-        // tracing::info!("finished fixpoint of theta {}", theta.node());
+        // If we've changed anything, replace our node within the graph
+        if theta_changed {
+            graph.replace_node(theta.node(), theta);
+        }
     }
 }

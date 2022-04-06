@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Gamma, InputParam, NodeExt, OutputParam, Rvsdg},
+    graph::{Bool, Gamma, InputParam, NodeExt, OutputParam, Rvsdg},
     passes::{
         dataflow::{domain::Domain, Dataflow},
         Pass,
@@ -17,16 +17,29 @@ impl Dataflow {
             .unwrap_or((true, true));
 
         // Log any unreachable branches and record a change
+        if self.can_mutate && (!true_reachable || !false_reachable) {
+            let cond_src_is_bool = graph.cast_parent::<_, Bool>(cond).is_none();
 
-        if self.can_mutate {
-            if !true_reachable {
+            // If the false branch isn't reachable change the condition to false
+            if !true_reachable && cond_src_is_bool {
                 tracing::debug!("elided true branch for gamma {}", gamma.node());
+
+                let bool = graph.bool(false);
+                graph.rewire_dependents(cond, bool.value());
+
                 self.changes.inc::<"gamma-branch-elision">();
-            }
-            if !false_reachable {
+
+            // If the false branch isn't reachable change the condition to true
+            } else if !false_reachable && cond_src_is_bool {
                 tracing::debug!("elided false branch for gamma {}", gamma.node());
+
+                let bool = graph.bool(true);
+                graph.rewire_dependents(cond, bool.value());
+
                 self.changes.inc::<"gamma-branch-elision">();
             }
+
+            // If neither are reachable then we're in a very weird situation
             if !true_reachable && !false_reachable {
                 tracing::debug!("neither branch of gamma {} is reachable", gamma.node());
             }
@@ -107,16 +120,7 @@ impl Dataflow {
         ) {
             // If both branches are reachable, union each cell value across branches
             (Some(true_tape), Some(false_tape)) => {
-                assert!(self.tape.len() == true_tape.len() && self.tape.len() == false_tape.len());
-                self.tape
-                    .iter_mut()
-                    .zip(true_tape.iter_mut())
-                    .zip(false_tape.iter_mut())
-                    .for_each(|((output, lhs), rhs)| {
-                        // TODO: Is there a more efficient way to do this?
-                        lhs.union_mut(rhs);
-                        swap(output, lhs);
-                    });
+                true_tape.union_into(false_tape, &mut self.tape);
             }
 
             // If only one branch is reachable, the output tape will the same as that branch's

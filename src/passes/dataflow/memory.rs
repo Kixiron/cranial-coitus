@@ -4,8 +4,8 @@ use crate::{
         domain::{ByteSet, Domain, IntSet},
         Dataflow,
     },
+    utils::HashSet,
 };
-use std::borrow::Cow;
 
 impl Dataflow {
     // Note: This is an *incredibly* hot function so any optimizations we can possibly do
@@ -20,7 +20,7 @@ impl Dataflow {
         match (ptr_domain, value_domain) {
             // If we don't know the pointer we're writing to or the value we're writing,
             // make every cell within the tape unknown
-            (None, None) => self.tape.iter_mut().for_each(|cell| cell.make_full()),
+            (None, None) => self.tape.iter_mut().for_each(|cell| cell.fill()),
 
             // If we don't know the pointer but we do know the value we're writing to it,
             // union every cell's value with the written value
@@ -34,10 +34,7 @@ impl Dataflow {
             (Some(ptr), None) => {
                 let ptr = ptr.into_int_set(self.settings.tape_len);
                 for ptr in ptr.iter() {
-                    self.tape
-                        .get_mut(ptr.value() as usize)
-                        .expect("pointer values should be inbounds")
-                        .make_full();
+                    self.tape[ptr].fill();
                 }
             }
 
@@ -50,15 +47,17 @@ impl Dataflow {
                 );
 
                 for ptr in ptr.iter() {
-                    let cell = self
-                        .tape
-                        .get_mut(ptr.value() as usize)
-                        .expect("pointer values should be inbounds");
+                    let cell = &mut self.tape[ptr];
                     cell.clear();
 
                     *cell = value;
                 }
             }
+        }
+
+        // TODO: Finer-grained provenance invalidation
+        if self.can_mutate {
+            self.port_provenance.clear();
         }
     }
 
@@ -66,7 +65,7 @@ impl Dataflow {
         let ptr = graph.input_source(load.ptr());
         let ptr_domain = self.values.get(&ptr);
 
-        let loaded = match ptr_domain {
+        let mut loaded = match ptr_domain {
             Some(ptr) => {
                 let ptr = ptr.into_int_set(self.settings.tape_len);
                 if ptr.is_empty() {
@@ -74,19 +73,12 @@ impl Dataflow {
                     ByteSet::full()
                 } else {
                     let mut ptr_values = ptr.iter();
-                    let mut loaded = *self
-                        .tape
-                        .get(ptr_values.next().unwrap().value() as usize)
-                        .expect("pointers should be inbounds");
+                    let mut loaded = self.tape[ptr_values.next().unwrap()];
 
                     // Make the loaded value the union of all cells we
                     // could possibly load
                     for ptr in ptr_values {
-                        let cell = *self
-                            .tape
-                            .get(ptr.value() as usize)
-                            .expect("pointers should be inbounds");
-                        loaded.union(cell);
+                        loaded.union(self.tape[ptr]);
                     }
 
                     loaded
@@ -102,10 +94,20 @@ impl Dataflow {
         // If there's only one value we could have possibly loaded, replace this
         // load node with that value
         if self.can_mutate {
+            // If there's provenance for the given pointer, the loaded value
+            // will be the intersection of both the provenance and the value
+            // of the pointed to cells
+            if let Some(provenance) = self.provenance(ptr) {
+                loaded = loaded.intersection(provenance);
+            }
+
             if let Some(loaded) = loaded.as_singleton() {
                 let node = graph.byte(loaded);
                 self.add_domain(node.value(), loaded);
+
                 graph.rewire_dependents(load.output_value(), node.value());
+                graph.splice_ports(load.input_effect(), load.output_effect());
+
                 self.changes.inc::<"const-load">();
             }
         }
@@ -120,51 +122,77 @@ impl Dataflow {
                 graph.input_source(scan.step()),
                 graph.input_source(scan.needle()),
             );
+
             let (ptr, step, needle) = (
                 self.domain(ptr)
-                    .map(|domain| domain.into_int_set(self.tape_len()))
-                    .unwrap_or_else(|| Cow::Owned(IntSet::full(self.tape_len()))),
+                    .map(|domain| domain.into_int_set(self.tape_len()))?,
                 self.domain(step)
-                    .map(|domain| domain.into_int_set(self.tape_len()))
-                    .unwrap_or_else(|| Cow::Owned(IntSet::full(self.tape_len()))),
-                self.domain(needle)
-                    .map(Domain::into_byte_set)
-                    .unwrap_or_else(ByteSet::full),
+                    .map(|domain| domain.into_int_set(self.tape_len()))?,
+                self.domain(needle).map(Domain::into_byte_set)?,
             );
 
             // This algorithm is pretty naive, we basically compute a cartesian product
             // of all three variables
-            let mut possible_values = IntSet::empty(self.tape_len());
+            let (mut possible_values, mut has_matched) = (IntSet::empty(self.tape_len()), false);
 
-            if let Some(step) = step.as_singleton() {
-                for mut ptr in ptr.iter() {
-                    loop {
-                        if self.tape[ptr.value() as usize].intersects(&needle) {
-                            possible_values.add(ptr);
+            if let Some(step) = step.as_singleton() && let Some(mut ptr) = ptr.as_singleton() {
+                let mut visited_cells = HashSet::default();
+
+                loop {
+                    if self.tape[ptr].intersects(&needle) {
+                        possible_values.add(ptr);
+
+                        if !has_matched
+                            && let Some(value) = self.tape[ptr].as_singleton()
+                            && let Some(needle) = needle.as_singleton()
+                            && value == needle
+                        {
+                            self.add_domain(scan.output_ptr(), possible_values);
+                            return;
                         }
 
-                        if self.settings.tape_operations_wrap {
-                            let next = match scan.direction() {
-                                ScanDirection::Forward => ptr.checked_add(step),
-                                ScanDirection::Backward => ptr.checked_sub(step),
-                            };
+                        has_matched = true;
+                    }
 
-                            match next {
-                                Some(next) => ptr = next,
-                                None => break,
-                            }
-                        } else {
-                            ptr = match scan.direction() {
-                                ScanDirection::Forward => ptr.wrapping_add(step),
-                                ScanDirection::Backward => ptr.wrapping_sub(step),
-                            };
+                    if self.settings.tape_operations_wrap {
+                        ptr = match scan.direction() {
+                            ScanDirection::Forward => ptr.wrapping_add(step),
+                            ScanDirection::Backward => ptr.wrapping_sub(step),
+                        };
+
+                        if !visited_cells.insert(ptr) {
+                            break;
+                        }
+                    } else {
+                        let next = match scan.direction() {
+                            ScanDirection::Forward => ptr.checked_add(step),
+                            ScanDirection::Backward => ptr.checked_sub(step),
+                        };
+
+                        match next {
+                            Some(next) => ptr = next,
+                            None => break,
                         }
                     }
                 }
-            } else if step.is_full() {
-                todo!("optimize for full steps")
+
+            // TODO: Handle this
             } else {
-                todo!("optimize for domain'd set")
+                // Add provenance for the scan's output
+                if self.can_mutate && !needle.is_full() && !needle.is_empty() {
+                    self.add_provenance(scan.output_ptr(), needle.to_owned());
+                }
+                return;
+            }
+
+            // TODO: What situations is this empty in?
+            if !possible_values.is_empty() {
+                self.add_domain(scan.output_ptr(), possible_values);
+            }
+
+            // Add provenance for the scan's output
+            if self.can_mutate && !needle.is_full() && !needle.is_empty() {
+                self.add_provenance(scan.output_ptr(), needle.to_owned());
             }
         };
     }
@@ -172,49 +200,49 @@ impl Dataflow {
 
 #[cfg(test)]
 mod tests {
-    use crate::passes::{Dataflow, DataflowSettings};
-
     test_opts! {
         scanl_terminates,
-        passes = |tape_len| bvec![Dataflow::new(DataflowSettings::new(tape_len, true, true))],
-        input = [10],
+        input = [],
         output = [10],
         |graph, effect, tape_len| {
             let ptr = graph.int(Ptr::new(356, tape_len));
             let step = graph.int(Ptr::new(1, tape_len));
-            let needle = graph.input(effect);
+            let needle = graph.byte(10);
 
+            let store = graph.store(ptr.value(), needle.value(), effect);
             let scan = graph.scanl(
                 ptr.value(),
                 step.value(),
-                needle.output_value(),
-                needle.output_effect(),
+                needle.value(),
+                store.output_effect(),
             );
-            let effect = scan.output_effect();
+            let (scan_ptr, scan_effect) = (scan.output_ptr(), scan.output_effect());
+            let load = graph.load(scan_ptr, scan_effect);
 
-            graph.output(step.value(), effect).output_effect()
+            graph.output(load.output_value(), load.output_effect()).output_effect()
         },
     }
 
     test_opts! {
         scanr_terminates,
-        passes = |tape_len| bvec![DataflowV2::new(DataflowSettings::new(tape_len, true, true))],
-        input = [10],
+        input = [],
         output = [10],
         |graph, effect, tape_len| {
             let ptr = graph.int(Ptr::new(356, tape_len));
             let step = graph.int(Ptr::new(1, tape_len));
-            let needle = graph.input(effect);
+            let needle = graph.byte(10);
 
+            let store = graph.store(ptr.value(), needle.value(), effect);
             let scan = graph.scanr(
                 ptr.value(),
                 step.value(),
-                needle.output_value(),
-                needle.output_effect(),
+                needle.value(),
+                store.output_effect(),
             );
-            let effect = scan.output_effect();
+            let (scan_ptr, scan_effect) = (scan.output_ptr(), scan.output_effect());
+            let load = graph.load(scan_ptr, scan_effect);
 
-            graph.output(step.value(), effect).output_effect()
+            graph.output(load.output_value(), load.output_effect()).output_effect()
         },
     }
 }

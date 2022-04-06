@@ -1,5 +1,6 @@
 #[macro_use]
 mod node_macros;
+mod cmp;
 mod gamma;
 mod inherent;
 mod io;
@@ -13,6 +14,7 @@ mod values;
 
 pub mod node_ext;
 
+pub use cmp::{Eq, EqOrNeq, Neq};
 pub use gamma::{Gamma, GammaData};
 pub use inherent::{End, InputParam, OutputParam, Start};
 pub use io::{Input, Output};
@@ -20,7 +22,7 @@ pub use memory::{Load, Store};
 pub use node::Node;
 pub use node_ext::NodeExt;
 pub use node_id::NodeId;
-pub use ops::{Add, AddOrSub, Eq, Mul, Neg, Neq, Not, Sub};
+pub use ops::{Add, AddOrSub, Mul, Neg, Not, Sub};
 pub use scan::{Scan, ScanDirection};
 pub use theta::{Theta, ThetaData};
 pub use values::{Bool, Byte, Int};

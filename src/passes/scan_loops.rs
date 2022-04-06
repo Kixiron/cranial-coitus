@@ -1,23 +1,26 @@
 use crate::{
     graph::{
-        AddOrSub, End, Gamma, InputParam, Load, Neq, NodeExt, OutputParam, Rvsdg, ScanDirection,
-        Theta,
+        AddOrSub, End, EqOrNeq, Gamma, InputParam, Load, Neq, NodeExt, OutputParam, Rvsdg, Scan,
+        ScanDirection, Start, Theta,
     },
     ir::Const,
     passes::{
         utils::{ChangeReport, Changes},
         Pass,
     },
+    values::Ptr,
 };
 
 pub struct ScanLoops {
-    changes: Changes<2>,
+    changes: Changes<4>,
+    tape_len: u16,
 }
 
 impl ScanLoops {
-    pub fn new() -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
-            changes: Changes::new(["scanr", "scanl"]),
+            changes: Changes::new(["scanr", "scanl", "scanr-gamma", "scanl-gamma"]),
+            tape_len,
         }
     }
 
@@ -138,6 +141,133 @@ impl ScanLoops {
 
         Some(())
     }
+
+    // Matches this motif and returns `Some(())` on success
+    // ```
+    // ptr_value := load ptr
+    // ptr_is_needle := cmp.eq ptr_value, needle
+    // if ptr_is_needle {
+    //     ptr_inner := in ptr
+    //     needled_ptr := out ptr_inner
+    // } else {
+    //     ptr_inner := in ptr
+    //     scan_ptr := call scanr(ptr_inner, step, needle)
+    //     needled_ptr := out scan_ptr
+    // }
+    // ```
+    // and rewrites it into this
+    // ```
+    // needled_ptr := call scanr(ptr_inner, step, needle)
+    // ```
+    fn try_rewrite_gamma_scan(&mut self, graph: &mut Rvsdg, gamma: &Gamma) -> Option<()> {
+        // Should have exactly one input and exactly one output
+        if gamma.inputs().len() != 1 && gamma.outputs().len() != 1 {
+            return None;
+        }
+
+        // ptr_is_needle := cmp.eq ptr_value, needle
+        // ptr_isnt_needle := cmp.neq ptr_value, needle
+        let ptr_is_needle = EqOrNeq::cast_input_source(graph, gamma.condition())?;
+
+        // Get the needle value
+        // FIXME: Currently we only accept statically known needle values
+        let (needle, needle_source) = {
+            let source = graph.input_source_node(ptr_is_needle.rhs());
+            let value = source
+                .as_byte_value()
+                .or_else(|| source.as_int_value().map(Ptr::into_cell))?;
+
+            (value, graph.input_source(ptr_is_needle.rhs()))
+        };
+
+        // ptr_value := load ptr
+        let ptr_value = graph.cast_input_source::<Load>(ptr_is_needle.lhs())?;
+        let (ptr_source, ptr_load_effect) = (
+            graph.input_source(ptr_value.ptr()),
+            ptr_value.output_effect(),
+        );
+
+        // Ensure the correct branch is empty
+        let (empty_branch, target_branch, target_is_true) = match ptr_is_needle {
+            EqOrNeq::Eq(_) => (gamma.true_branch(), gamma.false_branch(), true),
+            EqOrNeq::Neq(_) => (gamma.false_branch(), gamma.true_branch(), false),
+        };
+
+        // Start links to the end node
+        let start = empty_branch.cast_node::<Start>(*empty_branch.start_nodes().get(0)?)?;
+        empty_branch.cast_output_dest::<End>(start.effect())?;
+
+        // Make sure the input feeds into the output of the empty branch
+        let input = if target_is_true {
+            empty_branch.cast_node::<InputParam>(gamma.true_input_pairs().next()?.1)?
+        } else {
+            empty_branch.cast_node::<InputParam>(gamma.false_input_pairs().next()?.1)?
+        };
+        empty_branch.cast_output_dest::<OutputParam>(input.output())?;
+
+        // Get the start node of our target branch
+        let start = target_branch.cast_node::<Start>(*target_branch.start_nodes().get(0)?)?;
+
+        // scan_ptr := call scanr(ptr_inner, step, needle)
+        let scan_ptr = target_branch.cast_output_dest::<Scan>(start.effect())?;
+
+        // Get the scan's needle value
+        let scan_needle = {
+            let source = target_branch.input_source_node(scan_ptr.needle());
+            source
+                .as_byte_value()
+                .or_else(|| source.as_int_value().map(Ptr::into_cell))?
+        };
+
+        // Ensure the scan needle and needle values are the same
+        if needle != scan_needle {
+            return None;
+        }
+
+        // FIXME: Accept non-const step values
+        let step = {
+            let source = target_branch.input_source_node(scan_ptr.step());
+            source
+                .as_byte_value()
+                .map(|byte| byte.into_ptr(self.tape_len))
+                .or_else(|| source.as_int_value())?
+        };
+
+        // ptr_inner := in ptr
+        target_branch.cast_input_source::<InputParam>(scan_ptr.ptr())?;
+
+        // needled_ptr := out scan_ptr
+        target_branch.cast_output_dest::<OutputParam>(scan_ptr.output_ptr())?;
+        target_branch.cast_output_dest::<End>(scan_ptr.output_effect())?;
+
+        // At this point we've completely matched the motif
+
+        // Create the step value
+        let step = graph.int(step);
+
+        // Create the new scan
+        let scan_direction = scan_ptr.direction();
+        let scan = graph.scan(
+            scan_direction,
+            ptr_source,
+            step.value(),
+            needle_source,
+            ptr_load_effect,
+        );
+        let (scan_ptr, scan_effect) = (scan.output_ptr(), scan.output_effect());
+
+        // Rewire all dependencies to replace the gamma with the scan call
+        graph.remove_input_edges(gamma.input_effect());
+        graph.rewire_dependents(gamma.output_effect(), scan_effect);
+        graph.rewire_dependents(gamma.outputs()[0], scan_ptr);
+
+        match scan_direction {
+            ScanDirection::Forward => self.changes.inc::<"scanr-gamma">(),
+            ScanDirection::Backward => self.changes.inc::<"scanl-gamma">(),
+        }
+
+        Some(())
+    }
 }
 
 impl Pass for ScanLoops {
@@ -188,7 +318,10 @@ impl Pass for ScanLoops {
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         // Visit both branches of the gamma, replacing it if anything changes
-        if self.visit_graph(gamma.true_mut()) | self.visit_graph(gamma.false_mut()) {
+        if self.visit_graph(gamma.true_mut())
+            | self.visit_graph(gamma.false_mut())
+            | self.try_rewrite_gamma_scan(graph, &gamma).is_some()
+        {
             graph.replace_node(gamma.node(), gamma);
         }
     }

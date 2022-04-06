@@ -23,11 +23,11 @@ pub struct PrettyConfig {
 }
 
 impl PrettyConfig {
-    pub const fn instrumented(instructions: usize) -> Self {
+    pub fn minimal() -> Self {
         Self {
-            display_effects: true,
+            display_effects: false,
             display_invocations: true,
-            total_instructions: Some(instructions),
+            total_instructions: None,
             duration_logging: false,
             colored: true,
             show_lifetimes: false,
@@ -35,16 +35,14 @@ impl PrettyConfig {
         }
     }
 
-    pub fn minimal() -> Self {
-        Self {
-            display_effects: false,
-            display_invocations: false,
-            total_instructions: None,
-            duration_logging: false,
-            colored: true,
-            show_lifetimes: false,
-            hide_const_assignments: true,
-        }
+    pub fn with_hide_const_assignments(mut self, hide_const_assignments: bool) -> Self {
+        self.hide_const_assignments = hide_const_assignments;
+        self
+    }
+
+    pub fn with_instrumented(mut self, total_instructions: usize) -> Self {
+        self.total_instructions = Some(total_instructions);
+        self
     }
 
     // pub const fn with_duration_logging(self, duration_logging: bool) -> Self {

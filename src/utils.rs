@@ -25,26 +25,26 @@ pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<Xxh3
 // pub type ImHashSet<K> = im_rc::HashSet<K, BuildHasherDefault<Xxh3>>;
 pub type ImHashMap<K, V> = im_rc::HashMap<K, V, BuildHasherDefault<Xxh3>>;
 
-pub(crate) enum Element<T> {
+pub(crate) enum DebugCollapse<T> {
     Single(T),
     Many(T, usize, usize),
 }
 
-impl<T> Debug for Element<T>
+impl<T> Debug for DebugCollapse<T>
 where
     T: Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Element::Single(elem) => Debug::fmt(elem, f),
-            Element::Many(elem, start, len) => {
+            Self::Single(elem) => Debug::fmt(elem, f),
+            Self::Many(elem, start, len) => {
                 write!(f, "{:?} × {}..{}", elem, start, start + len)
             }
         }
     }
 }
 
-pub(crate) fn debug_collapse<T>(elements: &[T]) -> Vec<Element<T>>
+pub(crate) fn debug_collapse<T>(elements: &[T]) -> Vec<DebugCollapse<T>>
 where
     T: Copy + PartialEq,
 {
@@ -58,15 +58,77 @@ where
         let len = similar.count();
 
         if len >= 5 {
-            output.push(Element::Many(elements[idx], idx, len));
+            output.push(DebugCollapse::Many(elements[idx], idx, len));
             idx += len;
         } else {
-            output.push(Element::Single(elements[idx]));
+            output.push(DebugCollapse::Single(elements[idx]));
             idx += 1;
         }
     }
 
     output
+}
+
+pub(crate) enum DebugRange<T> {
+    Single(T),
+    Range(T, T),
+}
+
+impl<T> Debug for DebugRange<T>
+where
+    T: Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Single(elem) => Debug::fmt(elem, f),
+            Self::Range(start, end) => (start..=end).fmt(f),
+        }
+    }
+}
+
+pub(crate) struct DebugCollapseRanges<'a, T> {
+    elements: &'a [T],
+    idx: usize,
+}
+
+impl<'a, T> DebugCollapseRanges<'a, T> {
+    pub(crate) const fn new(elements: &'a [T]) -> Self {
+        Self { elements, idx: 0 }
+    }
+}
+
+impl<'a> Iterator for DebugCollapseRanges<'a, u16> {
+    type Item = DebugRange<u16>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx < self.elements.len() {
+            if self.idx + 1 >= self.elements.len() {
+                self.idx += 1;
+                return Some(DebugRange::Single(self.elements[self.idx - 1]));
+            }
+
+            let (start, mut end) = (self.elements[self.idx], self.elements[self.idx + 1]);
+            let similar = self.elements[self.idx..].iter().take_while(|&&elem| {
+                if elem + 1 == end {
+                    end = elem;
+                    true
+                } else {
+                    false
+                }
+            });
+
+            let len = similar.count();
+            if len >= 3 {
+                self.idx += len;
+                Some(DebugRange::Range(start, end))
+            } else {
+                self.idx += 1;
+                Some(DebugRange::Single(self.elements[self.idx - 1]))
+            }
+        } else {
+            None
+        }
+    }
 }
 
 pub fn percent_total(total: usize, subset: usize) -> f64 {
@@ -99,9 +161,9 @@ pub fn diff_ir(old: &str, new: &str) -> String {
     diff
 }
 
-#[non_exhaustive]
 pub struct PerfEvent {
     start_time: Instant,
+    finished: bool,
 }
 
 impl PerfEvent {
@@ -110,17 +172,27 @@ impl PerfEvent {
 
         Self {
             start_time: Instant::now(),
+            finished: false,
         }
     }
 
-    pub fn finish(self) -> Duration {
+    pub fn finish(mut self) -> Duration {
+        self.finish_inner()
+    }
+
+    pub fn finish_inner(&mut self) -> Duration {
+        if !self.finished {
+            self.finished = true;
+            superluminal_perf::end_event();
+        }
+
         self.start_time.elapsed()
     }
 }
 
 impl Drop for PerfEvent {
     fn drop(&mut self) {
-        superluminal_perf::end_event();
+        self.finish_inner();
     }
 }
 

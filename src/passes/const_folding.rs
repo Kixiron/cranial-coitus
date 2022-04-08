@@ -374,7 +374,7 @@ impl Pass for ConstFolding {
             );
 
             let are_equal = graph.bool(lhs == rhs);
-            self.values.add(are_equal.value(), Const::Bool(lhs == rhs));
+            self.values.add(are_equal.value(), lhs == rhs);
             self.values.remove(eq.value());
 
             graph.rewire_dependents(eq.value(), are_equal.value());
@@ -391,7 +391,7 @@ impl Pass for ConstFolding {
             );
 
             let true_val = graph.bool(true);
-            self.values.add(true_val.value(), Const::Bool(true));
+            self.values.add(true_val.value(), true);
             self.values.remove(eq.value());
 
             graph.rewire_dependents(eq.value(), true_val.value());
@@ -420,7 +420,7 @@ impl Pass for ConstFolding {
             );
 
             let are_inequal = graph.bool(result);
-            self.values.add(are_inequal.value(), Const::Bool(result));
+            self.values.add(are_inequal.value(), result);
             self.values.remove(neq.value());
 
             graph.rewire_dependents(neq.value(), are_inequal.value());
@@ -437,7 +437,7 @@ impl Pass for ConstFolding {
             );
 
             let false_val = graph.bool(false);
-            self.values.add(false_val.value(), Const::Bool(false));
+            self.values.add(false_val.value(), false);
             self.values.remove(neq.value());
 
             graph.rewire_dependents(neq.value(), false_val.value());
@@ -454,7 +454,7 @@ impl Pass for ConstFolding {
             tracing::debug!("constant folding 'not {}' to '{}'", value, !value);
 
             let inverted = graph.bool(!value);
-            self.values.add(inverted.value(), Const::Bool(!value));
+            self.values.add(inverted.value(), !value);
             self.values.remove(not.value());
 
             graph.rewire_dependents(not.value(), inverted.value());

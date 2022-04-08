@@ -68,7 +68,7 @@ impl Dataflow {
         let ptr_source = graph.input_source(load.ptr());
         let ptr_domain = self.values.get(&ptr_source);
 
-        let mut loaded = match ptr_domain {
+        let loaded = match ptr_domain {
             Some(ptr) => {
                 let loaded = match ptr {
                     Domain::Byte(ptr) => {
@@ -137,13 +137,14 @@ impl Dataflow {
         // If there's only one value we could have possibly loaded, replace this
         // load node with that value
         if self.can_mutate {
+            // FIXME: This is broken?
             // If there's provenance for the given pointer, the loaded value
             // will be the intersection of both the provenance and the value
             // of the pointed to cells
-            if let Some(provenance) = self.provenance(ptr_source) {
-                tracing::debug!("intersecting provenance of {provenance} with loaded value {loaded} for pointer {ptr_source}");
-                loaded = loaded.intersection(provenance);
-            }
+            // if let Some(provenance) = self.provenance(ptr_source) {
+            //     tracing::debug!("intersecting provenance of {provenance} with loaded value {loaded} for pointer {ptr_source}");
+            //     loaded = loaded.intersection(provenance);
+            // }
 
             if let Some(loaded) = loaded.as_singleton() {
                 tracing::debug!(

@@ -14,7 +14,7 @@ pretty = "0.11.2"
 similar = "2.1.0"
 petgraph = "0.6.0"
 clap = "3.0.0-beta.5"
-superluminal-perf = { version = "0.1.1", features = ["enable"] }
+superluminal-perf = { version = "0.1.1" } # features = ["enable"]
 roaring = { version = "0.9.0", features = ["simd"] }
 im-rc = { version = "15.0.0", features = ["pool"] }
 tinyvec = { version = "1.5.0", features = ["alloc"] }

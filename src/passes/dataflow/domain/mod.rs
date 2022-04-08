@@ -281,7 +281,7 @@ impl BoolSet {
     }
 
     pub fn intersects(&self, other: Self) -> bool {
-        self.intersect(other) != *self
+        self.intersect(other) != Self::empty()
     }
 
     pub fn as_singleton(&self) -> Option<bool> {

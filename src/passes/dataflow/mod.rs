@@ -140,6 +140,8 @@ impl Dataflow {
                 column = caller.column(),
                 "domain given for port {port} is empty",
             );
+
+            return;
         }
 
         self.values
@@ -172,6 +174,18 @@ impl Dataflow {
     }
 
     fn add_provenance(&mut self, output: OutputPort, value: ByteSet) {
+        if value.is_empty() {
+            let caller = Location::caller();
+            tracing::warn!(
+                file = caller.file(),
+                line = caller.line(),
+                column = caller.column(),
+                "provenance given for port {output} is empty",
+            );
+
+            return;
+        }
+
         self.port_provenance
             .entry(output)
             .and_modify(|domain| {
@@ -181,7 +195,9 @@ impl Dataflow {
     }
 
     fn provenance(&self, port: OutputPort) -> Option<&ByteSet> {
-        self.port_provenance.get(&port)
+        self.port_provenance
+            .get(&port)
+            .filter(|domain| !domain.is_empty())
     }
 
     fn collect_subgraph_inputs(

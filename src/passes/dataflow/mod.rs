@@ -13,7 +13,7 @@ use crate::{
 };
 use domain::{ByteSet, Domain};
 use im_rc::hashmap::HashMapPool;
-use std::{fmt::Debug, rc::Rc};
+use std::{fmt::Debug, panic::Location, rc::Rc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DataflowSettings {
@@ -132,14 +132,26 @@ impl Dataflow {
         C: Into<Domain>,
     {
         let mut value = value.into();
+        if value.is_empty() {
+            let caller = Location::caller();
+            tracing::warn!(
+                file = caller.file(),
+                line = caller.line(),
+                column = caller.column(),
+                "domain given for port {port} is empty",
+            );
+        }
+
         self.values
             .entry(port)
-            .and_modify(|domain| domain.union_mut(&mut value))
+            .and_modify(|domain| {
+                domain.union_mut(&mut value);
+            })
             .or_insert(value);
     }
 
     fn domain(&self, port: OutputPort) -> Option<&Domain> {
-        self.values.get(&port)
+        self.values.get(&port).filter(|domain| !domain.is_empty())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -162,7 +174,9 @@ impl Dataflow {
     fn add_provenance(&mut self, output: OutputPort, value: ByteSet) {
         self.port_provenance
             .entry(output)
-            .and_modify(|domain| domain.union(value))
+            .and_modify(|domain| {
+                domain.union(value);
+            })
             .or_insert(value);
     }
 

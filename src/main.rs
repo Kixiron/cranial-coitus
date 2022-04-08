@@ -233,86 +233,89 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
         input_program_ir.clone(),
     );
 
-    loop {
-        let mut changed = false;
+    if !settings.disable_optimizations {
+        loop {
+            let mut changed = false;
 
-        for (pass_idx, pass) in passes.iter_mut().enumerate() {
-            let span = tracing::info_span!("pass", pass = pass.pass_name());
-            span.in_scope(|| {
-                tracing::info!(
-                    "running {} (pass #{}.{})",
-                    pass.pass_name(),
-                    pass_num,
-                    pass_idx,
-                );
-
-                let event = PerfEvent::new(pass.pass_name());
-                let pass_made_changes =
-                    pass.visit_graph_inner(&mut graph, &mut stack, &mut visited, &mut buffer);
-                let elapsed = event.finish();
-
-                changed |= pass_made_changes;
-
-                // Update the pass stats
-                let (activations, duration) = pass_stats
-                    .entry(pass.pass_name().to_owned())
-                    .or_insert((0, Duration::ZERO));
-                *activations += pass_made_changes as usize;
-                *duration += elapsed;
-
-                tracing::info!(
-                    "finished running {} in {:#?} (pass #{}.{}, {})",
-                    pass.pass_name(),
-                    elapsed,
-                    pass_num,
-                    pass_idx,
-                    if pass.did_change() {
-                        "changed"
-                    } else {
-                        "didn't change"
-                    },
-                );
-
-                pass.reset();
-                stack.clear();
-
-                let (_output_program, output_program_ir) =
-                    driver::sequentialize_graph(settings, &graph, None, pretty_config)?;
-
-                let diff = utils::diff_ir(&previous_program_ir, &output_program_ir);
-
-                if !diff.is_empty() {
-                    let pass_dir = dump_dir.join(pass.pass_name());
-                    fs::create_dir_all(&pass_dir)?;
-
-                    let input_file = pass_dir.join(format!("{}.{}.input.cir", pass_num, pass_idx));
-                    fs::write(input_file, &previous_program_ir)?;
-
-                    let output_file = pass_dir.join(format!("{}.{}.cir", pass_num, pass_idx));
-                    fs::write(output_file, &output_program_ir)?;
-
-                    let diff_file = pass_dir.join(format!("{}.{}.diff", pass_num, pass_idx));
-                    fs::write(diff_file, &diff)?;
-
-                    write!(
-                        evolution,
-                        ">>>>> {}-{}.{}\n{}",
+            for (pass_idx, pass) in passes.iter_mut().enumerate() {
+                let span = tracing::info_span!("pass", pass = pass.pass_name());
+                span.in_scope(|| {
+                    tracing::info!(
+                        "running {} (pass #{}.{})",
                         pass.pass_name(),
                         pass_num,
                         pass_idx,
-                        diff,
-                    )?;
-                }
+                    );
 
-                previous_program_ir = output_program_ir;
+                    let event = PerfEvent::new(pass.pass_name());
+                    let pass_made_changes =
+                        pass.visit_graph_inner(&mut graph, &mut stack, &mut visited, &mut buffer);
+                    let elapsed = event.finish();
 
-                Result::<()>::Ok(())
-            })?;
-        }
+                    changed |= pass_made_changes;
 
-        pass_num += 1;
-        if !changed || pass_num >= settings.iteration_limit.unwrap_or(usize::MAX) {
-            break;
+                    // Update the pass stats
+                    let (activations, duration) = pass_stats
+                        .entry(pass.pass_name().to_owned())
+                        .or_insert((0, Duration::ZERO));
+                    *activations += pass_made_changes as usize;
+                    *duration += elapsed;
+
+                    tracing::info!(
+                        "finished running {} in {:#?} (pass #{}.{}, {})",
+                        pass.pass_name(),
+                        elapsed,
+                        pass_num,
+                        pass_idx,
+                        if pass.did_change() {
+                            "changed"
+                        } else {
+                            "didn't change"
+                        },
+                    );
+
+                    pass.reset();
+                    stack.clear();
+
+                    let (_output_program, output_program_ir) =
+                        driver::sequentialize_graph(settings, &graph, None, pretty_config)?;
+
+                    let diff = utils::diff_ir(&previous_program_ir, &output_program_ir);
+
+                    if !diff.is_empty() {
+                        let pass_dir = dump_dir.join(pass.pass_name());
+                        fs::create_dir_all(&pass_dir)?;
+
+                        let input_file =
+                            pass_dir.join(format!("{}.{}.input.cir", pass_num, pass_idx));
+                        fs::write(input_file, &previous_program_ir)?;
+
+                        let output_file = pass_dir.join(format!("{}.{}.cir", pass_num, pass_idx));
+                        fs::write(output_file, &output_program_ir)?;
+
+                        let diff_file = pass_dir.join(format!("{}.{}.diff", pass_num, pass_idx));
+                        fs::write(diff_file, &diff)?;
+
+                        write!(
+                            evolution,
+                            ">>>>> {}-{}.{}\n{}",
+                            pass.pass_name(),
+                            pass_num,
+                            pass_idx,
+                            diff,
+                        )?;
+                    }
+
+                    previous_program_ir = output_program_ir;
+
+                    Result::<()>::Ok(())
+                })?;
+            }
+
+            pass_num += 1;
+            if !changed || pass_num >= settings.iteration_limit.unwrap_or(usize::MAX) {
+                break;
+            }
         }
     }
 

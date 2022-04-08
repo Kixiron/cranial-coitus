@@ -13,7 +13,7 @@ use crate::{
 
 impl Pass for Dataflow {
     fn pass_name(&self) -> &str {
-        "dataflow-v2"
+        "dataflow"
     }
 
     fn did_change(&self) -> bool {

@@ -298,6 +298,40 @@ impl Rvsdg {
         }
     }
 
+    /// Runs the provided closure for each node within the graph and all contained subgraphs
+    /// until the provided function returns `false` or there are no further nodes to visit
+    pub fn try_for_each_transitive_node<F>(&self, mut for_each: F)
+    where
+        F: FnMut(NodeId, &Node) -> bool,
+    {
+        self.try_for_each_transitive_node_inner(&mut for_each);
+    }
+
+    pub fn try_for_each_transitive_node_inner<F>(&self, for_each: &mut F)
+    where
+        F: FnMut(NodeId, &Node) -> bool,
+    {
+        for (&node_id, node) in self.nodes.iter() {
+            if !for_each(node_id, node) {
+                break;
+            }
+
+            match node {
+                Node::Gamma(gamma) => {
+                    gamma
+                        .true_branch()
+                        .try_for_each_transitive_node_inner(for_each);
+                    gamma
+                        .false_branch()
+                        .try_for_each_transitive_node_inner(for_each);
+                }
+                Node::Theta(theta) => theta.body().try_for_each_transitive_node_inner(for_each),
+
+                _ => {}
+            }
+        }
+    }
+
     pub fn try_node(&self, node: NodeId) -> Option<&Node> {
         self.nodes.get(&node)
     }
@@ -639,6 +673,11 @@ impl Rvsdg {
     {
         self.get_outputs(output)
             .filter_map(|(node, ..)| node.try_into().ok())
+    }
+
+    #[track_caller]
+    pub fn total_output_consumers(&self, output: OutputPort) -> usize {
+        self.get_outputs(output).count()
     }
 
     pub fn get_outputs(

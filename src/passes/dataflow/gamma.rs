@@ -18,10 +18,10 @@ impl Dataflow {
 
         // Log any unreachable branches and record a change
         if self.can_mutate && (!true_reachable || !false_reachable) {
-            let cond_src_is_bool = graph.cast_parent::<_, Bool>(cond).is_none();
+            let cond_src_not_bool = graph.cast_parent::<_, Bool>(cond).is_none();
 
             // If the false branch isn't reachable change the condition to false
-            if !true_reachable && cond_src_is_bool {
+            if !true_reachable && cond_src_not_bool {
                 tracing::debug!("elided true branch for gamma {}", gamma.node());
 
                 let bool = graph.bool(false);
@@ -30,7 +30,7 @@ impl Dataflow {
                 self.changes.inc::<"gamma-branch-elision">();
 
             // If the false branch isn't reachable change the condition to true
-            } else if !false_reachable && cond_src_is_bool {
+            } else if !false_reachable && cond_src_not_bool {
                 tracing::debug!("elided false branch for gamma {}", gamma.node());
 
                 let bool = graph.bool(true);
@@ -78,7 +78,9 @@ impl Dataflow {
                     visitor
                         .values
                         .entry(param.output())
-                        .and_modify(|domain| domain.union_mut(&mut true_domain))
+                        .and_modify(|domain| {
+                            domain.union_mut(&mut true_domain);
+                        })
                         .or_insert(true_domain);
                 }
             }
@@ -94,7 +96,9 @@ impl Dataflow {
                     visitor
                         .values
                         .entry(param.output())
-                        .and_modify(|domain| domain.union_mut(&mut false_domain))
+                        .and_modify(|domain| {
+                            domain.union_mut(&mut false_domain);
+                        })
                         .or_insert(false_domain);
                 }
             }
@@ -197,9 +201,7 @@ impl Dataflow {
         }
 
         // If we've changed anything, replace the gamma node
-        if changed {
-            debug_assert!(self.can_mutate);
-
+        if changed && self.can_mutate {
             // TODO: Branch inlining
             match (true_reachable, false_reachable) {
                 (true, true) => {} // graph.replace_node(gamma.node(), gamma);

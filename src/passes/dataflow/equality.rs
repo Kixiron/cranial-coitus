@@ -11,35 +11,48 @@ impl Dataflow {
         let (lhs_src, rhs_src) = (graph.input_source(eq.lhs()), graph.input_source(eq.rhs()));
 
         let mut eq_domain = BoolSet::full();
-        let constraints =
-            if let (Some(lhs), Some(rhs)) = (self.domain(lhs_src), self.domain(rhs_src)) {
-                let intersection = lhs.intersect(rhs);
-
-                // TODO: Skip calculating this for branches that are unreachable
-                let (lhs_false_domain, rhs_false_domain) = differential_product(lhs, rhs);
-
-                // If there's zero overlap between the two values, the comparison will always be false
-                if intersection.is_empty() {
-                    eq_domain.remove(true);
-
-                // If both sides of the comparison are the same, then it'll always be true
-                } else if lhs
-                    .as_singleton()
-                    .zip(rhs.as_singleton())
-                    .map_or(false, |(lhs, rhs)| lhs == rhs)
-                {
+        if let (Some(lhs), Some(rhs)) = (self.domain(lhs_src), self.domain(rhs_src)) {
+            if let Some((lhs, rhs)) = lhs.as_singleton().zip(rhs.as_singleton()) {
+                // lhs ≡ rhs ⟹ ¬(lhs ≠ rhs)
+                if lhs == rhs {
+                    // Only the true branch is reachable
                     eq_domain.remove(false);
+
+                // lhs ≠ rhs ⟹ ¬(lhs ≡ rhs)
+                } else {
+                    // Only the false branch is reachable
+                    eq_domain.remove(true);
                 }
 
-                Some((intersection, lhs_false_domain, rhs_false_domain))
-            } else {
-                None
-            };
+            // If it's possible that the two operands can have the same value,
+            // then it's possible for the eq to return true
+            } else if lhs.intersects(rhs) {
+                // Both branches are reachable right now
 
-        // Apply constraints if we got any
-        if let Some((intersection, lhs_false_domain, rhs_false_domain)) = constraints {
-            self.add_constraints(eq.value(), lhs_src, intersection.clone(), lhs_false_domain);
-            self.add_constraints(eq.value(), rhs_src, intersection, rhs_false_domain);
+                let intersection = lhs.intersect(rhs);
+                let (lhs_true_domain, rhs_true_domain) = differential_product(lhs, rhs);
+                debug_assert!(!intersection.is_empty());
+
+                // Apply constraints to the operands within branches on this condition
+                // TODO: Warn if we get empty sets here
+                if !lhs_true_domain.is_empty() {
+                    self.add_constraints(
+                        eq.value(),
+                        lhs_src,
+                        intersection.clone(),
+                        lhs_true_domain,
+                    );
+                }
+                if !rhs_true_domain.is_empty() {
+                    self.add_constraints(eq.value(), rhs_src, intersection, rhs_true_domain);
+                }
+
+            // If there's zero overlap between the two operands (lhs ∩ rhs = Ø)
+            // then the eq can't possibly return true
+            } else {
+                // Only the false branch is reachable
+                eq_domain.remove(true);
+            }
         }
 
         // If the eq's result is statically known, replace the eq node
@@ -60,35 +73,48 @@ impl Dataflow {
         let (lhs_src, rhs_src) = (graph.input_source(neq.lhs()), graph.input_source(neq.rhs()));
 
         let mut neq_domain = BoolSet::full();
-        let constraints =
-            if let (Some(lhs), Some(rhs)) = (self.domain(lhs_src), self.domain(rhs_src)) {
-                let intersection = lhs.intersect(rhs);
-
-                // TODO: Skip calculating this for branches that are unreachable
-                let (lhs_true_domain, rhs_true_domain) = differential_product(lhs, rhs);
-
-                // If there's zero overlap between the two values, the comparison will always be true
-                if intersection.is_empty() {
-                    neq_domain.remove(false);
-
-                // If both sides of the comparison are the same, then it'll always be false
-                } else if lhs
-                    .as_singleton()
-                    .zip(rhs.as_singleton())
-                    .map_or(false, |(lhs, rhs)| lhs == rhs)
-                {
+        if let (Some(lhs), Some(rhs)) = (self.domain(lhs_src), self.domain(rhs_src)) {
+            if let Some((lhs, rhs)) = lhs.as_singleton().zip(rhs.as_singleton()) {
+                // lhs ≡ rhs ⟹ ¬(lhs ≠ rhs)
+                if lhs == rhs {
+                    // Only the false branch is reachable
                     neq_domain.remove(true);
+
+                // lhs ≠ rhs ⟹ ¬(lhs ≡ rhs)
+                } else {
+                    // Only the true branch is reachable
+                    neq_domain.remove(false);
                 }
 
-                Some((lhs_true_domain, rhs_true_domain, intersection))
-            } else {
-                None
-            };
+            // If it's possible that the two operands can have the same value,
+            // then it's possible for the neq to return false
+            } else if lhs.intersects(rhs) {
+                // Both branches are reachable right now
 
-        // Apply constraints if we got any
-        if let Some((lhs_true_domain, rhs_true_domain, intersection)) = constraints {
-            self.add_constraints(neq.value(), lhs_src, lhs_true_domain, intersection.clone());
-            self.add_constraints(neq.value(), rhs_src, rhs_true_domain, intersection);
+                let intersection = lhs.intersect(rhs);
+                let (lhs_false_domain, rhs_false_domain) = differential_product(lhs, rhs);
+                debug_assert!(!intersection.is_empty());
+
+                // Apply constraints to the operands within branches on this condition
+                // TODO: Warn if we get empty sets here
+                if !lhs_false_domain.is_empty() {
+                    self.add_constraints(
+                        neq.value(),
+                        lhs_src,
+                        lhs_false_domain,
+                        intersection.clone(),
+                    );
+                }
+                if !rhs_false_domain.is_empty() {
+                    self.add_constraints(neq.value(), rhs_src, rhs_false_domain, intersection);
+                }
+
+            // If there's zero overlap between the two operands (lhs ∩ rhs = Ø)
+            // then the neq can't possibly return false
+            } else {
+                // Only the true branch is reachable
+                neq_domain.remove(false);
+            }
         }
 
         // If the neq's result is statically known, replace the neq node

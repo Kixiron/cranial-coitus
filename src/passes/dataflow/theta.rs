@@ -1,10 +1,7 @@
 use crate::{
     graph::{Bool, NodeExt, Rvsdg, Theta},
     passes::{
-        dataflow::{
-            domain::{Domain, NormalizedDomains},
-            Dataflow,
-        },
+        dataflow::{domain::Domain, Dataflow},
         Pass,
     },
 };
@@ -13,7 +10,13 @@ impl Dataflow {
     pub(super) fn compute_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut theta_changed = false;
 
+        // TODO: Perform induction on loop variables where we can
         let inputs = self.collect_subgraph_inputs(graph, theta.body(), theta.input_pair_ids());
+
+        // We can try to do induction on top-level thetas
+        // (thetas without any thetas in their bodies)
+        if !theta.has_child_thetas() {}
+
         // The visitor we create for the theta's body cannot mutate, as we need to
         // iterate until a fixpoint is reached and *then* optimize based off of that fixpoint state
         // TODO: Propagate constraints into the visitor
@@ -65,45 +68,9 @@ impl Dataflow {
 
                 // Union all of the values
                 accrued_values =
-                    accrued_values.union_with(visitor.values.clone(), |accrued, domain| {
-                        match accrued.normalize(domain) {
-                            NormalizedDomains::Bool(accrued, domain) => {
-                                let mut new = accrued;
-                                new.union(&domain);
-
-                                if new != accrued {
-                                    did_change = true;
-                                }
-
-                                Domain::Bool(new)
-                            }
-
-                            NormalizedDomains::Byte(mut accrued, domain) => {
-                                if accrued != domain {
-                                    let old = accrued;
-                                    accrued.union(domain);
-
-                                    if accrued != old {
-                                        did_change = true;
-                                    }
-                                }
-
-                                Domain::Byte(accrued)
-                            }
-
-                            NormalizedDomains::Int(mut accrued, mut domain) => {
-                                if accrued != domain {
-                                    let old = accrued.clone();
-                                    accrued.union_mut(&mut domain);
-
-                                    if accrued != old {
-                                        did_change = true;
-                                    }
-                                }
-
-                                Domain::Int(accrued)
-                            }
-                        }
+                    accrued_values.union_with(visitor.values.clone(), |mut accrued, mut domain| {
+                        did_change |= accrued.union_mut(&mut domain);
+                        accrued
                     });
 
                 // Changes occurred, continue iterating
@@ -136,11 +103,13 @@ impl Dataflow {
             theta_changed = true;
         }
 
-        // Finally, after running the body to a fixpoint we can optimize the innards with
-        // the fixpoint-ed values
-        visitor.allow_mutation();
-        theta_changed |= visitor.visit_graph(theta.body_mut());
-        self.changes.combine(&visitor.changes);
+        if self.can_mutate {
+            // Finally, after running the body to a fixpoint we can optimize the innards with
+            // the fixpoint-ed values
+            visitor.allow_mutation();
+            theta_changed |= visitor.visit_graph(theta.body_mut());
+            self.changes.combine(&visitor.changes);
+        }
 
         // TODO: Pull out fixpoint-ed constraints from the body
 
@@ -156,7 +125,7 @@ impl Dataflow {
         self.tape = visitor.tape;
 
         // If we've changed anything, replace our node within the graph
-        if theta_changed {
+        if theta_changed && self.can_mutate {
             graph.replace_node(theta.node(), theta);
         }
     }

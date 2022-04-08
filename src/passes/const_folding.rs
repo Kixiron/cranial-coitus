@@ -302,9 +302,12 @@ impl Pass for ConstFolding {
         //       variant inputs requires dataflow information
         let invariant_inputs: Vec<_> = theta.invariant_input_pairs().collect();
         for (input, param) in invariant_inputs {
-            if let Some(constant) = self.values.get(graph.input_source(input)) {
+            if let Some(constant) = self.values.get(graph.input_source(input))
+                && !graph.input_source_node(input).is_constant()
+            {
                 let value = theta.body_mut().constant(constant).value();
                 visitor.values.add(value, constant);
+                theta.remove_invariant_input(input);
                 theta.body_mut().rewire_dependents(param.output(), value);
 
                 self.changes.inc::<"propagated-inputs">();
@@ -337,12 +340,15 @@ impl Pass for ConstFolding {
                     self.changes.inc::<"invariant-theta-feedback">();
                 }
 
-                // Rewire any dependents of the output port to the constant value
-                let constant = graph.constant(feedback_value);
-                graph.rewire_dependents(output, constant.value());
+                if graph.total_output_consumers(output) != 0 {
+                    // Rewire any dependents of the output port to the constant value
+                    let constant = graph.constant(feedback_value);
+                    self.values.add(constant.value(), feedback_value);
+                    graph.rewire_dependents(output, constant.value());
 
-                self.changes.inc::<"invariant-theta-output">();
-                changed = true;
+                    self.changes.inc::<"invariant-theta-output">();
+                    changed = true;
+                }
             }
         }
 

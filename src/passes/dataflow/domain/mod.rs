@@ -1,5 +1,7 @@
+mod bitmap_u16;
 mod byte_set;
 mod int_set;
+mod utils;
 
 pub use byte_set::{ByteSet, ProgramTape};
 pub use int_set::IntSet;
@@ -11,14 +13,9 @@ use crate::{
 use std::{
     borrow::Cow,
     fmt::{self, Debug, Display},
+    hint::unreachable_unchecked,
+    mem::swap,
 };
-
-#[derive(Debug, Clone)]
-pub enum NormalizedDomains {
-    Bool(BoolSet, BoolSet),
-    Byte(ByteSet, ByteSet),
-    Int(IntSet, IntSet),
-}
 
 #[derive(Debug, Clone)]
 pub enum Domain {
@@ -61,51 +58,75 @@ impl Domain {
         }
     }
 
-    pub fn union(&mut self, other: &Domain) {
+    pub fn union(&mut self, other: &Domain) -> bool {
         match (self, other) {
             (Self::Bool(lhs), Self::Bool(rhs)) => lhs.union(rhs),
             (Self::Byte(lhs), Self::Byte(rhs)) => lhs.union(*rhs),
             (Self::Int(lhs), Self::Int(rhs)) => lhs.union(rhs),
 
             // TODO: Efficiency
-            (Self::Int(lhs), Self::Byte(rhs)) => {
-                let mut rhs = rhs.into_int_set(lhs.tape_len);
-                lhs.union_mut(&mut rhs);
-            }
+            (Self::Int(lhs), Self::Byte(rhs)) => lhs.union_bytes(*rhs),
             (lhs @ Self::Byte(_), Self::Int(rhs)) => {
-                let mut lhs_set = if let Cow::Owned(lhs) = lhs.into_int_set(rhs.tape_len) {
-                    lhs
-                } else {
+                let lhs_bytes = if let Self::Byte(bytes) = lhs {
+                    *bytes
+                } else if cfg!(debug_assertions) {
                     unreachable!()
+                } else {
+                    unsafe { unreachable_unchecked() }
                 };
-                lhs_set.union(rhs);
 
-                *lhs = Self::Int(lhs_set);
+                let mut rhs = rhs.clone();
+                let changed = rhs.union_bytes(lhs_bytes);
+                *lhs = Self::Int(rhs);
+
+                changed
             }
 
             (Self::Bool(_), _) | (_, Self::Bool(_)) => unreachable!(),
         }
     }
 
-    pub fn union_mut(&mut self, other: &mut Domain) {
+    pub fn union_mut(&mut self, other: &mut Domain) -> bool {
         match (self, other) {
             (Self::Bool(lhs), Self::Bool(rhs)) => lhs.union(rhs),
             (Self::Byte(lhs), Self::Byte(rhs)) => lhs.union(*rhs),
-            (Self::Int(lhs), Self::Int(rhs)) => lhs.union_mut(rhs),
+            (Self::Int(lhs), Self::Int(rhs)) => lhs.union(rhs),
 
-            (Self::Int(lhs), Self::Byte(rhs)) => {
-                let mut rhs = rhs.into_int_set(lhs.tape_len);
-                lhs.union_mut(&mut rhs);
-            }
-            (lhs @ Self::Byte(_), Self::Int(rhs)) => {
-                let mut lhs_set = if let Cow::Owned(lhs) = lhs.into_int_set(rhs.tape_len) {
-                    lhs
-                } else {
+            (Self::Int(lhs), Self::Byte(rhs)) => lhs.union_bytes(*rhs),
+            (lhs @ Self::Byte(_), rhs @ Self::Int(_)) => {
+                let lhs_bytes = if let Self::Byte(bytes) = lhs {
+                    *bytes
+                } else if cfg!(debug_assertions) {
                     unreachable!()
+                } else {
+                    unsafe { unreachable_unchecked() }
                 };
-                lhs_set.union_mut(rhs);
 
-                *lhs = Self::Int(lhs_set);
+                let changed = if let Self::Int(rhs) = rhs {
+                    rhs.union_bytes(lhs_bytes)
+                } else if cfg!(debug_assertions) {
+                    unreachable!()
+                } else {
+                    // Safety: The match guard ensures this is always an Int
+                    unsafe { unreachable_unchecked() }
+                };
+
+                swap(lhs, rhs);
+                changed
+            }
+
+            (Self::Bool(_), _) | (_, Self::Bool(_)) => unreachable!(),
+        }
+    }
+
+    pub fn intersects(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Bool(lhs), Self::Bool(rhs)) => lhs.intersects(*rhs),
+            (Self::Byte(lhs), Self::Byte(rhs)) => lhs.intersects(*rhs),
+            (Self::Int(lhs), Self::Int(rhs)) => lhs.intersects(rhs),
+
+            (Self::Int(ints), Self::Byte(bytes)) | (Self::Byte(bytes), Self::Int(ints)) => {
+                ints.intersects_bytes(*bytes)
             }
 
             (Self::Bool(_), _) | (_, Self::Bool(_)) => unreachable!(),
@@ -119,7 +140,7 @@ impl Domain {
             (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs.intersect(rhs)),
 
             (Self::Int(ints), Self::Byte(bytes)) | (Self::Byte(bytes), Self::Int(ints)) => {
-                Self::Int(bytes.into_int_set(ints.tape_len).intersect_ref(ints))
+                Self::Int(ints.intersect_bytes(bytes))
             }
 
             (Self::Bool(_), _) | (_, Self::Bool(_)) => unreachable!(),
@@ -141,24 +162,6 @@ impl Domain {
                 .as_singleton()
                 .map(|byte| Const::Cell(Cell::new(byte))),
             Self::Int(ints) => ints.as_singleton().map(Const::Ptr),
-        }
-    }
-
-    pub(crate) fn normalize(self, other: Self) -> NormalizedDomains {
-        match (self, other) {
-            (Self::Bool(lhs), Self::Bool(rhs)) => NormalizedDomains::Bool(lhs, rhs),
-            (Self::Byte(lhs), Self::Byte(rhs)) => NormalizedDomains::Byte(lhs, rhs),
-            (Self::Int(lhs), Self::Int(rhs)) => NormalizedDomains::Int(lhs, rhs),
-
-            (Self::Int(lhs), Self::Byte(rhs)) => {
-                let tape_len = lhs.tape_len;
-                NormalizedDomains::Int(lhs, rhs.into_int_set(tape_len))
-            }
-            (Self::Byte(lhs), Self::Int(rhs)) => {
-                NormalizedDomains::Int(lhs.into_int_set(rhs.tape_len), rhs)
-            }
-
-            (Self::Bool(_), _) | (_, Self::Bool(_)) => unreachable!(),
         }
     }
 }
@@ -234,13 +237,17 @@ impl BoolSet {
         Self { values: 0 }
     }
 
-    pub const fn is_empty(&self) -> bool {
-        self.values == Self::empty().values
-    }
-
     /// Creates a boolean set with all inhabitants (both `true` and `false`)
     pub const fn full() -> Self {
         Self::empty().with_value(true).with_value(false)
+    }
+
+    pub const fn singleton(value: bool) -> Self {
+        Self::empty().with_value(value)
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.values == Self::empty().values
     }
 
     pub const fn contains(&self, value: bool) -> bool {
@@ -261,8 +268,10 @@ impl BoolSet {
         self.values &= !(1 << value as usize);
     }
 
-    pub fn union(&mut self, other: &Self) {
+    pub fn union(&mut self, other: &Self) -> bool {
+        let old = self.values;
         self.values |= other.values;
+        self.values != old
     }
 
     pub fn intersect(&self, other: Self) -> Self {
@@ -271,11 +280,17 @@ impl BoolSet {
         }
     }
 
+    pub fn intersects(&self, other: Self) -> bool {
+        self.intersect(other) != *self
+    }
+
     pub fn as_singleton(&self) -> Option<bool> {
-        match (self.contains(true), self.contains(false)) {
-            (true, true) | (false, false) => None,
-            (true, false) => Some(true),
-            (false, true) => Some(false),
+        if *self == Self::singleton(true) {
+            Some(true)
+        } else if *self == Self::singleton(false) {
+            Some(false)
+        } else {
+            None
         }
     }
 
@@ -355,12 +370,12 @@ pub fn differential_product(lhs: &Domain, rhs: &Domain) -> (Domain, Domain) {
         }
 
         (Domain::Int(lhs), Domain::Byte(rhs)) | (Domain::Byte(rhs), Domain::Int(lhs)) => {
-            let rhs = rhs.into_int_set(lhs.tape_len);
-
             let (mut lhs_false, mut rhs_false) =
                 (IntSet::empty(lhs.tape_len), IntSet::empty(lhs.tape_len));
             for lhs in lhs.iter() {
                 for rhs in rhs.iter() {
+                    let rhs = Ptr::new(rhs as u16, lhs.tape_len());
+
                     if lhs != rhs {
                         lhs_false.add(lhs);
                         rhs_false.add(rhs);

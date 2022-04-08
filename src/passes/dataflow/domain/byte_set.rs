@@ -1,11 +1,12 @@
 use crate::{
-    passes::dataflow::domain::IntSet,
+    passes::dataflow::domain::{utils as bit_utils, IntSet},
     utils::{self, DebugCollapseRanges},
     values::{Cell, Ptr},
 };
 use std::{
     cell::RefCell,
     fmt::{self, Debug, Display, Write},
+    intrinsics::transmute,
     iter::FusedIterator,
     mem::{size_of, take, MaybeUninit},
     ops::{Index, IndexMut},
@@ -36,6 +37,7 @@ impl ProgramTape {
                 let tape = unsafe { Box::new_zeroed_slice(tape_len as usize).assume_init() };
                 Self { tape }
             });
+
         // Set every cell's value to zero
         this.as_mut_arrays().fill(ByteSet::singleton(0).values);
         this
@@ -51,6 +53,10 @@ impl ProgramTape {
 
     pub fn iter_mut(&mut self) -> slice::IterMut<'_, ByteSet> {
         self.tape.iter_mut()
+    }
+
+    pub fn fill(&mut self) {
+        self.as_mut_arrays().fill(ByteSet::full().values);
     }
 
     pub fn union(&mut self, other: &Self) -> bool {
@@ -188,6 +194,8 @@ pub struct ByteSet {
 }
 
 impl ByteSet {
+    pub const LEN: usize = SLOTS;
+
     pub const fn empty() -> Self {
         Self { values: [0; SLOTS] }
     }
@@ -202,6 +210,16 @@ impl ByteSet {
         let mut this = Self::empty();
         this.insert(byte);
         this
+    }
+
+    pub fn from_ref(values: &[u64; SLOTS]) -> &Self {
+        // Safety: ByteSet is transparent over an array
+        unsafe { transmute(values) }
+    }
+
+    pub fn from_mut(values: &mut [u64; SLOTS]) -> &mut Self {
+        // Safety: ByteSet is transparent over an array
+        unsafe { transmute(values) }
     }
 
     pub fn clear(&mut self) {
@@ -250,31 +268,34 @@ impl ByteSet {
         *target != old
     }
 
-    pub fn union(&mut self, other: Self) {
-        let (lhs, rhs) = (
-            u64x4::from_array(self.values),
-            u64x4::from_array(other.values),
-        );
+    pub fn union(&mut self, other: Self) -> bool {
+        let (lhs, rhs) = (self.to_simd(), other.to_simd());
+
+        let old = self.values;
         self.values = *(lhs | rhs).as_array();
+
+        self.values != old
+    }
+
+    pub fn intersect(&mut self, other: &Self) -> bool {
+        let (lhs, rhs) = (self.to_simd(), other.to_simd());
+
+        let old = self.values;
+        self.values = *(lhs & rhs).as_array();
+
+        self.values != old
     }
 
     pub fn intersection(&self, other: &Self) -> Self {
-        let (lhs, rhs) = (
-            u64x4::from_array(self.values),
-            u64x4::from_array(other.values),
-        );
+        let (lhs, rhs) = (self.to_simd(), other.to_simd());
 
         Self {
             values: *(lhs & rhs).as_array(),
         }
     }
 
-    pub fn intersects(&self, other: &Self) -> bool {
-        let (lhs, rhs) = (
-            u64x4::from_array(self.values),
-            u64x4::from_array(other.values),
-        );
-
+    pub fn intersects(&self, other: Self) -> bool {
+        let (lhs, rhs) = (self.to_simd(), other.to_simd());
         lhs & rhs != u64x4::splat(0)
     }
 
@@ -282,8 +303,8 @@ impl ByteSet {
         (self.len() == 1).then(|| self.iter().next().unwrap())
     }
 
-    pub const fn iter(&self) -> ByteIter {
-        ByteIter::new(*self)
+    pub const fn iter(&self) -> Iter {
+        Iter::new(*self)
     }
 
     #[allow(clippy::wrong_self_convention)]
@@ -296,10 +317,14 @@ impl ByteSet {
 
         ints
     }
+
+    const fn to_simd(self) -> u64x4 {
+        u64x4::from_array(self.values)
+    }
 }
 
 impl IntoIterator for ByteSet {
-    type IntoIter = ByteIter;
+    type IntoIter = Iter;
     type Item = u8;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -344,7 +369,7 @@ impl Display for ByteSet {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ByteIter {
+pub struct Iter {
     /// The set being iterated over. It is mutated in-place as bits are popped
     /// from each chunk.
     byte_set: ByteSet,
@@ -356,7 +381,7 @@ pub struct ByteIter {
     backward_index: usize,
 }
 
-impl ByteIter {
+impl Iter {
     #[inline]
     pub(crate) const fn new(byte_set: ByteSet) -> Self {
         Self {
@@ -367,14 +392,14 @@ impl ByteIter {
     }
 }
 
-impl From<ByteSet> for ByteIter {
+impl From<ByteSet> for Iter {
     #[inline]
     fn from(byte_set: ByteSet) -> Self {
         Self::new(byte_set)
     }
 }
 
-impl Iterator for ByteIter {
+impl Iterator for Iter {
     type Item = u8;
 
     fn next(&mut self) -> Option<u8> {
@@ -384,7 +409,7 @@ impl Iterator for ByteIter {
             debug_assert!(index < self.byte_set.values.len());
             let chunk = unsafe { self.byte_set.values.get_unchecked_mut(index) };
 
-            if let Some(lsb) = pop_lsb(chunk) {
+            if let Some(lsb) = bit_utils::pop_lsb(chunk) {
                 return Some(lsb + (index * u64::BITS as usize) as u8);
             }
         }
@@ -400,7 +425,7 @@ impl Iterator for ByteIter {
             debug_assert!(index < self.byte_set.values.len());
             let chunk = unsafe { self.byte_set.values.get_unchecked_mut(index) };
 
-            while let Some(lsb) = pop_lsb(chunk) {
+            while let Some(lsb) = bit_utils::pop_lsb(chunk) {
                 each(lsb + (index * u64::BITS as usize) as u8);
             }
         });
@@ -433,17 +458,16 @@ impl Iterator for ByteIter {
     }
 }
 
-impl DoubleEndedIterator for ByteIter {
+impl DoubleEndedIterator for Iter {
     fn next_back(&mut self) -> Option<u8> {
         // `Range` (`a..b`) is faster than `InclusiveRange` (`a..=b`).
         for index in (0..(self.backward_index + 1)).rev() {
             self.backward_index = index;
 
-            // SAFETY: This invariant is tested.
             debug_assert!(index < self.byte_set.values.len());
             let chunk = unsafe { self.byte_set.values.get_unchecked_mut(index) };
 
-            if let Some(msb) = pop_msb(chunk) {
+            if let Some(msb) = bit_utils::pop_msb(chunk) {
                 return Some(msb + (index * u64::BITS as usize) as u8);
             }
         }
@@ -452,7 +476,7 @@ impl DoubleEndedIterator for ByteIter {
     }
 }
 
-impl ExactSizeIterator for ByteIter {
+impl ExactSizeIterator for Iter {
     #[inline]
     fn len(&self) -> usize {
         self.byte_set.len()
@@ -460,42 +484,4 @@ impl ExactSizeIterator for ByteIter {
 }
 
 // `ByteIter` does not produce more values after `None` is reached.
-impl FusedIterator for ByteIter {}
-
-pub fn lsb(chunk: u64) -> Option<u8> {
-    if chunk == 0 {
-        None
-    } else {
-        Some(chunk.trailing_zeros() as u8)
-    }
-}
-
-/// Returns the last (most significant) bit of `chunk`, or `None` if `chunk` is
-/// 0.
-#[inline]
-pub fn msb(chunk: u64) -> Option<u8> {
-    if chunk == 0 {
-        None
-    } else {
-        let bits = u64::BITS - 1;
-        Some((bits as u8) ^ chunk.leading_zeros() as u8)
-    }
-}
-
-/// Removes the first (least significant) bit from `chunk` and returns it, or
-/// `None` if `chunk` is 0.
-#[inline]
-pub fn pop_lsb(chunk: &mut u64) -> Option<u8> {
-    let lsb = lsb(*chunk)?;
-    *chunk ^= 1 << lsb;
-    Some(lsb)
-}
-
-/// Removes the last (most significant) bit from `chunk` and returns it, or
-/// `None` if `chunk` is 0.
-#[inline]
-pub fn pop_msb(chunk: &mut u64) -> Option<u8> {
-    let msb = msb(*chunk)?;
-    *chunk ^= 1 << msb;
-    Some(msb)
-}
+impl FusedIterator for Iter {}

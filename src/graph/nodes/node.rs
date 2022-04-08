@@ -119,6 +119,10 @@ impl Node {
     pub const fn is_const_number(&self) -> bool {
         matches!(self, Self::Byte(..) | Self::Int(..))
     }
+
+    pub(crate) fn is_constant(&self) -> bool {
+        matches!(self, Self::Byte(..) | Self::Int(..) | Self::Bool(..))
+    }
 }
 
 node_methods! {

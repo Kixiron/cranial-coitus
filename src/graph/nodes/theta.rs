@@ -466,6 +466,20 @@ impl Theta {
             .find(|(_, &input)| input == variant_input.node())
             .map(|(&input_port, _)| input_port)
     }
+
+    pub(crate) fn has_child_thetas(&self) -> bool {
+        let mut has_child_thetas = false;
+        self.body().try_for_each_transitive_node(|_, node| {
+            if node.is_theta() {
+                has_child_thetas = true;
+                false
+            } else {
+                true
+            }
+        });
+
+        has_child_thetas
+    }
 }
 
 /// Utility functions

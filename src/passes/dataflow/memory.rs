@@ -1,10 +1,10 @@
 use crate::{
-    graph::{Load, Rvsdg, Scan, ScanDirection, Store},
+    graph::{Load, Rvsdg, Scan, Store},
     passes::dataflow::{
-        domain::{ByteSet, Domain, IntSet},
+        domain::{ByteSet, Domain},
         Dataflow,
     },
-    utils::HashSet,
+    values::Ptr,
 };
 
 impl Dataflow {
@@ -20,37 +20,40 @@ impl Dataflow {
         match (ptr_domain, value_domain) {
             // If we don't know the pointer we're writing to or the value we're writing,
             // make every cell within the tape unknown
-            (None, None) => self.tape.iter_mut().for_each(|cell| cell.fill()),
+            (None, None) => self.tape.fill(),
 
             // If we don't know the pointer but we do know the value we're writing to it,
             // union every cell's value with the written value
             (None, Some(value)) => {
                 let value = value.into_byte_set();
-                self.tape.iter_mut().for_each(|cell| cell.union(value))
+                self.tape.iter_mut().for_each(|cell| {
+                    cell.union(value);
+                });
             }
 
             // If we know the pointer we're writing to but don't know what value
             // we're writing, we can simply make those cell values unknown
-            (Some(ptr), None) => {
-                let ptr = ptr.into_int_set(self.settings.tape_len);
-                for ptr in ptr.iter() {
+            (Some(ptr), None) => match ptr {
+                Domain::Byte(bytes) => bytes.iter().for_each(|byte| {
+                    let ptr = Ptr::new(byte as u16, self.tape_len());
                     self.tape[ptr].fill();
-                }
-            }
+                }),
+                Domain::Int(ints) => ints.iter().for_each(|ptr| self.tape[ptr].fill()),
+                Domain::Bool(_) => unreachable!(),
+            },
 
             // Otherwise if we know both the pointer and the written value,
             // we can replace the cell at each possible cell with our written value
             (Some(ptr), Some(value)) => {
-                let (ptr, value) = (
-                    ptr.into_int_set(self.settings.tape_len),
-                    value.into_byte_set(),
-                );
+                let value = value.into_byte_set();
 
-                for ptr in ptr.iter() {
-                    let cell = &mut self.tape[ptr];
-                    cell.clear();
-
-                    *cell = value;
+                match ptr {
+                    Domain::Byte(bytes) => bytes.iter().for_each(|byte| {
+                        let ptr = Ptr::new(byte as u16, self.tape_len());
+                        self.tape[ptr] = value;
+                    }),
+                    Domain::Int(ints) => ints.iter().for_each(|ptr| self.tape[ptr] = value),
+                    Domain::Bool(_) => unreachable!(),
                 }
             }
         }
@@ -62,25 +65,65 @@ impl Dataflow {
     }
 
     pub(super) fn compute_load(&mut self, graph: &mut Rvsdg, load: Load) {
-        let ptr = graph.input_source(load.ptr());
-        let ptr_domain = self.values.get(&ptr);
+        let ptr_source = graph.input_source(load.ptr());
+        let ptr_domain = self.values.get(&ptr_source);
 
         let mut loaded = match ptr_domain {
             Some(ptr) => {
-                let ptr = ptr.into_int_set(self.settings.tape_len);
-                if ptr.is_empty() {
-                    tracing::error!(?load, %ptr, "loaded from pointer without any possible values?");
-                    ByteSet::full()
-                } else {
-                    let mut ptr_values = ptr.iter();
-                    let mut loaded = self.tape[ptr_values.next().unwrap()];
+                let loaded = match ptr {
+                    Domain::Byte(ptr) => {
+                        if ptr.is_empty() {
+                            tracing::error!(?load, %ptr, "loaded from pointer without any possible values?");
+                            ByteSet::full()
+                        } else {
+                            // Make the loaded value the union of all cells we
+                            // could possibly load
+                            let mut loaded = ByteSet::empty();
+                            for ptr in ptr.iter() {
+                                let ptr = Ptr::new(ptr as u16, self.tape_len());
+                                loaded.union(self.tape[ptr]);
 
-                    // Make the loaded value the union of all cells we
-                    // could possibly load
-                    for ptr in ptr_values {
-                        loaded.union(self.tape[ptr]);
+                                if loaded.is_full() {
+                                    break;
+                                }
+                            }
+
+                            tracing::debug!(
+                                "union across pointer range {ptr_source} produced loaded value {loaded}",
+                            );
+                            loaded
+                        }
                     }
 
+                    Domain::Int(ptr) => {
+                        if ptr.is_empty() {
+                            tracing::error!(?load, %ptr, "loaded from pointer without any possible values?");
+                            ByteSet::full()
+                        } else {
+                            // Make the loaded value the union of all cells we
+                            // could possibly load
+                            let mut loaded = ByteSet::empty();
+                            for ptr in ptr {
+                                loaded.union(self.tape[ptr]);
+
+                                if loaded.is_full() {
+                                    break;
+                                }
+                            }
+
+                            tracing::debug!(
+                                "union across pointer range {ptr_source} produced loaded value {loaded}",
+                            );
+                            loaded
+                        }
+                    }
+
+                    Domain::Bool(_) => unreachable!(),
+                };
+
+                if loaded.is_empty() {
+                    ByteSet::full()
+                } else {
                     loaded
                 }
             }
@@ -97,11 +140,17 @@ impl Dataflow {
             // If there's provenance for the given pointer, the loaded value
             // will be the intersection of both the provenance and the value
             // of the pointed to cells
-            if let Some(provenance) = self.provenance(ptr) {
+            if let Some(provenance) = self.provenance(ptr_source) {
+                tracing::debug!("intersecting provenance of {provenance} with loaded value {loaded} for pointer {ptr_source}");
                 loaded = loaded.intersection(provenance);
             }
 
             if let Some(loaded) = loaded.as_singleton() {
+                tracing::debug!(
+                    "replaced load {} of pointer {ptr_source} with constant {loaded}",
+                    load.output_value(),
+                );
+
                 let node = graph.byte(loaded);
                 self.add_domain(node.value(), loaded);
 
@@ -116,85 +165,16 @@ impl Dataflow {
     }
 
     pub(super) fn compute_scan(&mut self, graph: &mut Rvsdg, scan: Scan) {
-        let _: Option<()> = try {
-            let (ptr, step, needle) = (
-                graph.input_source(scan.ptr()),
-                graph.input_source(scan.step()),
-                graph.input_source(scan.needle()),
-            );
-
-            let (ptr, step, needle) = (
-                self.domain(ptr)
-                    .map(|domain| domain.into_int_set(self.tape_len()))?,
-                self.domain(step)
-                    .map(|domain| domain.into_int_set(self.tape_len()))?,
-                self.domain(needle).map(Domain::into_byte_set)?,
-            );
-
-            // This algorithm is pretty naive, we basically compute a cartesian product
-            // of all three variables
-            let (mut possible_values, mut has_matched) = (IntSet::empty(self.tape_len()), false);
-
-            if let Some(step) = step.as_singleton() && let Some(mut ptr) = ptr.as_singleton() {
-                let mut visited_cells = HashSet::default();
-
-                loop {
-                    if self.tape[ptr].intersects(&needle) {
-                        possible_values.add(ptr);
-
-                        if !has_matched
-                            && let Some(value) = self.tape[ptr].as_singleton()
-                            && let Some(needle) = needle.as_singleton()
-                            && value == needle
-                        {
-                            self.add_domain(scan.output_ptr(), possible_values);
-                            return;
-                        }
-
-                        has_matched = true;
-                    }
-
-                    if self.settings.tape_operations_wrap {
-                        ptr = match scan.direction() {
-                            ScanDirection::Forward => ptr.wrapping_add(step),
-                            ScanDirection::Backward => ptr.wrapping_sub(step),
-                        };
-
-                        if !visited_cells.insert(ptr) {
-                            break;
-                        }
-                    } else {
-                        let next = match scan.direction() {
-                            ScanDirection::Forward => ptr.checked_add(step),
-                            ScanDirection::Backward => ptr.checked_sub(step),
-                        };
-
-                        match next {
-                            Some(next) => ptr = next,
-                            None => break,
-                        }
-                    }
-                }
-
-            // TODO: Handle this
-            } else {
-                // Add provenance for the scan's output
-                if self.can_mutate && !needle.is_full() && !needle.is_empty() {
-                    self.add_provenance(scan.output_ptr(), needle.to_owned());
-                }
-                return;
-            }
-
-            // TODO: What situations is this empty in?
-            if !possible_values.is_empty() {
-                self.add_domain(scan.output_ptr(), possible_values);
-            }
-
-            // Add provenance for the scan's output
-            if self.can_mutate && !needle.is_full() && !needle.is_empty() {
-                self.add_provenance(scan.output_ptr(), needle.to_owned());
-            }
-        };
+        // If we can find the domain of the needle value, add that provenance
+        // to the output pointer
+        if self.can_mutate
+            && let Some(needle) = self.domain(graph.input_source(scan.needle())).map(Domain::into_byte_set)
+            && !needle.is_full()
+            && !needle.is_empty()
+        {
+            tracing::debug!("added scan provenance to output pointer {}: {needle}", scan.output_ptr());
+            self.add_provenance(scan.output_ptr(), needle);
+        }
     }
 }
 

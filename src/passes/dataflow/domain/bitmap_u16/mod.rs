@@ -52,43 +52,53 @@ impl U16Bitmap {
     }
 
     pub fn is_empty(&self) -> bool {
-        if matches!(self.raw_len(), Some(0)) {
-            true
-        } else {
-            let is_empty = arch::all_bits_are_unset(self.as_array());
-            if is_empty {
-                self.length.set(Some(0));
-            }
+        match self.raw_len() {
+            // len ≡ 0
+            Some(0) => true,
 
-            is_empty
+            // len ≠ 0
+            Some(_) => false,
+
+            // len unknown
+            None => {
+                let is_empty = arch::all_bits_are_unset(self.as_array());
+                if is_empty {
+                    self.length.set(Some(0));
+                }
+
+                is_empty
+            }
         }
     }
 
     pub fn is_full(&self) -> bool {
-        if matches!(self.raw_len(), Some(MAX_LEN)) {
-            true
-        } else {
-            let is_full = arch::all_bits_are_set(self.as_array());
-            if is_full {
-                self.length.set(Some(MAX_LEN));
-            }
+        match self.raw_len() {
+            // len ≡ MAX_LEN
+            Some(len) if len == MAX_LEN => true,
 
-            is_full
+            // len ≠ MAX_LEN
+            Some(_) => false,
+
+            // len unknown
+            None => {
+                let is_full = arch::all_bits_are_set(self.as_array());
+                if is_full {
+                    self.length.set(Some(MAX_LEN));
+                }
+
+                is_full
+            }
         }
     }
 
     pub fn len(&self) -> usize {
-        let length = self
-            .length
-            .get()
-            .unwrap_or_else(|| arch::popcount(self.as_array()));
-        self.length.set(Some(length));
+        let length = self.raw_len().unwrap_or_else(|| {
+            let len = arch::popcount(self.as_array());
+            self.length.set(Some(len));
+            len
+        });
 
         length as usize
-    }
-
-    fn raw_len(&self) -> Option<u32> {
-        self.length.get()
     }
 
     pub fn contains(&self, value: u16) -> bool {
@@ -135,20 +145,22 @@ impl U16Bitmap {
         if self.len() != 1 {
             None
         } else {
-            self.bits.iter().enumerate().find_map(|(idx, &bits)| {
-                (bits != 0).then(|| (idx as u16 * u64::BITS as u16) + bits.trailing_zeros() as u16)
-            })
+            self.iter().next()
         }
     }
 
     pub fn fill(&mut self) {
-        self.length.set(Some(MAX_LEN));
-        arch::set_bits_one(self.as_mut_array());
+        if self.shallow_not_full() {
+            self.length.set(Some(MAX_LEN));
+            arch::set_bits_one(self.as_mut_array());
+        }
     }
 
     pub fn clear(&mut self) {
-        self.length.set(Some(0));
-        arch::set_bits_zero(self.as_mut_array());
+        if self.shallow_not_empty() {
+            self.length.set(Some(0));
+            arch::set_bits_zero(self.as_mut_array());
+        }
     }
 
     /// Fills `self` with the set of all integers contained
@@ -158,8 +170,21 @@ impl U16Bitmap {
     /// a boolean as to whether or not `self` has changed any
     ///
     pub fn union(&mut self, other: &Self) -> bool {
-        self.length.set(None);
-        arch::union(self.as_mut_array(), other.as_array())
+        // If both sets are empty, their union is empty
+        if self.shallow_empty() && other.shallow_empty() {
+            false
+
+            // If self is empty and other isn't, copy the bits of other into self
+        } else if self.shallow_empty() && other.shallow_not_empty() {
+            self.length.set(other.raw_len());
+            self.bits.copy_from_slice(&**other.bits);
+            true
+
+        // Otherwise calculate the union
+        } else {
+            self.length.set(None);
+            arch::union(self.as_mut_array(), other.as_array())
+        }
     }
 
     /// Fills `output` with the set of all integers contained
@@ -196,22 +221,37 @@ impl U16Bitmap {
     }
 
     pub fn intersect(&mut self, other: &Self) {
-        self.length.set(None);
-        arch::intersect(self.as_mut_array(), other.as_array())
+        if self.shallow_empty() {
+            // Do nothing, we're already empty and an intersection between anything
+            // and an empty set is nothing
+        } else if other.shallow_empty() {
+            self.clear();
+        } else {
+            self.length.set(None);
+            arch::intersect(self.as_mut_array(), other.as_array());
+        }
     }
 
     pub fn intersect_into(&self, other: &Self, output: &mut Self) {
-        output.length.set(None);
-        arch::intersect_into(self.as_array(), other.as_array(), output.as_mut_array())
+        if self.shallow_empty() || other.shallow_empty() {
+            output.clear();
+        } else {
+            output.length.set(None);
+            arch::intersect_into(self.as_array(), other.as_array(), output.as_mut_array())
+        }
     }
 
     pub fn intersect_new(&self, other: &Self) -> Self {
-        let mut uninit = uninit_bit_box();
-        arch::intersect_into_uninit(self.as_array(), other.as_array(), &mut *uninit);
+        if self.shallow_empty() || other.shallow_empty() {
+            Self::empty()
+        } else {
+            let mut uninit = uninit_bit_box();
+            arch::intersect_into_uninit(self.as_array(), other.as_array(), &mut *uninit);
 
-        Self {
-            bits: unsafe { assume_bit_box_init(uninit) },
-            length: Cell::new(None),
+            Self {
+                bits: unsafe { assume_bit_box_init(uninit) },
+                length: Cell::new(None),
+            }
         }
     }
 
@@ -228,7 +268,11 @@ impl U16Bitmap {
     }
 
     pub fn intersects(&self, other: &Self) -> bool {
-        arch::intersects(self.as_array(), other.as_array())
+        if self.shallow_empty() || other.shallow_empty() {
+            false
+        } else {
+            arch::intersects(self.as_array(), other.as_array())
+        }
     }
 
     pub(crate) fn intersects_bytes(&self, other: ByteSet) -> bool {
@@ -252,6 +296,31 @@ impl U16Bitmap {
     #[inline]
     fn as_mut_array(&mut self) -> &mut BitArray {
         &mut *self.bits
+    }
+
+    #[inline]
+    fn shallow_empty(&self) -> bool {
+        matches!(self.raw_len(), Some(0))
+    }
+
+    #[inline]
+    fn shallow_not_empty(&self) -> bool {
+        matches!(self.raw_len(), Some(len) if len != 0)
+    }
+
+    #[inline]
+    fn shallow_full(&self) -> bool {
+        matches!(self.raw_len(), Some(len) if len == MAX_LEN)
+    }
+
+    #[inline]
+    fn shallow_not_full(&self) -> bool {
+        matches!(self.raw_len(), Some(len) if len != MAX_LEN)
+    }
+
+    #[inline]
+    fn raw_len(&self) -> Option<u32> {
+        self.length.get()
     }
 
     pub(super) fn iter(&self) -> Iter<'_> {

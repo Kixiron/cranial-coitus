@@ -60,6 +60,12 @@ impl Dataflow {
 
         // TODO: Finer-grained provenance invalidation
         if self.can_mutate {
+            tracing::debug!(
+                target: "dataflow-provenance",
+                "invalidated provenance for {:?}",
+                self.port_provenance.keys().copied().collect::<Vec<_>>(),
+            );
+
             self.port_provenance.clear();
         }
     }
@@ -137,16 +143,24 @@ impl Dataflow {
         // If there's only one value we could have possibly loaded, replace this
         // load node with that value
         if self.can_mutate {
-            // FIXME: This is broken?
             // If there's provenance for the given pointer, the loaded value
             // will be the intersection of both the provenance and the value
             // of the pointed to cells
-            // if let Some(provenance) = self.provenance(ptr_source) {
-            //     tracing::debug!("intersecting provenance of {provenance} with loaded value {loaded} for pointer {ptr_source}");
-            //     loaded = loaded.intersection(provenance);
-            // }
+            if let Some(provenance) = self.provenance(ptr_source) {
+                tracing::debug!("intersecting provenance of {provenance} with loaded value {loaded} for pointer {ptr_source}");
+                let refined = loaded.intersection(provenance);
+                // FIXME: This is broken?
+                // loaded = refined;
 
-            if let Some(loaded) = loaded.as_singleton() {
+                tracing::debug!(
+                    target: "dataflow-provenance",
+                    "refined provenance for {ptr_source} from {loaded} to {refined}"
+                );
+            }
+
+            if let Some(loaded) = loaded.as_singleton()
+                && graph.has_output_consumers(load.output_value())
+            {
                 tracing::debug!(
                     "replaced load {} of pointer {ptr_source} with constant {loaded}",
                     load.output_value(),
@@ -181,8 +195,11 @@ impl Dataflow {
 
 #[cfg(test)]
 mod tests {
+    use crate::passes::{Dataflow, DataflowSettings};
+
     test_opts! {
         scanl_terminates,
+        passes = |tape_len| bvec![Dataflow::new(DataflowSettings::new(tape_len, true, true))],
         input = [],
         output = [10],
         |graph, effect, tape_len| {
@@ -206,6 +223,7 @@ mod tests {
 
     test_opts! {
         scanr_terminates,
+        passes = |tape_len| bvec![Dataflow::new(DataflowSettings::new(tape_len, true, true))],
         input = [],
         output = [10],
         |graph, effect, tape_len| {

@@ -186,6 +186,11 @@ impl Dataflow {
             return;
         }
 
+        tracing::debug!(
+            target: "dataflow-provenance",
+            "setting provenance for {output} to {value}",
+        );
+
         self.port_provenance
             .entry(output)
             .and_modify(|domain| {

@@ -13,14 +13,15 @@ impl Dataflow {
         // TODO: Perform induction on loop variables where we can
         let inputs = self.collect_subgraph_inputs(graph, theta.body(), theta.input_pair_ids());
 
-        // We can try to do induction on top-level thetas
-        // (thetas without any thetas in their bodies)
-        if !theta.has_child_thetas() {}
-
         // The visitor we create for the theta's body cannot mutate, as we need to
         // iterate until a fixpoint is reached and *then* optimize based off of that fixpoint state
         // TODO: Propagate constraints into the visitor
         let mut visitor = self.clone_for_subscope(inputs).with_mutation(false);
+
+        // We can try to do induction on top-level thetas
+        // (thetas without any thetas in their bodies)
+        if !theta.has_child_thetas() {}
+
         // Visit the theta's body once before starting the fixpoint
         visitor.visit_graph(theta.body_mut());
 

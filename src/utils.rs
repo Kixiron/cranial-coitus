@@ -4,6 +4,7 @@ use std::{
     collections::BTreeSet,
     fmt::{self, Debug, Display},
     hash::{BuildHasherDefault, Hash},
+    iter::Peekable,
     time::{Duration, Instant},
 };
 use tracing_subscriber::{
@@ -86,47 +87,42 @@ where
     }
 }
 
-pub(crate) struct DebugCollapseRanges<'a, T> {
-    elements: &'a [T],
-    idx: usize,
+pub(crate) struct DebugCollapseRanges<I>
+where
+    I: Iterator,
+{
+    iter: Peekable<I>,
 }
 
-impl<'a, T> DebugCollapseRanges<'a, T> {
-    pub(crate) const fn new(elements: &'a [T]) -> Self {
-        Self { elements, idx: 0 }
+impl<I> DebugCollapseRanges<I>
+where
+    I: Iterator,
+{
+    pub(crate) fn new(iter: I) -> Self {
+        Self {
+            iter: iter.peekable(),
+        }
     }
 }
 
-impl<'a> Iterator for DebugCollapseRanges<'a, u16> {
+impl<I> Iterator for DebugCollapseRanges<I>
+where
+    I: Iterator<Item = u16>,
+{
     type Item = DebugRange<u16>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx < self.elements.len() {
-            if self.idx + 1 >= self.elements.len() {
-                self.idx += 1;
-                return Some(DebugRange::Single(self.elements[self.idx - 1]));
-            }
+        let current = self.iter.next()?;
 
-            let (start, mut end) = (self.elements[self.idx], self.elements[self.idx + 1]);
-            let similar = self.elements[self.idx..].iter().take_while(|&&elem| {
-                if elem + 1 == end {
-                    end = elem;
-                    true
-                } else {
-                    false
-                }
-            });
+        let mut last = current;
+        while let Some(&next) = self.iter.peek() && next == last + 1 {
+            last = self.iter.next().unwrap();
+        }
 
-            let len = similar.count();
-            if len >= 3 {
-                self.idx += len;
-                Some(DebugRange::Range(start, end))
-            } else {
-                self.idx += 1;
-                Some(DebugRange::Single(self.elements[self.idx - 1]))
-            }
+        if last > current + 1 {
+            Some(DebugRange::Range(current, last))
         } else {
-            None
+            Some(DebugRange::Single(current))
         }
     }
 }

@@ -351,9 +351,10 @@ impl Debug for ByteSet {
         } else if self.is_full() {
             f.write_str("[0, 255]")
         } else {
-            let elements = self.iter().map(|byte| byte as u16).collect::<Vec<_>>();
             f.debug_set()
-                .entries(DebugCollapseRanges::new(&elements))
+                .entries(DebugCollapseRanges::new(
+                    self.iter().map(|byte| byte as u16),
+                ))
                 .finish()
         }
     }
@@ -361,10 +362,7 @@ impl Debug for ByteSet {
 
 impl Display for ByteSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let elements = self.iter().map(|byte| byte as u16).collect::<Vec<_>>();
-        f.debug_set()
-            .entries(DebugCollapseRanges::new(&elements))
-            .finish()
+        Debug::fmt(self, f)
     }
 }
 

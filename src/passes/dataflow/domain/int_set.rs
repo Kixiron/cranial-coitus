@@ -7,7 +7,7 @@ use crate::{
     values::Ptr,
 };
 use std::{
-    fmt::{self, Debug, Display},
+    fmt::{self, Debug, Display, Write},
     iter::FusedIterator,
 };
 
@@ -44,6 +44,10 @@ impl IntSet {
 
     pub fn is_empty(&self) -> bool {
         self.bitmap.is_empty()
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.bitmap.is_full()
     }
 
     pub fn len(&self) -> usize {
@@ -123,19 +127,21 @@ impl From<Ptr> for IntSet {
 
 impl Debug for IntSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let elements = self.iter().map(Ptr::value).collect::<Vec<_>>();
-        f.debug_set()
-            .entries(DebugCollapseRanges::new(&elements))
-            .finish()
+        if self.is_empty() {
+            f.write_char('Ø')
+        } else if self.is_full() {
+            write!(f, "[0, {}]", u16::MAX)
+        } else {
+            f.debug_set()
+                .entries(DebugCollapseRanges::new(self.iter().map(Ptr::value)))
+                .finish()
+        }
     }
 }
 
 impl Display for IntSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let elements = self.iter().map(Ptr::value).collect::<Vec<_>>();
-        f.debug_set()
-            .entries(DebugCollapseRanges::new(&elements))
-            .finish()
+        Debug::fmt(self, f)
     }
 }
 

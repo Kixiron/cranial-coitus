@@ -11,7 +11,6 @@ use crate::{
     values::{Cell, Ptr},
 };
 use std::{
-    borrow::Cow,
     fmt::{self, Debug, Display},
     hint::unreachable_unchecked,
     mem::swap,
@@ -45,15 +44,6 @@ impl Domain {
 
                 bytes
             }
-            Self::Bool(_) => unreachable!(),
-        }
-    }
-
-    #[allow(clippy::wrong_self_convention)]
-    pub fn into_int_set(&self, tape_len: u16) -> Cow<'_, IntSet> {
-        match self {
-            Self::Byte(bytes) => Cow::Owned(bytes.into_int_set(tape_len)),
-            Self::Int(ints) => Cow::Borrowed(ints),
             Self::Bool(_) => unreachable!(),
         }
     }

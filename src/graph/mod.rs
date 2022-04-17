@@ -680,6 +680,11 @@ impl Rvsdg {
         self.get_outputs(output).count()
     }
 
+    #[track_caller]
+    pub fn has_output_consumers(&self, output: OutputPort) -> bool {
+        self.total_output_consumers(output) != 0
+    }
+
     pub fn get_outputs(
         &self,
         output: OutputPort,

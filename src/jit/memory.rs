@@ -27,15 +27,22 @@ impl Executable {
     pub unsafe fn execute(&self, tape: &mut [u8]) -> Result<u8> {
         let tape_len = tape.len();
 
-        let (stdin, mut stdout_buffer, mut utf8_buffer) = (
+        let (stdin, stdout, mut _stdout_buffer, mut utf8_buffer) = (
             io::stdin(),
-            Vec::with_capacity(512),
+            io::stdout(),
+            Vec::<u8>::with_capacity(512),
             String::with_capacity(512),
         );
         let (start_ptr, end_ptr) = unsafe { (tape.as_mut_ptr(), tape.as_mut_ptr().add(tape_len)) };
+
+        let mut stdout = stdout.lock();
+        stdout
+            .flush()
+            .context("failed to flush stdout before jitted function execution")?;
+
         let mut state = State::new(
             stdin.lock(),
-            &mut stdout_buffer,
+            &mut stdout,
             &mut utf8_buffer,
             start_ptr.cast(),
             end_ptr.cast(),
@@ -49,17 +56,22 @@ impl Executable {
         let elapsed = jit_start.elapsed();
         drop(state);
 
-        {
-            let stdout = io::stdout();
-            let mut stdout = stdout.lock();
+        stdout
+            .flush()
+            .context("failed to flush stdout after jitted function execution")?;
+        drop(stdout);
 
-            stdout
-                .write_all(&stdout_buffer)
-                .context("failed to write newline to stdout")?;
-            stdout
-                .flush()
-                .context("failed to flush stdout after jitted function execution")?;
-        }
+        // {
+        //     let stdout = io::stdout();
+        //     let mut stdout = stdout.lock();
+        //
+        //     stdout
+        //         .write_all(&stdout_buffer)
+        //         .context("failed to write newline to stdout")?;
+        //     stdout
+        //         .flush()
+        //         .context("failed to flush stdout after jitted function execution")?;
+        // }
 
         tracing::debug!(
             "jitted function returned {:?} in {:#?}",

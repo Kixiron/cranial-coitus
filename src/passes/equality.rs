@@ -24,6 +24,13 @@ impl Equality {
             _ => false,
         }
     }
+
+    // We only want to perform these opts when there's exactly one consumer of the
+    // input expression and that consumer is us, otherwise we duplicate expressions
+    // that otherwise wouldn't need to be duplicated
+    fn input_is_exclusive(&self, graph: &mut Rvsdg, input: InputPort) -> bool {
+        graph.total_output_consumers(graph.input_source(input)) == 1
+    }
 }
 
 impl Pass for Equality {
@@ -59,8 +66,18 @@ impl Pass for Equality {
     // print(s.check()) # unsat
     // ```
     fn visit_eq(&mut self, graph: &mut Rvsdg, eq: Eq) {
-        if self.input_is_zero(graph, eq.rhs()) {
+        if self.input_is_zero(graph, eq.rhs()) && self.input_is_exclusive(graph, eq.lhs()) {
             if let Some(&sub) = graph.cast_input_source::<Sub>(eq.lhs()) {
+                let (lhs_src, rhs_src) =
+                    (graph.input_source(sub.lhs()), graph.input_source(sub.rhs()));
+
+                let new_eq = graph.eq(lhs_src, rhs_src);
+                graph.rewire_dependents(eq.value(), new_eq.value());
+
+                self.changes.inc::<"eq-rewrites">();
+            }
+        } else if self.input_is_zero(graph, eq.lhs()) && self.input_is_exclusive(graph, eq.rhs()) {
+            if let Some(&sub) = graph.cast_input_source::<Sub>(eq.rhs()) {
                 let (lhs_src, rhs_src) =
                     (graph.input_source(sub.lhs()), graph.input_source(sub.rhs()));
 
@@ -88,7 +105,7 @@ impl Pass for Equality {
     // print(s.check()) # unsat
     // ```
     fn visit_neq(&mut self, graph: &mut Rvsdg, neq: Neq) {
-        if self.input_is_zero(graph, neq.rhs()) {
+        if self.input_is_zero(graph, neq.rhs()) && self.input_is_exclusive(graph, neq.lhs()) {
             if let Some(&sub) = graph.cast_input_source::<Sub>(neq.lhs()) {
                 let (lhs_src, rhs_src) =
                     (graph.input_source(sub.lhs()), graph.input_source(sub.rhs()));
@@ -98,15 +115,22 @@ impl Pass for Equality {
 
                 self.changes.inc::<"neq-rewrites">();
             }
+        } else if self.input_is_zero(graph, neq.lhs()) && self.input_is_exclusive(graph, neq.rhs())
+        {
+            if let Some(&sub) = graph.cast_input_source::<Sub>(neq.rhs()) {
+                let (lhs_src, rhs_src) =
+                    (graph.input_source(sub.lhs()), graph.input_source(sub.rhs()));
+
+                let new_eq = graph.eq(lhs_src, rhs_src);
+                graph.rewire_dependents(neq.value(), new_eq.value());
+
+                self.changes.inc::<"neq-rewrites">();
+            }
         }
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
-        let mut changed = false;
-        changed |= self.visit_graph(gamma.true_mut());
-        changed |= self.visit_graph(gamma.false_mut());
-
-        if changed {
+        if self.visit_graph(gamma.true_mut()) | self.visit_graph(gamma.false_mut()) {
             graph.replace_node(gamma.node(), gamma);
         }
     }

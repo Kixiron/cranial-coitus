@@ -1,6 +1,8 @@
 use clap::Parser;
 use std::{num::NonZeroU16, path::PathBuf};
 
+use crate::passes::PassConfig;
+
 #[derive(Debug, Parser)]
 #[clap(rename_all = "kebab-case")]
 pub enum Args {
@@ -72,6 +74,9 @@ pub struct Settings {
     /// Remove the interpreter's step limit
     #[clap(long)]
     pub no_step_limit: bool,
+
+    #[clap(long)]
+    pub no_run: bool,
 }
 
 impl Settings {
@@ -81,5 +86,13 @@ impl Settings {
         } else {
             self.step_limit.unwrap_or(usize::MAX)
         }
+    }
+
+    pub fn pass_config(&self) -> PassConfig {
+        PassConfig::new(
+            self.tape_len.get(),
+            !self.tape_wrapping_ub,
+            !self.cell_wrapping_ub,
+        )
     }
 }

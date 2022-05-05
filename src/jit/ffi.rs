@@ -5,7 +5,7 @@ use std::{
     slice,
 };
 
-const IO_FAILURE_MESSAGE: &[u8] = b"encountered an io failure during execution";
+const IO_FAILURE_MESSAGE: &[u8] = b"encountered an io failure during execution\n";
 
 pub struct State<'a> {
     stdin: StdinLock<'a>,

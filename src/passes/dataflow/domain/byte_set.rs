@@ -163,7 +163,7 @@ impl Clone for ProgramTape {
     }
 
     fn clone_from(&mut self, source: &Self) {
-        self.tape.copy_from_slice(&source.tape);
+        self.tape.clone_from(&source.tape);
     }
 }
 

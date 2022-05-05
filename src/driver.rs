@@ -5,7 +5,7 @@ use crate::{
     ir::{Block, IrBuilder, Pretty, PrettyConfig},
     lower_tokens,
     parse::{self, Token},
-    passes,
+    passes::{self, PassConfig},
     utils::{HashSet, PerfEvent},
     values::{Cell, Ptr},
 };
@@ -21,12 +21,10 @@ use std::{
 #[tracing::instrument(skip_all)]
 pub fn run_opt_passes(
     graph: &mut Rvsdg,
-    cells: u16,
     iteration_limit: usize,
-    tape_operations_wrap: bool,
-    cell_operations_wrap: bool,
+    pass_config: &PassConfig,
 ) -> usize {
-    let mut passes = passes::default_passes(cells, tape_operations_wrap, cell_operations_wrap);
+    let mut passes = passes::default_passes(pass_config);
     let (mut pass_num, mut stack, mut visited, mut buffer) = (
         1,
         VecDeque::new(),

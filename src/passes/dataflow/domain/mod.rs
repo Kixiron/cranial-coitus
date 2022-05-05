@@ -346,7 +346,7 @@ pub fn differential_product(lhs: &Domain, rhs: &Domain) -> (Domain, Domain) {
 
         (Domain::Int(lhs), Domain::Int(rhs)) => {
             let (mut lhs_false, mut rhs_false) =
-                (IntSet::empty(lhs.tape_len), IntSet::empty(lhs.tape_len));
+                (IntSet::empty(lhs.tape_len()), IntSet::empty(lhs.tape_len()));
             for lhs in lhs.iter() {
                 for rhs in rhs.iter() {
                     if lhs != rhs {
@@ -361,7 +361,8 @@ pub fn differential_product(lhs: &Domain, rhs: &Domain) -> (Domain, Domain) {
 
         (Domain::Int(lhs), Domain::Byte(rhs)) | (Domain::Byte(rhs), Domain::Int(lhs)) => {
             let (mut lhs_false, mut rhs_false) =
-                (IntSet::empty(lhs.tape_len), IntSet::empty(lhs.tape_len));
+                (IntSet::empty(lhs.tape_len()), IntSet::empty(lhs.tape_len()));
+
             for lhs in lhs.iter() {
                 for rhs in rhs.iter() {
                     let rhs = Ptr::new(rhs as u16, lhs.tape_len());

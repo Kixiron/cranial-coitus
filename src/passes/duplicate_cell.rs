@@ -5,7 +5,7 @@ use crate::{
     },
     ir::Const,
     passes::{
-        utils::{BinOp, ChangeReport},
+        utils::{BinaryOp, ChangeReport},
         Pass,
     },
     utils::{AssertNone, HashMap},
@@ -333,7 +333,7 @@ impl DuplicateCell {
         add_value: Ptr,
     ) -> Option<(OutputPort, OutputPort, OutputPort)>
     where
-        T: BinOp,
+        T: BinaryOp,
         for<'a> &'a Node: TryInto<&'a T>,
     {
         // Get the load

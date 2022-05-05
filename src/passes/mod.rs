@@ -10,6 +10,7 @@ mod equality;
 mod expr_dedup;
 mod fold_arithmetic;
 mod fuse_io;
+mod hoist_variant_inputs;
 mod licm;
 mod mem2reg;
 mod scan_loops;
@@ -52,13 +53,28 @@ use crate::{
 };
 use std::{cell::RefCell, collections::VecDeque};
 
-// TODO: Genetic algorithm for pass ordering
-//       https://kunalspathak.github.io/2021-07-22-Genetic-Algorithms-In-LSRA/
-pub fn default_passes(
+#[derive(Debug, Clone)]
+pub struct PassConfig {
     tape_len: u16,
     tape_operations_wrap: bool,
     cell_operations_wrap: bool,
-) -> Vec<Box<dyn Pass>> {
+}
+
+impl PassConfig {
+    pub fn new(tape_len: u16, tape_operations_wrap: bool, cell_operations_wrap: bool) -> Self {
+        Self {
+            tape_len,
+            tape_operations_wrap,
+            cell_operations_wrap,
+        }
+    }
+}
+
+// TODO: Genetic algorithm for pass ordering
+//       https://kunalspathak.github.io/2021-07-22-Genetic-Algorithms-In-LSRA/
+pub fn default_passes(config: &PassConfig) -> Vec<Box<dyn Pass>> {
+    let tape_len = config.tape_len;
+
     bvec![
         UnobservedStore::new(tape_len),
         ConstFolding::new(tape_len),
@@ -79,11 +95,7 @@ pub fn default_passes(
         DuplicateCell::new(tape_len),
         Equality::new(),
         ExprDedup::new(),
-        Dataflow::new(DataflowSettings::new(
-            tape_len,
-            tape_operations_wrap,
-            cell_operations_wrap
-        )),
+        // Dataflow::new(DataflowSettings::new(config)),
         Canonicalize::new(),
         Dce::new(),
     ]

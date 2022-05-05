@@ -11,10 +11,24 @@ use std::{
     iter::FusedIterator,
 };
 
-#[derive(Clone, PartialEq, Default)]
+#[derive(PartialEq, Default)]
 pub struct IntSet {
     bitmap: U16Bitmap,
-    pub(super) tape_len: u16,
+    tape_len: u16,
+}
+
+impl Clone for IntSet {
+    fn clone(&self) -> Self {
+        Self {
+            bitmap: self.bitmap.clone(),
+            tape_len: self.tape_len,
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.tape_len = source.tape_len;
+        self.bitmap.clone_from(&source.bitmap);
+    }
 }
 
 impl IntSet {
@@ -116,6 +130,11 @@ impl IntSet {
     #[inline]
     pub fn iter(&self) -> Iter<'_> {
         Iter::new(self)
+    }
+
+    /// Get the int set's tape len.
+    pub const fn tape_len(&self) -> u16 {
+        self.tape_len
     }
 }
 

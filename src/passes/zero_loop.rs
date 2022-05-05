@@ -97,11 +97,23 @@ impl ZeroLoop {
         }
 
         // not_zero = neq cell_value, int 1
+        // not_zero = neq plus_one, int 0
+        // not_zero = neq minus_one, int 0
         let not_zero = graph.cast_input_source::<Neq>(theta.condition().input())?;
-        if graph.input_source(not_zero.lhs()) != cell_value.output_value()
-            || body_values.ptr(graph.input_source(not_zero.rhs()))? != 1
         {
-            return None;
+            let lhs = graph.input_source(not_zero.lhs());
+            let rhs_value = body_values.ptr(graph.input_source(not_zero.rhs()))?;
+
+            // not_zero = neq cell_value, int 1
+            let is_neq_one = lhs == cell_value.output_value() && rhs_value == 1;
+
+            // not_zero = neq plus_one, int 0
+            // not_zero = neq minus_one, int 0
+            let is_neq_zero = lhs == add_or_sub.value() && rhs_value == 0;
+
+            if !(is_neq_one || is_neq_zero) {
+                return None;
+            }
         }
 
         // The theta's end node

@@ -4,7 +4,7 @@ use crate::{
     },
     ir::Const,
     passes::{
-        utils::{BinOp, ChangeReport, Changes, ConstantStore},
+        utils::{BinaryOp, ChangeReport, Changes, ConstantStore},
         Pass,
     },
     utils::HashSet,
@@ -44,7 +44,7 @@ impl AssociativeOps {
 
     fn fold_associative_operation<T>(&mut self, graph: &mut Rvsdg, operation: T) -> bool
     where
-        T: BinOp,
+        T: BinaryOp,
         for<'a> &'a Node: TryInto<&'a T>,
     {
         let inputs = [
@@ -92,10 +92,7 @@ impl AssociativeOps {
                         op = T::symbol(),
                     );
 
-                    let combined = T::combine(
-                        known.into_ptr(self.tape_len),
-                        dependency_known.into_ptr(self.tape_len),
-                    );
+                    let combined = T::apply(known, dependency_known);
                     tracing::debug!(
                         "evaluated associative {} {:?}: (({:?}->{:?} {op} {}) {op} {}) to ({:?}->{:?} {op} {})",
                         T::name(),
@@ -110,7 +107,7 @@ impl AssociativeOps {
                         op = T::symbol(),
                     );
 
-                    let int = graph.int(combined);
+                    let int = graph.constant(combined);
                     self.constants.add(int.value(), combined);
 
                     graph.remove_input_edges(operation.lhs());

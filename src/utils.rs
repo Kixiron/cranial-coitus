@@ -513,7 +513,7 @@ macro_rules! test_opts {
                 graph::{Rvsdg, OutputPort, ThetaData, GammaData},
                 interpreter::Machine,
                 ir::{IrBuilder, Pretty, PrettyConfig},
-                passes::{Pass, Dce},
+                passes::{Pass, Dce, PassConfig},
                 utils::{compile_brainfuck_into, HashSet},
                 values::{Cell, Ptr},
             };
@@ -531,7 +531,7 @@ macro_rules! test_opts {
             )?
             $(
                 if $use_default_passes {
-                    passes = $crate::passes::default_passes(tape_len, false, false);
+                    passes = $crate::passes::default_passes(&PassConfig::new(tape_len, true, true));
                 }
             )?
 

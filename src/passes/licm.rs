@@ -1,18 +1,25 @@
 use crate::{
     graph::{
-        Add, Bool, Byte, EdgeKind, Eq, Gamma, InputPort, Int, Neg, Node, NodeExt, NodeId, Not,
-        OutputParam, OutputPort, Rvsdg, Theta,
+        Add, Bool, Byte, EdgeKind, Eq, Gamma, InputPort, Int, Mul, Neg, Neq, Node, NodeExt, NodeId,
+        Not, OutputParam, OutputPort, Rvsdg, Sub, Theta,
     },
-    passes::Pass,
+    ir::Const,
+    passes::{
+        utils::{BinaryOp, Changes, UnaryOp},
+        Pass,
+    },
     utils::{AssertNone, HashMap, HashSet},
     values::{Cell, Ptr},
 };
+use std::collections::{BTreeSet, VecDeque};
+
+use super::utils::ChangeReport;
 
 /// Loop invariant code motion
 // TODO: Pull out expressions that only depend on invariant inputs
 // TODO: Demote variant inputs to invariant ones where possible
 pub struct Licm {
-    changed: bool,
+    changes: Changes<3>,
     within_theta: bool,
     invariant_exprs: HashSet<OutputPort>,
 }
@@ -20,7 +27,11 @@ pub struct Licm {
 impl Licm {
     pub fn new() -> Self {
         Self {
-            changed: false,
+            changes: Changes::new([
+                "gamma-inputs",
+                "hoisted-theta-exprs",
+                "theta-invariant-variants",
+            ]),
             within_theta: false,
             invariant_exprs: HashSet::with_hasher(Default::default()),
         }
@@ -29,10 +40,6 @@ impl Licm {
     fn within_theta(mut self, within_theta: bool) -> Self {
         self.within_theta = within_theta;
         self
-    }
-
-    fn changed(&mut self) {
-        self.changed = true;
     }
 
     fn input_invariant(&self, graph: &Rvsdg, input: InputPort) -> bool {
@@ -44,142 +51,31 @@ impl Licm {
         &mut self,
         graph: &mut Rvsdg,
         body: &mut Rvsdg,
+        invariant_inputs: &[(OutputPort, OutputPort)],
         invariant_exprs: &HashSet<OutputPort>,
     ) -> Vec<(OutputPort, NodeId)> {
         // TODO: Buffers
-        let mut invariant_exprs: Vec<_> = invariant_exprs.iter().copied().collect();
-        invariant_exprs.sort_unstable();
+        let mut invariant_exprs: VecDeque<_> = invariant_exprs.iter().copied().collect();
+        invariant_exprs.make_contiguous().sort_unstable();
 
-        // TODO: Buffers
-        let (mut params, mut removals, mut param_to_new) = (
-            Vec::with_capacity(invariant_exprs.len()),
-            HashSet::with_capacity_and_hasher(invariant_exprs.len(), Default::default()),
-            HashMap::with_capacity_and_hasher(invariant_exprs.len(), Default::default()),
-        );
+        let mut puller = ExpressionPuller::new(graph, body, invariant_inputs, invariant_exprs);
 
-        while let Some(port) = invariant_exprs.pop() {
-            let node_id = body.port_parent(port);
+        while let Some(port) = puller.pop_invariant_expr() {
+            let node_id = puller.body.port_parent(port);
 
-            match *body.get_node(node_id) {
-                Node::Int(old_int, value) => {
-                    let input = body.input_param(EdgeKind::Value);
-                    body.rewire_dependents(old_int.value(), input.output());
-                    removals.insert(old_int.node());
+            match *puller.body.get_node(node_id) {
+                Node::Eq(eq) => puller.binary_op(port, eq),
+                Node::Neq(neq) => puller.binary_op(port, neq),
+                Node::Add(add) => puller.binary_op(port, add),
+                Node::Sub(sub) => puller.binary_op(port, sub),
+                Node::Mul(mul) => puller.binary_op(port, mul),
 
-                    let int = graph.int(value);
-                    params.push((int.value(), input.node()));
-                    param_to_new
-                        .insert(input.output(), int.value())
-                        .debug_unwrap_none();
+                Node::Not(not) => puller.unary_op(port, not),
+                Node::Neg(neg) => puller.unary_op(port, neg),
 
-                    tracing::trace!(?old_int, ?int, "pulled int {} out of subgraph", value);
-                    self.changed();
-                }
-
-                Node::Bool(old_bool, value) => {
-                    let input = body.input_param(EdgeKind::Value);
-                    body.rewire_dependents(old_bool.value(), input.output());
-                    removals.insert(old_bool.node());
-
-                    let bool = graph.bool(value);
-                    params.push((bool.value(), input.node()));
-                    param_to_new
-                        .insert(input.output(), bool.value())
-                        .debug_unwrap_none();
-
-                    tracing::trace!(?old_bool, ?bool, "pulled bool {} out of subgraph", value);
-                    self.changed();
-                }
-
-                Node::Add(old_add) => {
-                    let lhs = param_to_new.get(&body.input_source(old_add.lhs())).copied();
-                    let rhs = param_to_new.get(&body.input_source(old_add.rhs())).copied();
-
-                    if let (Some(lhs), Some(rhs)) = (lhs, rhs) {
-                        let input = body.input_param(EdgeKind::Value);
-                        body.rewire_dependents(old_add.value(), input.output());
-                        removals.insert(old_add.node());
-
-                        let add = graph.add(lhs, rhs);
-                        params.push((add.value(), input.node()));
-                        param_to_new
-                            .insert(input.output(), add.value())
-                            .debug_unwrap_none();
-
-                        tracing::trace!(?old_add, ?add, "pulled add out of subgraph");
-                        self.changed();
-                    } else {
-                        invariant_exprs.insert(0, port);
-                    }
-                }
-
-                Node::Eq(old_eq) => {
-                    let lhs = param_to_new.get(&body.input_source(old_eq.lhs())).copied();
-                    let rhs = param_to_new.get(&body.input_source(old_eq.rhs())).copied();
-
-                    if let (Some(lhs), Some(rhs)) = (lhs, rhs) {
-                        let input = body.input_param(EdgeKind::Value);
-                        body.rewire_dependents(old_eq.value(), input.output());
-                        removals.insert(old_eq.node());
-
-                        let eq = graph.add(lhs, rhs);
-                        params.push((eq.value(), input.node()));
-                        param_to_new
-                            .insert(input.output(), eq.value())
-                            .debug_unwrap_none();
-
-                        tracing::trace!(?old_eq, ?eq, "pulled eq out of subgraph");
-                        self.changed();
-                    } else {
-                        invariant_exprs.insert(0, port);
-                    }
-                }
-
-                Node::Not(old_not) => {
-                    let negated = param_to_new
-                        .get(&body.input_source(old_not.input()))
-                        .copied();
-
-                    if let Some(negated) = negated {
-                        let input = body.input_param(EdgeKind::Value);
-                        body.rewire_dependents(old_not.value(), input.output());
-                        removals.insert(old_not.node());
-
-                        let not = graph.not(negated);
-                        params.push((not.value(), input.node()));
-                        param_to_new
-                            .insert(input.output(), not.value())
-                            .debug_unwrap_none();
-
-                        tracing::trace!(?old_not, ?not, "pulled not out of subgraph");
-                        self.changed();
-                    } else {
-                        invariant_exprs.insert(0, port);
-                    }
-                }
-
-                Node::Neg(old_neg) => {
-                    let negated = param_to_new
-                        .get(&body.input_source(old_neg.input()))
-                        .copied();
-
-                    if let Some(negated) = negated {
-                        let input = body.input_param(EdgeKind::Value);
-                        body.rewire_dependents(old_neg.value(), input.output());
-                        removals.insert(old_neg.node());
-
-                        let neg = graph.neg(negated);
-                        params.push((neg.value(), input.node()));
-                        param_to_new
-                            .insert(input.output(), neg.value())
-                            .debug_unwrap_none();
-
-                        tracing::trace!(?old_neg, ?neg, "pulled neg out of subgraph");
-                        self.changed();
-                    } else {
-                        invariant_exprs.insert(0, port);
-                    }
-                }
+                Node::Int(int, value) => puller.constant(int.value(), value),
+                Node::Byte(byte, value) => puller.constant(byte.value(), value),
+                Node::Bool(bool, value) => puller.constant(bool.value(), value),
 
                 ref node => {
                     tracing::warn!("unhandled invariant node kind: {:?}", node);
@@ -187,9 +83,7 @@ impl Licm {
             }
         }
 
-        body.bulk_remove_nodes(&removals);
-
-        params
+        puller.finish()
     }
 }
 
@@ -200,30 +94,49 @@ impl Pass for Licm {
     }
 
     fn did_change(&self) -> bool {
-        self.changed
+        self.changes.did_change()
+    }
+
+    fn report(&self) -> ChangeReport {
+        self.changes.as_report()
     }
 
     fn reset(&mut self) {
-        self.changed = false;
+        self.changes.reset();
+        self.within_theta = false;
+        self.invariant_exprs.clear();
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
-        let mut changed = false;
         let mut visitor = Self::new().within_theta(true);
-        changed |= visitor.visit_graph(theta.body_mut());
+        visitor
+            .invariant_exprs
+            .extend(theta.invariant_input_params().map(|input| input.output()));
 
-        // FIXME: Pull out nodes that depend on constant values without unconditionally
-        //        pulling all constant values out of the loop body
-        // // Pull out any constants that are within the loop body
-        // let pulled_constants =
-        //     self.pull_out_constants(graph, theta.body_mut(), &visitor.invariant_exprs);
-        // for (constant, param) in pulled_constants {
-        //     let port = graph.input_port(theta.node(), EdgeKind::Value);
-        //     graph.add_value_edge(constant, port);
-        //
-        //     theta.add_invariant_input_raw(port, param);
-        //     changed = true;
-        // }
+        let mut changed = visitor.visit_graph(theta.body_mut());
+        self.changes.combine(&visitor.changes);
+
+        // Pull out any constants that are within the loop body
+        let invariant_inputs: Vec<_> = theta
+            .invariant_input_pairs()
+            .map(|(input, param)| (param.output(), graph.input_source(input)))
+            .collect();
+
+        let pulled_constants = self.pull_out_constants(
+            graph,
+            theta.body_mut(),
+            &invariant_inputs,
+            &visitor.invariant_exprs,
+        );
+
+        for (constant, param) in pulled_constants {
+            let port = graph.create_value_input(theta.node());
+            graph.add_value_edge(constant, port);
+            theta.add_invariant_input_raw(port, param);
+
+            self.changes.inc::<"hoisted-theta-exprs">();
+            changed = true;
+        }
 
         // If a variant input is a constant, make it invariant
         let outputs: Vec<_> = theta.output_pairs().collect();
@@ -249,6 +162,7 @@ impl Pass for Licm {
                     theta.remove_variant_input(input);
                     theta.add_invariant_input_raw(input, input_param.node());
 
+                    self.changes.inc::<"theta-invariant-variants">();
                     changed = true;
                 }
             }
@@ -256,18 +170,19 @@ impl Pass for Licm {
 
         if changed {
             graph.replace_node(theta.node(), theta);
-            self.changed();
         }
     }
 
     // TODO: Pull branch invariant code from branches?
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
-        let mut changed = false;
         let mut visitor = Self::new();
 
-        changed |= visitor.visit_graph(gamma.true_mut());
+        let mut changed = visitor.visit_graph(gamma.true_mut());
+        self.changes.combine(&visitor.changes);
         visitor.reset();
+
         changed |= visitor.visit_graph(gamma.false_mut());
+        self.changes.combine(&visitor.changes);
 
         let outputs: Vec<_> = gamma
             .outputs()
@@ -335,14 +250,13 @@ impl Pass for Licm {
                     gamma.true_mut().remove_node(true_out.node());
                     gamma.false_mut().remove_node(false_out.node());
 
-                    changed = true;
+                    self.changes.inc::<"gamma-inputs">();
                 }
             }
         }
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
-            self.changed();
         }
     }
 
@@ -373,12 +287,39 @@ impl Pass for Licm {
         }
     }
 
+    fn visit_sub(&mut self, graph: &mut Rvsdg, sub: Sub) {
+        if self.within_theta
+            && self.input_invariant(graph, sub.rhs())
+            && self.input_invariant(graph, sub.lhs())
+        {
+            self.invariant_exprs.insert(sub.value());
+        }
+    }
+
+    fn visit_mul(&mut self, graph: &mut Rvsdg, mul: Mul) {
+        if self.within_theta
+            && self.input_invariant(graph, mul.rhs())
+            && self.input_invariant(graph, mul.lhs())
+        {
+            self.invariant_exprs.insert(mul.value());
+        }
+    }
+
     fn visit_eq(&mut self, graph: &mut Rvsdg, eq: Eq) {
         if self.within_theta
             && self.input_invariant(graph, eq.rhs())
             && self.input_invariant(graph, eq.lhs())
         {
             self.invariant_exprs.insert(eq.value());
+        }
+    }
+
+    fn visit_neq(&mut self, graph: &mut Rvsdg, neq: Neq) {
+        if self.within_theta
+            && self.input_invariant(graph, neq.rhs())
+            && self.input_invariant(graph, neq.lhs())
+        {
+            self.invariant_exprs.insert(neq.value());
         }
     }
 
@@ -398,6 +339,141 @@ impl Pass for Licm {
 impl Default for Licm {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+struct ExpressionPuller<'a> {
+    graph: &'a mut Rvsdg,
+    body: &'a mut Rvsdg,
+    removals: BTreeSet<NodeId>,
+    params: Vec<(OutputPort, NodeId)>,
+    constants: HashMap<OutputPort, Const>,
+    invariant_exprs: VecDeque<OutputPort>,
+    param_to_new: HashMap<OutputPort, OutputPort>,
+}
+
+impl<'a> ExpressionPuller<'a> {
+    fn new(
+        graph: &'a mut Rvsdg,
+        body: &'a mut Rvsdg,
+        invariant_inputs: &[(OutputPort, OutputPort)],
+        invariant_exprs: VecDeque<OutputPort>,
+    ) -> Self {
+        // TODO: Buffers
+        let mut param_to_new = HashMap::with_capacity_and_hasher(
+            invariant_inputs.len() + invariant_exprs.len(),
+            Default::default(),
+        );
+        param_to_new.extend(invariant_inputs.iter().copied());
+
+        Self {
+            graph,
+            body,
+            removals: BTreeSet::new(),
+            params: Vec::new(),
+            constants: HashMap::default(),
+            invariant_exprs,
+            param_to_new,
+        }
+    }
+
+    fn pop_invariant_expr(&mut self) -> Option<OutputPort> {
+        self.invariant_exprs.pop_back()
+    }
+
+    fn finish(self) -> Vec<(OutputPort, NodeId)> {
+        self.body.bulk_remove_nodes(&self.removals);
+        self.params
+    }
+
+    fn constant<T>(&mut self, output: OutputPort, value: T)
+    where
+        T: Into<Const>,
+    {
+        self.constants.insert(output, value.into());
+    }
+
+    fn binary_op<T>(&mut self, port: OutputPort, node: T)
+    where
+        T: BinaryOp,
+    {
+        let lhs_source = self.body.input_source(node.lhs());
+        let lhs = self.param_to_new.get(&lhs_source).copied();
+        let lhs_const = self.constants.get(&lhs_source).copied();
+
+        let rhs_source = self.body.input_source(node.rhs());
+        let rhs = self.param_to_new.get(&rhs_source).copied();
+        let rhs_const = self.constants.get(&rhs_source).copied();
+
+        let (lhs, rhs) = match (lhs, lhs_const, rhs, rhs_const) {
+            (Some(lhs), _, Some(rhs), _) => (lhs, rhs),
+
+            (_, Some(lhs), Some(rhs), _) => {
+                let lhs = self.graph.constant(lhs).value();
+                self.param_to_new.insert(lhs_source, lhs);
+
+                (lhs, rhs)
+            }
+
+            (Some(lhs), _, _, Some(rhs)) => {
+                let rhs = self.graph.constant(rhs).value();
+                self.param_to_new.insert(rhs_source, rhs);
+
+                (lhs, rhs)
+            }
+
+            (_, Some(lhs), _, Some(rhs)) => {
+                let lhs = self.graph.constant(lhs).value();
+                self.param_to_new.insert(lhs_source, lhs);
+
+                let rhs = self.graph.constant(rhs).value();
+                self.param_to_new.insert(rhs_source, rhs);
+
+                (lhs, rhs)
+            }
+
+            _ => {
+                self.invariant_exprs.push_front(port);
+                return;
+            }
+        };
+
+        let input = self.body.input_param(EdgeKind::Value);
+        self.body.rewire_dependents(node.value(), input.output());
+        self.removals.insert(node.node());
+
+        let new_node = T::make_in_graph(self.graph, lhs, rhs);
+        self.params.push((new_node.value(), input.node()));
+        self.param_to_new
+            .insert(input.output(), new_node.value())
+            .debug_unwrap_none();
+    }
+
+    fn unary_op<T>(&mut self, port: OutputPort, node: T)
+    where
+        T: UnaryOp,
+    {
+        let input_source = self.body.input_source(node.input());
+        let input = if let Some(input) = self.param_to_new.get(&input_source).copied() {
+            input
+        } else if let Some(input) = self.constants.get(&input_source).copied() {
+            let input = self.graph.constant(input).value();
+            self.param_to_new.insert(input_source, input);
+            input
+        } else {
+            self.invariant_exprs.push_front(port);
+            return;
+        };
+
+        let param = self.body.input_param(EdgeKind::Value);
+        self.body.rewire_dependents(node.value(), param.output());
+        self.removals.insert(node.node());
+
+        let new_node = T::make_in_graph(self.graph, input);
+        self.params.push((new_node.value(), param.node()));
+        self.param_to_new
+            .insert(param.output(), new_node.value())
+            .debug_unwrap_none();
     }
 }
 

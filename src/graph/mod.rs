@@ -34,6 +34,7 @@ type EdgeData<T> = TinyVec<[(T, EdgeKind); 2]>;
 // TODO: Structural equivalence method
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rvsdg {
+    // TODO: Consider using `im::OrdMap` for all of these
     nodes: HashMap<NodeId, Node>,
     forward: HashMap<OutputPort, EdgeData<InputPort>>,
     reverse: HashMap<InputPort, EdgeData<OutputPort>>,

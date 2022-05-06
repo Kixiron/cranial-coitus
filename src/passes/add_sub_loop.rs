@@ -8,7 +8,7 @@ use crate::{
         utils::{ChangeReport, Changes},
         Pass,
     },
-    utils::{AssertNone},
+    utils::AssertNone,
     values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
@@ -441,7 +441,7 @@ mod tests {
                 Dce::new(),
                 ElimConstGamma::new(),
                 ConstFolding::new(tape_len),
-                ExprDedup::new(),
+                ExprDedup::new(tape_len),
             ]
         },
         input = [10, 20],

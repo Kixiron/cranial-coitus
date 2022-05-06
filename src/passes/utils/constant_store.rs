@@ -92,4 +92,9 @@ impl ConstantStore {
             }
         }
     }
+
+    /// Get the constant store's tape len
+    pub fn tape_len(&self) -> u16 {
+        self.tape_len
+    }
 }

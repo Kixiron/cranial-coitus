@@ -1424,7 +1424,7 @@ impl From<Const> for Value {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Const {
     Ptr(Ptr),
     Cell(Cell),
@@ -1459,6 +1459,14 @@ impl Const {
     pub fn as_ptr(&self) -> Option<Ptr> {
         if let Self::Ptr(ptr) = *self {
             Some(ptr)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_cell(&self) -> Option<Cell> {
+        if let Self::Cell(cell) = *self {
+            Some(cell)
         } else {
             None
         }

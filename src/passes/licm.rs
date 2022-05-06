@@ -1,7 +1,7 @@
 use crate::{
     graph::{
-        Add, Bool, Byte, EdgeKind, Eq, Gamma, InputPort, Int, Mul, Neg, Neq, Node, NodeExt, NodeId,
-        Not, OutputParam, OutputPort, Rvsdg, Sub, Theta,
+        Add, Bool, Byte, EdgeKind, Eq, Gamma, InputParam, InputPort, Int, Mul, Neg, Neq, Node,
+        NodeExt, NodeId, Not, OutputParam, OutputPort, Rvsdg, Sub, Theta,
     },
     ir::Const,
     passes::{
@@ -51,6 +51,7 @@ impl Licm {
         &mut self,
         graph: &mut Rvsdg,
         body: &mut Rvsdg,
+        input_pairs: HashMap<OutputPort, OutputPort>,
         invariant_inputs: &[(OutputPort, OutputPort)],
         invariant_exprs: &HashSet<OutputPort>,
     ) -> Vec<(OutputPort, NodeId)> {
@@ -58,7 +59,8 @@ impl Licm {
         let mut invariant_exprs: VecDeque<_> = invariant_exprs.iter().copied().collect();
         invariant_exprs.make_contiguous().sort_unstable();
 
-        let mut puller = ExpressionPuller::new(graph, body, invariant_inputs, invariant_exprs);
+        let mut puller =
+            ExpressionPuller::new(graph, body, invariant_inputs, invariant_exprs, input_pairs);
 
         while let Some(port) = puller.pop_invariant_expr() {
             let node_id = puller.body.port_parent(port);
@@ -76,6 +78,8 @@ impl Licm {
                 Node::Int(int, value) => puller.constant(int.value(), value),
                 Node::Byte(byte, value) => puller.constant(byte.value(), value),
                 Node::Bool(bool, value) => puller.constant(bool.value(), value),
+
+                Node::InputParam(input) => puller.input_param(input),
 
                 ref node => {
                     tracing::warn!("unhandled invariant node kind: {:?}", node);
@@ -122,9 +126,15 @@ impl Pass for Licm {
             .map(|(input, param)| (param.output(), graph.input_source(input)))
             .collect();
 
+        let input_pairs = theta
+            .input_pairs()
+            .map(|(input, param)| (param.output(), graph.input_source(input)))
+            .collect();
+
         let pulled_constants = self.pull_out_constants(
             graph,
             theta.body_mut(),
+            input_pairs,
             &invariant_inputs,
             &visitor.invariant_exprs,
         );
@@ -349,6 +359,7 @@ struct ExpressionPuller<'a> {
     params: Vec<(OutputPort, NodeId)>,
     constants: HashMap<OutputPort, Const>,
     invariant_exprs: VecDeque<OutputPort>,
+    input_pairs: HashMap<OutputPort, OutputPort>,
     param_to_new: HashMap<OutputPort, OutputPort>,
 }
 
@@ -358,6 +369,7 @@ impl<'a> ExpressionPuller<'a> {
         body: &'a mut Rvsdg,
         invariant_inputs: &[(OutputPort, OutputPort)],
         invariant_exprs: VecDeque<OutputPort>,
+        input_pairs: HashMap<OutputPort, OutputPort>,
     ) -> Self {
         // TODO: Buffers
         let mut param_to_new = HashMap::with_capacity_and_hasher(
@@ -373,6 +385,7 @@ impl<'a> ExpressionPuller<'a> {
             params: Vec::new(),
             constants: HashMap::default(),
             invariant_exprs,
+            input_pairs,
             param_to_new,
         }
     }
@@ -473,6 +486,12 @@ impl<'a> ExpressionPuller<'a> {
         self.params.push((new_node.value(), param.node()));
         self.param_to_new
             .insert(param.output(), new_node.value())
+            .debug_unwrap_none();
+    }
+
+    fn input_param(&mut self, input: InputParam) {
+        self.param_to_new
+            .insert(input.output(), self.input_pairs[&input.output()])
             .debug_unwrap_none();
     }
 }

@@ -2,15 +2,14 @@ mod add_sub_loop;
 mod associative_ops;
 mod canonicalize;
 mod const_folding;
+mod copy_cell;
 mod dataflow;
 mod dce;
-mod duplicate_cell;
 mod eliminate_const_gamma;
 mod equality;
 mod expr_dedup;
 mod fold_arithmetic;
 mod fuse_io;
-mod hoist_variant_inputs;
 mod licm;
 mod mem2reg;
 mod scan_loops;
@@ -25,9 +24,9 @@ pub use add_sub_loop::AddSubLoop;
 pub use associative_ops::AssociativeOps;
 pub use canonicalize::Canonicalize;
 pub use const_folding::ConstFolding;
+pub use copy_cell::CopyCell;
 pub use dataflow::{Dataflow, DataflowSettings};
 pub use dce::Dce;
-pub use duplicate_cell::DuplicateCell;
 pub use eliminate_const_gamma::ElimConstGamma;
 pub use equality::Equality;
 pub use expr_dedup::ExprDedup;
@@ -92,9 +91,9 @@ pub fn default_passes(config: &PassConfig) -> Vec<Box<dyn Pass>> {
         SquareCell::new(tape_len),
         SymbolicEval::new(tape_len),
         Licm::new(),
-        DuplicateCell::new(tape_len),
+        CopyCell::new(tape_len),
         Equality::new(),
-        ExprDedup::new(),
+        ExprDedup::new(tape_len),
         // Dataflow::new(DataflowSettings::new(config)),
         Canonicalize::new(),
         Dce::new(),
@@ -342,8 +341,8 @@ pub trait Pass {
     fn visit_theta(&mut self, _graph: &mut Rvsdg, _theta: Theta) {}
     fn visit_gamma(&mut self, _graph: &mut Rvsdg, _gamma: Gamma) {}
 
-    fn visit_input_param(&mut self, _graph: &mut Rvsdg, _input_param: InputParam) {}
-    fn visit_output_param(&mut self, _graph: &mut Rvsdg, _output_param: OutputParam) {}
+    fn visit_input_param(&mut self, _graph: &mut Rvsdg, _input: InputParam) {}
+    fn visit_output_param(&mut self, _graph: &mut Rvsdg, _output: OutputParam) {}
 
     fn visit_start(&mut self, _graph: &mut Rvsdg, _start: Start) {}
     fn visit_end(&mut self, _graph: &mut Rvsdg, _end: End) {}

@@ -462,9 +462,9 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
                 Ok(()) => {
                     println!(
                         "Optimized program finished execution in {:#?}\n\
-                     output (bytes): {:?}\n\
-                     output (escaped): {:?}\n\
-                     output (utf8):\n{}",
+                         output (bytes): {:?}\n\
+                         output (escaped): {:?}\n\
+                         output (utf8):\n{}",
                         execution_duration, output_vec, output_str, output_str,
                     );
                 }
@@ -472,9 +472,9 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
                 Err(_) => {
                     println!(
                         "Optimized program hit the step limit of {} steps in {:#?}\n\
-                     output (bytes): {:?}\n\
-                     output (escaped): {:?}\n\
-                     output (utf8): {}",
+                         output (bytes): {:?}\n\
+                         output (escaped): {:?}\n\
+                         output (utf8): {}",
                         step_limit, execution_duration, output_vec, output_str, output_str,
                     );
                 }
@@ -487,33 +487,33 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
         let difference = input_graph_stats.difference(output_graph_stats);
         let mut change = format!(
             "Optimized Program (took {} iterations and {:#?})\n\
-         Input:\n  \
-           instructions : {}\n  \
-           branches     : {}\n  \
-           loops        : {}\n  \
-           loads        : {}\n  \
-           stores       : {}\n  \
-           constants    : {}\n  \
-           io ops       : {}\n  \
-           scans        : {}\n\
-         Output:\n  \
-           instructions : {}\n  \
-           branches     : {}\n  \
-           loops        : {}\n  \
-           loads        : {}\n  \
-           stores       : {}\n  \
-           constants    : {}\n  \
-           io ops       : {}\n  \
-           scans        : {}\n\
-         Change:\n  \
-           instructions : {:>+6.02}%\n  \
-           branches     : {:>+6.02}%\n  \
-           loops        : {:>+6.02}%\n  \
-           loads        : {:>+6.02}%\n  \
-           stores       : {:>+6.02}%\n  \
-           constants    : {:>+6.02}%\n  \
-           io ops       : {:>+6.02}%\n  \
-           scans        : {:>+6.02}%\n\n",
+             Input:\n  \
+               instructions : {}\n  \
+               branches     : {}\n  \
+               loops        : {}\n  \
+               loads        : {}\n  \
+               stores       : {}\n  \
+               constants    : {}\n  \
+               io ops       : {}\n  \
+               scans        : {}\n\
+             Output:\n  \
+               instructions : {}\n  \
+               branches     : {}\n  \
+               loops        : {}\n  \
+               loads        : {}\n  \
+               stores       : {}\n  \
+               constants    : {}\n  \
+               io ops       : {}\n  \
+               scans        : {}\n\
+             Change:\n  \
+               instructions : {:>+6.02}%\n  \
+               branches     : {:>+6.02}%\n  \
+               loops        : {:>+6.02}%\n  \
+               loads        : {:>+6.02}%\n  \
+               stores       : {:>+6.02}%\n  \
+               constants    : {:>+6.02}%\n  \
+               io ops       : {:>+6.02}%\n  \
+               scans        : {:>+6.02}%\n\n",
             pass_num,
             elapsed,
             input_graph_stats.instructions,
@@ -555,7 +555,7 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
         writeln!(
             change,
             "Finished optimized execution in {:#?}\n\
-        Optimized execution stats:\n{}",
+             Optimized execution stats:\n{}",
             optimized_execution_duration,
             optimized_stats.display(),
         )?;

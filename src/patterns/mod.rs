@@ -8,6 +8,8 @@ use sexpr::Sexpr;
 
 #[test]
 fn sexpr_test() {
+    use crate::ir::{IrBuilder, Pretty, PrettyConfig};
+
     let rewrite = dbg!(Rewrite::new("add-zero", "(add ?a 0)", "?a"));
 
     let mut graph = Rvsdg::new();
@@ -15,7 +17,20 @@ fn sexpr_test() {
     let rhs = graph.byte(0u8).value();
     let add = graph.add(lhs, rhs).into();
 
+    println!(
+        "{}",
+        IrBuilder::new(true)
+            .translate(&graph)
+            .pretty_print(PrettyConfig::minimal()),
+    );
     rewrite.apply(&mut graph, &add);
+
+    println!(
+        "{}",
+        IrBuilder::new(true)
+            .translate(&graph)
+            .pretty_print(PrettyConfig::minimal()),
+    );
 }
 
 #[derive(Debug)]

@@ -102,7 +102,7 @@ impl SymbolicEval {
         }
 
         let mut machine = Machine::new(
-            100_000_000,
+            100_000,
             self.tape_len,
             || unreachable!(),
             |_| unreachable!(),

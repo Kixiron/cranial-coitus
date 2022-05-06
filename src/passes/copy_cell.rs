@@ -1,38 +1,27 @@
 use crate::{
     graph::{
-        Add, Byte, Gamma, InputParam, InputPort, Int, Neq, Node, NodeExt, OutputPort, Rvsdg, Start,
-        Sub, Theta,
+        Add, Byte, Gamma, InputParam, InputPort, Int, Load, Neq, Node, NodeExt, OutputPort, Rvsdg,
+        Start, Store, Sub, Theta,
     },
-    ir::Const,
     passes::{
-        utils::{BinaryOp, ChangeReport},
+        utils::{BinaryOp, ChangeReport, Changes, ConstantStore},
         Pass,
     },
-    utils::{AssertNone, HashMap},
     values::{Cell, Ptr},
 };
 use tinyvec::{tiny_vec, TinyVec};
 
-pub struct DuplicateCell {
-    changed: bool,
-    // TODO: Use ConstantStore
-    values: HashMap<OutputPort, Const>,
-    duplicates_removed: usize,
-    tape_len: u16,
+pub struct CopyCell {
+    changes: Changes<1>,
+    constants: ConstantStore,
 }
 
-impl DuplicateCell {
+impl CopyCell {
     pub fn new(tape_len: u16) -> Self {
         Self {
-            values: HashMap::with_hasher(Default::default()),
-            changed: false,
-            duplicates_removed: 0,
-            tape_len,
+            changes: Changes::new(["copy-cells"]),
+            constants: ConstantStore::new(tape_len),
         }
-    }
-
-    fn changed(&mut self) {
-        self.changed = true;
     }
 
     fn visit_gamma_theta(
@@ -40,26 +29,22 @@ impl DuplicateCell {
         graph: &mut Rvsdg,
         theta: &mut Theta,
     ) -> (bool, Option<(DuplicateCandidate, Self)>) {
-        let mut changed = false;
-        let mut visitor = Self::new(self.tape_len);
+        let mut visitor = Self::new(self.constants.tape_len());
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
         for (input, param) in theta.invariant_input_pairs() {
-            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
-                visitor
-                    .values
-                    .insert(param.output(), constant)
-                    .debug_unwrap_none();
+            if let Some(constant) = self.constants.get(graph.input_source(input)) {
+                visitor.constants.add(param.output(), constant);
             }
         }
 
-        changed |= visitor.visit_graph(theta.body_mut());
-        self.duplicates_removed += visitor.duplicates_removed;
+        let changed = visitor.visit_graph(theta.body_mut());
+        self.changes.combine(&visitor.changes);
 
         (
             changed,
-            self.theta_is_candidate(&visitor.values, theta)
+            self.theta_is_candidate(&visitor.constants, theta)
                 .map(|candidate| (candidate, visitor)),
         )
     }
@@ -84,23 +69,23 @@ impl DuplicateCell {
         // FIXME: ???
         let mut get_gamma_input = |output| {
             visitor
-                .values
-                .get(&output)
-                .map(|value| graph.int(value.into_ptr(self.tape_len)).value())
+                .constants
+                .ptr(output)
+                .map(|value| graph.int(value).value())
                 .or_else(|| {
                     theta
                         .invariant_input_pairs()
                         .find_map(|(port, input)| {
                             if input.output() == output {
-                                Some(theta_graph.get_input(port).1)
+                                Some(theta_graph.input_source(port))
                             } else {
                                 None
                             }
                         })
                         .and_then(|output| {
-                            self.values
-                                .get(&output)
-                                .map(|value| graph.int(value.into_ptr(self.tape_len)).value())
+                            self.constants
+                                .ptr(output)
+                                .map(|value| graph.int(value).value())
                                 .or_else(|| {
                                     gamma.inputs().iter().zip(gamma.input_params()).find_map(
                                         |(&port, &[_, input])| {
@@ -108,7 +93,7 @@ impl DuplicateCell {
                                                 gamma.false_branch().to_node::<InputParam>(input);
 
                                             if input.output() == output {
-                                                Some(graph.get_input(port).1)
+                                                Some(graph.input_source(port))
                                             } else {
                                                 None
                                             }
@@ -152,7 +137,7 @@ impl DuplicateCell {
             }
 
             // Unconditionally store 0 to the source cell
-            let zero = graph.int(Ptr::zero(self.tape_len));
+            let zero = graph.int(Ptr::zero(self.constants.tape_len()));
             let zero_src_cell = graph.store(src_ptr, zero.value(), last_effect);
 
             // Wire the final store into the gamma's output effect
@@ -198,7 +183,6 @@ impl DuplicateCell {
             }
 
             graph.remove_node(gamma.node());
-            self.changed();
 
             true
         } else {
@@ -256,7 +240,7 @@ impl DuplicateCell {
     /// ```
     fn theta_is_candidate(
         &self,
-        values: &HashMap<OutputPort, Const>,
+        constants: &ConstantStore,
         theta: &Theta,
     ) -> Option<DuplicateCandidate> {
         let graph = theta.body();
@@ -270,8 +254,12 @@ impl DuplicateCell {
         // d1_inc := add d1_val, int 1
         // store d1_ptr, d1_inc
         // ```
-        let (d1_ptr, _, d1_effect) =
-            self.load_op_store::<Add>(graph, values, start.effect(), Ptr::one(self.tape_len))?;
+        let (d1_ptr, _, d1_effect) = self.load_op_store::<Add>(
+            graph,
+            constants,
+            start.effect(),
+            Ptr::one(constants.tape_len()),
+        )?;
 
         // Get the load-add-store sequence of the second duplicate cell
         // ```
@@ -280,7 +268,7 @@ impl DuplicateCell {
         // store d1_ptr, d2_inc
         // ```
         let (d2_ptr, _, d2_effect) =
-            self.load_op_store::<Add>(graph, values, d1_effect, Ptr::one(self.tape_len))?;
+            self.load_op_store::<Add>(graph, constants, d1_effect, Ptr::one(constants.tape_len()))?;
 
         // Get the load-sub-store sequence of the source cell
         // ```
@@ -289,7 +277,7 @@ impl DuplicateCell {
         // store src_ptr, src_src_dec
         // ```
         let (src_ptr, src_dec, src_effect) =
-            self.load_op_store::<Sub>(graph, values, d2_effect, Ptr::one(self.tape_len))?;
+            self.load_op_store::<Sub>(graph, constants, d2_effect, Ptr::one(constants.tape_len()))?;
 
         // Get the end node of the theta body
         let end = theta.end_node();
@@ -306,11 +294,11 @@ impl DuplicateCell {
         let src_not_zero = graph.cast_input_source::<Neq>(condition.input())?;
         self.compare_operands(
             graph,
-            values,
+            constants,
             src_not_zero.lhs(),
             src_not_zero.rhs(),
             src_dec,
-            Ptr::zero(self.tape_len),
+            Ptr::zero(constants.tape_len()),
         )?;
 
         if src_ptr == d1_ptr || src_ptr == d2_ptr || d1_ptr == d2_ptr {
@@ -328,7 +316,7 @@ impl DuplicateCell {
     fn load_op_store<T>(
         &self,
         graph: &Rvsdg,
-        values: &HashMap<OutputPort, Const>,
+        constants: &ConstantStore,
         last_effect: OutputPort,
         add_value: Ptr,
     ) -> Option<(OutputPort, OutputPort, OutputPort)>
@@ -338,12 +326,12 @@ impl DuplicateCell {
     {
         // Get the load
         // `val := load ptr`
-        let load = graph.get_output(last_effect)?.0.as_load()?;
+        let load = graph.cast_output_dest::<Load>(last_effect)?;
         let ptr = graph.input_source(load.ptr());
 
         // Get the store
         // `store ptr, val_add`
-        let store = graph.get_output(load.output_effect())?.0.as_store()?;
+        let store = graph.cast_output_dest::<Store>(load.output_effect())?;
 
         // Make sure the addresses are the same
         if graph.input_source(store.ptr()) != ptr {
@@ -358,7 +346,7 @@ impl DuplicateCell {
         // `add_value` and the other should be the loaded value
         self.compare_operands(
             graph,
-            values,
+            constants,
             val_add.lhs(),
             val_add.rhs(),
             load.output_value(),
@@ -371,7 +359,7 @@ impl DuplicateCell {
     fn compare_operands(
         &self,
         graph: &Rvsdg,
-        values: &HashMap<OutputPort, Const>,
+        constants: &ConstantStore,
         lhs: InputPort,
         rhs: InputPort,
         operand: OutputPort,
@@ -380,11 +368,11 @@ impl DuplicateCell {
         let (lhs_operand, rhs_operand) = (graph.input_source(lhs), graph.input_source(rhs));
 
         if lhs_operand == operand {
-            if values.get(&rhs_operand)?.into_ptr(self.tape_len) != constant {
+            if constants.get(rhs_operand)?.into_ptr(constants.tape_len()) != constant {
                 return None;
             }
         } else if rhs_operand == operand {
-            if values.get(&lhs_operand)?.into_ptr(self.tape_len) != constant {
+            if constants.get(lhs_operand)?.into_ptr(constants.tape_len()) != constant {
                 return None;
             }
         } else {
@@ -395,92 +383,76 @@ impl DuplicateCell {
     }
 }
 
-impl Pass for DuplicateCell {
+impl Pass for CopyCell {
     fn pass_name(&self) -> &str {
         "duplicate-cell"
     }
 
     fn did_change(&self) -> bool {
-        self.changed
+        self.changes.did_change()
     }
 
     fn reset(&mut self) {
-        self.values.clear();
-        self.changed = false;
+        self.constants.clear();
+        self.changes.reset();
     }
 
     fn report(&self) -> ChangeReport {
-        map! {
-            "cell duplications" => self.duplicates_removed,
-        }
+        self.changes.as_report()
     }
 
     fn visit_int(&mut self, _graph: &mut Rvsdg, int: Int, value: Ptr) {
-        let replaced = self.values.insert(int.value(), value.into());
-        debug_assert!(replaced.is_none() || replaced == Some(Const::Ptr(value)));
+        self.constants.add(int.value(), value);
     }
 
     fn visit_byte(&mut self, _graph: &mut Rvsdg, byte: Byte, value: Cell) {
-        self.values.insert(byte.value(), value.into());
+        self.constants.add(byte.value(), value);
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
-        let mut changed = false;
-        let (mut true_visitor, mut false_visitor) =
-            (Self::new(self.tape_len), Self::new(self.tape_len));
+        let (mut true_visitor, mut false_visitor) = (
+            Self::new(self.constants.tape_len()),
+            Self::new(self.constants.tape_len()),
+        );
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
         for (&input, &[true_param, false_param]) in gamma.inputs().iter().zip(gamma.input_params())
         {
-            let (_, source, _) = graph.get_input(input);
+            let source = graph.input_source(input);
 
-            if let Some(constant) = self.values.get(&source).copied() {
+            if let Some(constant) = self.constants.get(source) {
                 let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
-                true_visitor
-                    .values
-                    .insert(true_param.output(), constant)
-                    .debug_unwrap_none();
+                true_visitor.constants.add(true_param.output(), constant);
 
                 let false_param = gamma.false_branch().to_node::<InputParam>(false_param);
-                false_visitor
-                    .values
-                    .insert(false_param.output(), constant)
-                    .debug_unwrap_none();
+                false_visitor.constants.add(false_param.output(), constant);
             }
         }
 
-        changed |= true_visitor.visit_graph(gamma.true_mut());
-        self.duplicates_removed += true_visitor.duplicates_removed;
+        let mut changed = true_visitor.visit_graph(gamma.true_mut());
+        self.changes.combine(&true_visitor.changes);
 
         changed |= false_visitor.visit_graph(gamma.false_mut());
-        self.duplicates_removed += false_visitor.duplicates_removed;
+        self.changes.combine(&false_visitor.changes);
 
         // Is `true` if the gamma's true branch is a passthrough
         let true_is_empty = {
             let start = gamma.true_branch().to_node::<Start>(gamma.starts()[0]);
-            let next_node = gamma
-                .true_branch()
-                .get_output(start.effect())
-                .unwrap()
-                .0
-                .node();
+            let next_node = gamma.true_branch().output_dest_id(start.effect()).unwrap();
 
             next_node == gamma.ends()[0]
         };
 
         if true_is_empty {
             tracing::trace!(gamma = ?gamma.node(), "found gamma with empty true branch");
-            let start = gamma.false_branch().to_node::<Start>(gamma.starts()[1]);
+            let start = *gamma.false_branch().to_node::<Start>(gamma.starts()[1]);
 
             // TODO: Make sure the next effect is the end node
             // TODO: Make sure the gamma's condition is an `eq (load ptr), int 0`
             if let Some(mut theta) = gamma
                 .false_branch()
-                .get_output(start.effect())
-                .unwrap()
-                .0
-                .as_theta()
+                .cast_output_dest::<Theta>(start.effect())
                 .cloned()
             {
                 tracing::trace!(
@@ -512,9 +484,8 @@ impl Pass for DuplicateCell {
                             theta = ?theta.node(),
                             "inlined duplicate cell candidate",
                         );
-                        self.changed();
 
-                        self.duplicates_removed += 1;
+                        self.changes.inc::<"copy-cells">();
                         return;
                     }
                 }
@@ -528,31 +499,25 @@ impl Pass for DuplicateCell {
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
-            self.changed();
         }
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
-        let mut changed = false;
-        let mut visitor = Self::new(self.tape_len);
+        let mut visitor = Self::new(self.constants.tape_len());
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
         for (input, param) in theta.invariant_input_pairs() {
-            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
-                visitor
-                    .values
-                    .insert(param.output(), constant)
-                    .debug_unwrap_none();
+            if let Some(constant) = self.constants.get(graph.input_source(input)) {
+                visitor.constants.add(param.output(), constant);
             }
         }
 
-        changed |= visitor.visit_graph(theta.body_mut());
-        self.duplicates_removed += visitor.duplicates_removed;
+        let changed = visitor.visit_graph(theta.body_mut());
+        self.changes.combine(&visitor.changes);
 
         if changed {
             graph.replace_node(theta.node(), theta);
-            self.changed();
         }
     }
 }

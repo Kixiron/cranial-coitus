@@ -165,6 +165,10 @@ impl InputParam {
     pub const fn output(&self) -> OutputPort {
         self.output
     }
+
+    pub const fn is_value(&self) -> bool {
+        self.kind.is_value()
+    }
 }
 
 impl NodeExt for InputParam {
@@ -234,6 +238,10 @@ impl OutputParam {
 
     pub const fn input(&self) -> InputPort {
         self.input
+    }
+
+    pub const fn is_value(&self) -> bool {
+        self.kind.is_value()
     }
 }
 

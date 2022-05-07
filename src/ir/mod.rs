@@ -1432,6 +1432,14 @@ pub enum Const {
 }
 
 impl Const {
+    pub fn is_zero(&self) -> bool {
+        match self {
+            Self::Ptr(ptr) => ptr.is_zero(),
+            Self::Cell(cell) => cell.is_zero(),
+            Self::Bool(_) => false,
+        }
+    }
+
     pub fn into_ptr(self, tape_len: u16) -> Ptr {
         match self {
             Self::Ptr(ptr) => ptr,

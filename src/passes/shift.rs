@@ -46,6 +46,7 @@ impl ShiftCell {
             .theta_invariant_inputs_into(theta, graph, &mut visitor.constants);
 
         changed |= visitor.visit_graph(theta.body_mut());
+        self.shifts_removed += visitor.shifts_removed;
 
         let candidate = self
             .theta_is_candidate(&visitor.constants, theta)

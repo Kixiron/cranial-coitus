@@ -12,6 +12,7 @@ mod fold_arithmetic;
 mod fuse_io;
 mod licm;
 mod mem2reg;
+mod move_cell;
 mod scan_loops;
 mod shift;
 mod square_cell;
@@ -34,6 +35,7 @@ pub use fold_arithmetic::FoldArithmetic;
 pub use fuse_io::FuseIO;
 pub use licm::Licm;
 pub use mem2reg::Mem2Reg;
+pub use move_cell::MoveCell;
 pub use scan_loops::ScanLoops;
 pub use shift::ShiftCell;
 pub use square_cell::SquareCell;
@@ -84,6 +86,7 @@ pub fn default_passes(config: &PassConfig) -> Vec<Box<dyn Pass>> {
         AddSubLoop::new(tape_len),
         ShiftCell::new(tape_len),
         FuseIO::new(),
+        MoveCell::new(tape_len),
         ScanLoops::new(tape_len),
         Dce::new(),
         ElimConstGamma::new(),

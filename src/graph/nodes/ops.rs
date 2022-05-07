@@ -453,6 +453,22 @@ impl AddOrSub {
     pub const fn is_sub(&self) -> bool {
         matches!(self, Self::Sub(..))
     }
+
+    pub const fn as_add(&self) -> Option<Add> {
+        if let Self::Add(add) = *self {
+            Some(add)
+        } else {
+            None
+        }
+    }
+
+    pub const fn as_sub(&self) -> Option<Sub> {
+        if let Self::Sub(sub) = *self {
+            Some(sub)
+        } else {
+            None
+        }
+    }
 }
 
 impl TryFrom<Node> for AddOrSub {

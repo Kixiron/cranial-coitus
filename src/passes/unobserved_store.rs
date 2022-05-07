@@ -1,7 +1,7 @@
 use crate::{
     graph::{Bool, Byte, EdgeKind, Gamma, Int, NodeExt, Rvsdg, Store, Theta},
     passes::{
-        utils::{ChangeReport, ConstantStore},
+        utils::{ChangeReport, Changes, ConstantStore},
         Pass,
     },
     values::{Cell, Ptr},
@@ -14,30 +14,22 @@ use crate::{
 //        batched removal where we remove *all* of the trailing stores instead of
 //        removing them one at a time.
 pub struct UnobservedStore {
-    changed: bool,
     // TODO: This is also a bit ham-fisted, but a more complex analysis of
     //       loop invariant cells would be required for anything better
     within_theta: bool,
     within_gamma: bool,
     constants: ConstantStore,
-    unobserved_stores_removed: usize,
-    tape_len: u16,
+    changes: Changes<1>,
 }
 
 impl UnobservedStore {
     pub fn new(tape_len: u16) -> Self {
         Self {
-            changed: false,
             within_theta: false,
             within_gamma: false,
             constants: ConstantStore::new(tape_len),
-            unobserved_stores_removed: 0,
-            tape_len,
+            changes: Changes::new(["elided-stores"]),
         }
-    }
-
-    fn changed(&mut self) {
-        self.changed = true;
     }
 }
 
@@ -47,20 +39,18 @@ impl Pass for UnobservedStore {
     }
 
     fn did_change(&self) -> bool {
-        self.changed
+        self.changes.did_change()
     }
 
     fn reset(&mut self) {
-        self.changed = false;
+        self.changes.reset();
         self.constants.clear();
         self.within_theta = false;
         self.within_gamma = false;
     }
 
     fn report(&self) -> ChangeReport {
-        map! {
-            "unobserved stores" => self.unobserved_stores_removed,
-        }
+        self.changes.as_report()
     }
 
     // If the effect consumer can't observe the store, remove this store.
@@ -152,9 +142,8 @@ impl Pass for UnobservedStore {
 
                 graph.splice_ports(store.effect_in(), store.output_effect());
                 graph.remove_node(store.node());
-                self.unobserved_stores_removed += 1;
+                self.changes.inc::<"elided-stores">();
 
-                self.changed();
                 break;
 
             // If the consumer doesn't affect program memory in a way relevant to the target store, we
@@ -184,8 +173,10 @@ impl Pass for UnobservedStore {
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
         let mut changed = false;
 
-        let (mut true_visitor, mut false_visitor) =
-            (Self::new(self.tape_len), Self::new(self.tape_len));
+        let (mut true_visitor, mut false_visitor) = (
+            Self::new(self.constants.tape_len()),
+            Self::new(self.constants.tape_len()),
+        );
         true_visitor.within_gamma = true;
         false_visitor.within_gamma = true;
         true_visitor.within_theta = self.within_theta;
@@ -200,20 +191,20 @@ impl Pass for UnobservedStore {
         );
 
         changed |= true_visitor.visit_graph(gamma.true_mut());
-        self.unobserved_stores_removed += true_visitor.unobserved_stores_removed;
+        self.changes.combine(&true_visitor.changes);
+
         changed |= false_visitor.visit_graph(gamma.false_mut());
-        self.unobserved_stores_removed += false_visitor.unobserved_stores_removed;
+        self.changes.combine(&true_visitor.changes);
 
         if changed {
             graph.replace_node(gamma.node(), gamma);
-            self.changed();
         }
     }
 
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
 
-        let mut visitor = Self::new(self.tape_len);
+        let mut visitor = Self::new(self.constants.tape_len());
         visitor.within_theta = true;
         visitor.within_gamma = self.within_gamma;
 
@@ -223,11 +214,10 @@ impl Pass for UnobservedStore {
             .theta_invariant_inputs_into(&theta, graph, &mut visitor.constants);
 
         changed |= visitor.visit_graph(theta.body_mut());
-        self.unobserved_stores_removed += visitor.unobserved_stores_removed;
+        self.changes.combine(&visitor.changes);
 
         if changed {
             graph.replace_node(theta.node(), theta);
-            self.changed();
         }
     }
 

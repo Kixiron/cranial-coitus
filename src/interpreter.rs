@@ -53,7 +53,7 @@ where
         }
     }
 
-    #[tracing::instrument(target = "cranial_coitus::interpreter", skip_all)]
+    #[tracing::instrument(target = "cranial_coitus::interpreter", level = "trace", skip_all)]
     pub fn execute(&mut self, block: &mut Block, should_profile: bool) -> Result<&[Option<Cell>]> {
         for inst in block.iter_mut() {
             self.handle(inst, should_profile)?;

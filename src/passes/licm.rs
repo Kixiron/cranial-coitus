@@ -188,9 +188,7 @@ impl Pass for Licm {
         let mut visitor = Self::new();
 
         let mut changed = visitor.visit_graph(gamma.true_mut());
-        self.changes.combine(&visitor.changes);
         visitor.reset();
-
         changed |= visitor.visit_graph(gamma.false_mut());
         self.changes.combine(&visitor.changes);
 

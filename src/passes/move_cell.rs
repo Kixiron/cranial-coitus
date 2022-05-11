@@ -23,6 +23,7 @@ impl MoveCell {
 
     fn theta_move_cell(&self, graph: &mut Rvsdg, theta: &mut Theta) -> bool {
         if self.move_cell_inner(theta).is_some() {
+            // TODO: Replace the theta with a succinct move
             tracing::info!("found move cell motif");
             false
         } else {

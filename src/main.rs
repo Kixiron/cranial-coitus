@@ -394,6 +394,7 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
     }
 
     let output_graph_stats = graph.stats();
+    let stats_difference = input_graph_stats.difference(output_graph_stats);
     let (mut output_program, output_program_ir) = driver::sequentialize_graph(
         settings,
         &graph,
@@ -414,158 +415,166 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
     let mut result_file = File::create(&result_path)
         .with_context(|| format!("failed to create '{}'", result_path.display()))?;
 
+    // FIXME: Utility function
+    let mut change = format!(
+        "Optimized Program (took {} iterations and {:#?})\n\
+         Input:\n  \
+           instructions : {}\n  \
+           branches     : {}\n  \
+           loops        : {}\n  \
+           loads        : {}\n  \
+           stores       : {}\n  \
+           constants    : {}\n  \
+           io ops       : {}\n  \
+           scans        : {}\n\
+         Output:\n  \
+           instructions : {}\n  \
+           branches     : {}\n  \
+           loops        : {}\n  \
+           loads        : {}\n  \
+           stores       : {}\n  \
+           constants    : {}\n  \
+           io ops       : {}\n  \
+           scans        : {}\n\
+         Change:\n  \
+           instructions : {:>+6.02}%\n  \
+           branches     : {:>+6.02}%\n  \
+           loops        : {:>+6.02}%\n  \
+           loads        : {:>+6.02}%\n  \
+           stores       : {:>+6.02}%\n  \
+           constants    : {:>+6.02}%\n  \
+           io ops       : {:>+6.02}%\n  \
+           scans        : {:>+6.02}%\n\n",
+        pass_num,
+        elapsed,
+        input_graph_stats.instructions,
+        input_graph_stats.branches,
+        input_graph_stats.loops,
+        input_graph_stats.loads,
+        input_graph_stats.stores,
+        input_graph_stats.constants,
+        input_graph_stats.io_ops,
+        input_graph_stats.scans,
+        output_graph_stats.instructions,
+        output_graph_stats.branches,
+        output_graph_stats.loops,
+        output_graph_stats.loads,
+        output_graph_stats.stores,
+        output_graph_stats.constants,
+        output_graph_stats.io_ops,
+        output_graph_stats.scans,
+        stats_difference.instructions,
+        stats_difference.branches,
+        stats_difference.loops,
+        stats_difference.loads,
+        stats_difference.stores,
+        stats_difference.constants,
+        stats_difference.io_ops,
+        stats_difference.scans,
+    );
+
     if !settings.no_run {
-        let (optimized_stats, optimized_execution_duration) = {
-            // FIXME: Allow user supplied input
-            let mut input = vec_deque![b'1', b'0'];
-            let input_vec: Vec<_> = input.iter().copied().collect();
-            let input = driver::array_input(&mut input);
+        if settings.interpreter {
+            let (optimized_stats, optimized_execution_duration) = {
+                // FIXME: Allow user supplied input
+                let mut input = vec_deque![b'1', b'0'];
+                let input_vec: Vec<_> = input.iter().copied().collect();
+                let input = driver::array_input(&mut input);
 
-            let mut output_vec = Vec::new();
-            let output = driver::array_output(&mut output_vec);
+                let mut output_vec = Vec::new();
+                let output = driver::array_output(&mut output_vec);
 
-            let (result, tape, stats, execution_duration) = driver::execute(
-                step_limit,
-                settings.tape_len.get(),
-                input,
-                output,
-                true,
-                &mut output_program,
-            );
+                let (result, tape, stats, execution_duration) = driver::execute(
+                    step_limit,
+                    settings.tape_len.get(),
+                    input,
+                    output,
+                    true,
+                    &mut output_program,
+                );
 
-            let input_str = String::from_utf8_lossy(&input_vec);
-            writeln!(
-                result_file,
-                "----- Input -----\n{:?}\n-----\n{:?}\n-----\n{}",
-                input_vec, input_str, input_str,
-            )?;
+                let input_str = String::from_utf8_lossy(&input_vec);
+                writeln!(
+                    result_file,
+                    "----- Input -----\n{:?}\n-----\n{:?}\n-----\n{}",
+                    input_vec, input_str, input_str,
+                )?;
 
-            // FIXME: Utility function
-            let output_str = String::from_utf8_lossy(&output_vec);
-            writeln!(
-                result_file,
-                "----- Output -----\n{:?}\n-----\n{:?}\n-----\n{}",
-                output_vec, output_str, output_str,
-            )?;
+                // FIXME: Utility function
+                let output_str = String::from_utf8_lossy(&output_vec);
+                writeln!(
+                    result_file,
+                    "----- Output -----\n{:?}\n-----\n{:?}\n-----\n{}",
+                    output_vec, output_str, output_str,
+                )?;
 
-            let tape_chars =
-                utils::debug_collapse(&String::from_utf8_lossy(&tape).chars().collect::<Vec<_>>());
-            let tape = utils::debug_collapse(&tape);
+                let tape_chars = utils::debug_collapse(
+                    &String::from_utf8_lossy(&tape).chars().collect::<Vec<_>>(),
+                );
+                let tape = utils::debug_collapse(&tape);
 
-            writeln!(
-                result_file,
-                "----- Tape -----\n{:?}\n-----\n{:?}",
-                tape, tape_chars,
-            )?;
+                writeln!(
+                    result_file,
+                    "----- Tape -----\n{:?}\n-----\n{:?}",
+                    tape, tape_chars,
+                )?;
 
-            match result {
-                Ok(()) => {
-                    println!(
-                        "Optimized program finished execution in {:#?}\n\
-                         output (bytes): {:?}\n\
-                         output (escaped): {:?}\n\
-                         output (utf8):\n{}",
-                        execution_duration, output_vec, output_str, output_str,
-                    );
+                match result {
+                    Ok(()) => {
+                        println!(
+                            "Optimized program finished execution in {:#?}\n\
+                             output (bytes): {:?}\n\
+                             output (escaped): {:?}\n\
+                             output (utf8):\n{}",
+                            execution_duration, output_vec, output_str, output_str,
+                        );
+                    }
+
+                    Err(_) => {
+                        println!(
+                            "Optimized program hit the step limit of {} steps in {:#?}\n\
+                             output (bytes): {:?}\n\
+                             output (escaped): {:?}\n\
+                             output (utf8): {}",
+                            step_limit, execution_duration, output_vec, output_str, output_str,
+                        );
+                    }
                 }
 
-                Err(_) => {
-                    println!(
-                        "Optimized program hit the step limit of {} steps in {:#?}\n\
-                         output (bytes): {:?}\n\
-                         output (escaped): {:?}\n\
-                         output (utf8): {}",
-                        step_limit, execution_duration, output_vec, output_str, output_str,
-                    );
-                }
+                (stats, execution_duration)
+            };
+
+            if let Some((unoptimized_stats, unoptimized_execution_duration)) = unoptimized_execution
+            {
+                writeln!(
+                    change,
+                    "Finished unoptimized execution in {:#?}\n\
+                     Unoptimized execution stats:\n{}",
+                    unoptimized_execution_duration,
+                    unoptimized_stats.display(),
+                )?;
             }
 
-            (stats, execution_duration)
-        };
-
-        // FIXME: Utility function
-        let difference = input_graph_stats.difference(output_graph_stats);
-        let mut change = format!(
-            "Optimized Program (took {} iterations and {:#?})\n\
-             Input:\n  \
-               instructions : {}\n  \
-               branches     : {}\n  \
-               loops        : {}\n  \
-               loads        : {}\n  \
-               stores       : {}\n  \
-               constants    : {}\n  \
-               io ops       : {}\n  \
-               scans        : {}\n\
-             Output:\n  \
-               instructions : {}\n  \
-               branches     : {}\n  \
-               loops        : {}\n  \
-               loads        : {}\n  \
-               stores       : {}\n  \
-               constants    : {}\n  \
-               io ops       : {}\n  \
-               scans        : {}\n\
-             Change:\n  \
-               instructions : {:>+6.02}%\n  \
-               branches     : {:>+6.02}%\n  \
-               loops        : {:>+6.02}%\n  \
-               loads        : {:>+6.02}%\n  \
-               stores       : {:>+6.02}%\n  \
-               constants    : {:>+6.02}%\n  \
-               io ops       : {:>+6.02}%\n  \
-               scans        : {:>+6.02}%\n\n",
-            pass_num,
-            elapsed,
-            input_graph_stats.instructions,
-            input_graph_stats.branches,
-            input_graph_stats.loops,
-            input_graph_stats.loads,
-            input_graph_stats.stores,
-            input_graph_stats.constants,
-            input_graph_stats.io_ops,
-            input_graph_stats.scans,
-            output_graph_stats.instructions,
-            output_graph_stats.branches,
-            output_graph_stats.loops,
-            output_graph_stats.loads,
-            output_graph_stats.stores,
-            output_graph_stats.constants,
-            output_graph_stats.io_ops,
-            output_graph_stats.scans,
-            difference.instructions,
-            difference.branches,
-            difference.loops,
-            difference.loads,
-            difference.stores,
-            difference.constants,
-            difference.io_ops,
-            difference.scans,
-        );
-
-        if let Some((unoptimized_stats, unoptimized_execution_duration)) = unoptimized_execution {
             writeln!(
                 change,
-                "Finished unoptimized execution in {:#?}\n\
-            Unoptimized execution stats:\n{}",
-                unoptimized_execution_duration,
-                unoptimized_stats.display(),
+                "Finished optimized execution in {:#?}\n\
+                 Optimized execution stats:\n{}",
+                optimized_execution_duration,
+                optimized_stats.display(),
             )?;
+
+            print!("{}", change);
+            fs::write(dump_dir.join("change.txt"), change)?;
+
+            let annotated_program = output_program
+                .pretty_print(pretty_config.with_instrumented(optimized_stats.instructions));
+            fs::write(dump_dir.join("annotated_output.cir"), annotated_program)?;
+        } else {
+            print!("{}", change);
+            fs::write(dump_dir.join("change.txt"), change)?;
         }
 
-        writeln!(
-            change,
-            "Finished optimized execution in {:#?}\n\
-             Optimized execution stats:\n{}",
-            optimized_execution_duration,
-            optimized_stats.display(),
-        )?;
-
-        print!("{}", change);
-        fs::write(dump_dir.join("change.txt"), change)?;
-
-        let annotated_program = output_program
-            .pretty_print(pretty_config.with_instrumented(optimized_stats.instructions));
-        fs::write(dump_dir.join("annotated_output.cir"), annotated_program)?;
+        println!("Executing...");
 
         let jit = Jit::new(settings, &dump_dir, "output")?.compile(&output_program)?;
 
@@ -578,6 +587,9 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
         let elapsed = start.elapsed();
         println!("\nOptimized jit finished execution in {:#?}", elapsed);
         println!("{:?}", utils::debug_collapse(&tape));
+    } else {
+        print!("{}", change);
+        fs::write(dump_dir.join("change.txt"), change)?;
     }
 
     Ok(())
@@ -629,6 +641,7 @@ fn run(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
             &mut graph,
             settings.iteration_limit.unwrap_or(usize::MAX),
             &settings.pass_config(),
+            Some(&mut HashMap::default()),
         )
     };
 

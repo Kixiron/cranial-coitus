@@ -1,7 +1,7 @@
 use crate::{
     ir::{CmpKind, Pretty, PrettyConfig},
     jit::{
-        basic_block::{Instruction, RValue, Scanl, Scanr, Type, Value},
+        basic_block::{Instruction, Load, RValue, Scanl, Scanr, Type, Value},
         codegen::{assert_type, Codegen},
         ffi, State,
     },
@@ -13,7 +13,7 @@ use cranelift::prelude::{
     InstBuilder, IntCC, MemFlags, StackSlotData, StackSlotKind, Type as ClifType,
     Value as ClifValue,
 };
-use std::ops::Not;
+use std::{cmp::Ordering, ops::Not};
 
 impl<'a> Codegen<'a> {
     pub(super) fn instruction(&mut self, inst: &Instruction) {
@@ -26,12 +26,7 @@ impl<'a> Codegen<'a> {
                     Value::TapePtr(uint) => self.builder.ins().iconst(I8, uint.into_cell()),
                     Value::Val(value, _) => {
                         let (value, ty) = self.values[&value];
-                        if ty == I8 {
-                            value
-                        } else {
-                            // TODO: Proper wrapping
-                            self.builder.ins().ireduce(I8, value)
-                        }
+                        self.resize_int(value, ty, I8)
                     }
                     Value::Bool(_) => unreachable!(),
                 };
@@ -109,11 +104,7 @@ impl<'a> Codegen<'a> {
                             Value::Bool(bool) => self.builder.ins().iconst(I8, bool as i64),
                             Value::Val(value, _) => {
                                 let (value, ty) = self.values[&value];
-                                if ty != I8 {
-                                    self.builder.ins().ireduce(I8, value)
-                                } else {
-                                    value
-                                }
+                                self.resize_int(value, ty, I8)
                             }
                         };
                         let rhs = match cmp.rhs() {
@@ -123,11 +114,7 @@ impl<'a> Codegen<'a> {
                             Value::Bool(bool) => self.builder.ins().iconst(I8, bool as i64),
                             Value::Val(value, _) => {
                                 let (value, ty) = self.values[&value];
-                                if ty != I8 {
-                                    self.builder.ins().ireduce(I8, value)
-                                } else {
-                                    value
-                                }
+                                self.resize_int(value, ty, I8)
                             }
                         };
 
@@ -165,6 +152,8 @@ impl<'a> Codegen<'a> {
 
                     // TODO: How much does neg actually make sense? Is it even needed or generated?
                     RValue::Neg(neg) => {
+                        tracing::warn!("codegen negated unsigned value");
+
                         let (value, ty) = match neg.value() {
                             Value::U8(byte) => (self.builder.ins().iconst(I8, byte), I8),
                             Value::U16(int) => (self.builder.ins().iconst(I16, int.0 as i64), I16),
@@ -179,30 +168,8 @@ impl<'a> Codegen<'a> {
                     // TODO: What cranelift does is pretty clever tbh, we should do this
                     //       for CIR and our bb form since all you need is type info to
                     //       do this properly so we can just have a single "not" node
-                    RValue::Not(not) => match not.value() {
-                        Value::U8(byte) => (self.builder.ins().iconst(I8, !byte), I8),
-                        Value::U16(int) => {
-                            (self.builder.ins().iconst(I16, int.not().0 as i64), I16)
-                        }
-                        Value::TapePtr(uint) => (self.builder.ins().iconst(I32, !uint), I32),
-                        Value::Bool(bool) => (self.builder.ins().bconst(B1, !bool), B1),
-                        Value::Val(value, _ty) => {
-                            let (value, ty) = self.values[&value];
-                            (self.builder.ins().bnot(value), ty)
-                        }
-                    },
-                    RValue::BitNot(bit_not) => match bit_not.value() {
-                        Value::U8(byte) => (self.builder.ins().iconst(I8, !byte), I8),
-                        Value::U16(int) => {
-                            (self.builder.ins().iconst(I16, int.not().0 as i64), I16)
-                        }
-                        Value::TapePtr(uint) => (self.builder.ins().iconst(I32, !uint), I32),
-                        Value::Bool(bool) => (self.builder.ins().bconst(B1, !bool), B1),
-                        Value::Val(value, _ty) => {
-                            let (value, ty) = self.values[&value];
-                            (self.builder.ins().bnot(value), ty)
-                        }
-                    },
+                    RValue::Not(not) => self.codegen_bitwise_not(not.value()),
+                    RValue::BitNot(bit_not) => self.codegen_bitwise_not(bit_not.value()),
 
                     // FIXME: This is hell
                     RValue::Add(add) => {
@@ -220,14 +187,8 @@ impl<'a> Codegen<'a> {
                                     Value::Bool(_) => unreachable!(),
                                     Value::Val(value, _) => {
                                         let (value, ty) = self.values[&value];
-                                        if ty == I8 {
-                                            value
-                                        // TODO: Proper wrapping?
-                                        } else if ty == I16 || ty == I32 || ty == I64 {
-                                            self.builder.ins().ireduce(I8, value)
-                                        } else {
-                                            panic!("{}", ty)
-                                        }
+                                        // TODO: Proper wrapping
+                                        self.resize_int(value, ty, I8)
                                     }
                                 };
 
@@ -242,16 +203,8 @@ impl<'a> Codegen<'a> {
                                     Value::Bool(_) => unreachable!(),
                                     Value::Val(value, _) => {
                                         let (value, ty) = self.values[&value];
-                                        if ty == I16 {
-                                            value
-                                        } else if ty == I8 {
-                                            self.builder.ins().uextend(I16, value)
-                                        // TODO: Proper wrapping?
-                                        } else if ty == I32 || ty == I64 {
-                                            self.builder.ins().ireduce(I16, value)
-                                        } else {
-                                            panic!("{}", ty)
-                                        }
+                                        // TODO: Proper wrapping
+                                        self.resize_int(value, ty, I16)
                                     }
                                 };
 
@@ -270,17 +223,8 @@ impl<'a> Codegen<'a> {
                                     Value::Bool(_) => unreachable!(),
                                     Value::Val(value, _) => {
                                         let (value, ty) = self.values[&value];
-                                        if ty == I32 {
-                                            value
-                                        // TODO: Proper wrapping for I16?
-                                        } else if ty == I8 || ty == I16 {
-                                            self.builder.ins().uextend(I32, value)
                                         // TODO: Proper wrapping?
-                                        } else if ty == I64 {
-                                            self.builder.ins().ireduce(I32, value)
-                                        } else {
-                                            panic!("{}", ty)
-                                        }
+                                        self.resize_int(value, ty, I32)
                                     }
                                 };
 
@@ -330,19 +274,7 @@ impl<'a> Codegen<'a> {
                                     Value::Val(value, _) => {
                                         let (value, ty) = self.values[&value];
                                         // TODO: Proper wrapping?
-                                        if ty == expected_ty {
-                                            value
-                                        } else if ty == I8 {
-                                            self.builder.ins().uextend(expected_ty, value)
-                                        } else if ty == I16 && expected_ty == I8 {
-                                            self.builder.ins().ireduce(expected_ty, value)
-                                        } else if ty == I16 || (ty == I32 && expected_ty == I64) {
-                                            self.builder.ins().uextend(expected_ty, value)
-                                        } else if ty == I32 || ty == I64 {
-                                            self.builder.ins().ireduce(expected_ty, value)
-                                        } else {
-                                            panic!("{}", ty)
-                                        }
+                                        self.resize_int(value, ty, expected_ty)
                                     }
                                     Value::Bool(_) => unreachable!(),
                                 };
@@ -360,17 +292,11 @@ impl<'a> Codegen<'a> {
                         let lhs = match sub.lhs() {
                             Value::U8(byte) => self.builder.ins().iconst(I64, byte),
                             Value::U16(int) => self.builder.ins().iconst(I64, int.0 as i64),
-                            Value::TapePtr(uint) => self.builder.ins().iconst(I32, uint),
+                            Value::TapePtr(uint) => self.builder.ins().iconst(I64, uint),
                             Value::Bool(_) => unreachable!(),
                             Value::Val(value, _) => {
                                 let (value, ty) = self.values[&value];
-                                if ty == I64 {
-                                    value
-                                } else if ty == I8 || ty == I32 {
-                                    self.builder.ins().uextend(I64, value)
-                                } else {
-                                    panic!("{}", ty)
-                                }
+                                self.resize_int(value, ty, I64)
                             }
                         };
                         let rhs = match sub.rhs() {
@@ -380,13 +306,7 @@ impl<'a> Codegen<'a> {
                             Value::Bool(_) => unreachable!(),
                             Value::Val(value, _ty) => {
                                 let (value, ty) = self.values[&value];
-                                if ty == I64 {
-                                    value
-                                } else if ty == I8 || ty == I32 {
-                                    self.builder.ins().uextend(I64, value)
-                                } else {
-                                    panic!("{}", ty)
-                                }
+                                self.resize_int(value, ty, I64)
                             }
                         };
 
@@ -403,13 +323,7 @@ impl<'a> Codegen<'a> {
                             Value::Bool(_) => unreachable!(),
                             Value::Val(value, _ty) => {
                                 let (value, ty) = self.values[&value];
-                                if ty == I64 {
-                                    value
-                                } else if ty == I8 || ty == I32 {
-                                    self.builder.ins().uextend(I64, value)
-                                } else {
-                                    panic!("{}", ty)
-                                }
+                                self.resize_int(value, ty, I64)
                             }
                         };
                         let rhs = match mul.rhs() {
@@ -419,13 +333,7 @@ impl<'a> Codegen<'a> {
                             Value::Bool(_) => unreachable!(),
                             Value::Val(value, _ty) => {
                                 let (value, ty) = self.values[&value];
-                                if ty == I64 {
-                                    value
-                                } else if ty == I8 || ty == I32 {
-                                    self.builder.ins().uextend(I64, value)
-                                } else {
-                                    panic!("{}", ty)
-                                }
+                                self.resize_int(value, ty, I64)
                             }
                         };
 
@@ -434,34 +342,7 @@ impl<'a> Codegen<'a> {
                     }
 
                     // TODO: Bounds checking & wrapping on pointers
-                    RValue::Load(load) => {
-                        // Get the value to store
-                        let offset = match load.ptr() {
-                            Value::U8(byte) => self.builder.ins().iconst(I64, byte),
-                            Value::U16(int) => self
-                                .builder
-                                .ins()
-                                .iconst(I64, Ptr::new(int.0, self.tape_len)),
-                            Value::TapePtr(uint) => self.builder.ins().iconst(I64, uint),
-                            Value::Val(offset, _ty) => {
-                                let (value, ty) = self.values[&offset];
-                                if ty == I64 {
-                                    value
-                                } else if ty == I8 || ty == I32 {
-                                    self.builder.ins().uextend(I64, value)
-                                } else {
-                                    panic!("{}", ty)
-                                }
-                            }
-                            Value::Bool(_) => unreachable!(),
-                        };
-
-                        let tape_start = self.tape_start();
-                        let pointer = self.builder.ins().iadd(tape_start, offset);
-
-                        // TODO: Optimize this to use a constant offset instead of add when possible
-                        (self.builder.ins().load(I8, MemFlags::new(), pointer, 0), I8)
-                    }
+                    RValue::Load(load) => self.codegen_load(load),
 
                     RValue::Input(_) => {
                         assert_type::<unsafe extern "fastcall" fn(*mut State, *mut u8) -> bool>(
@@ -523,6 +404,7 @@ impl<'a> Codegen<'a> {
                 // call and associated error check
                 let call_prelude = self.builder.create_block();
 
+                // TODO: Create const array if all args are constant
                 // Create a stack slot to hold the arguments
                 let bytes_slot = self.builder.create_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
@@ -538,11 +420,7 @@ impl<'a> Codegen<'a> {
                         Value::Bool(bool) => self.builder.ins().iconst(I8, bool as i64),
                         Value::Val(value, _ty) => {
                             let (value, ty) = self.values[&value];
-                            if ty != I8 {
-                                self.builder.ins().ireduce(I8, value)
-                            } else {
-                                value
-                            }
+                            self.resize_int(value, ty, I8)
                         }
                     };
 
@@ -582,6 +460,9 @@ impl<'a> Codegen<'a> {
         assert_type::<unsafe extern "fastcall" fn(*const State, u16, u16, u8) -> u32>(
             ffi::scanr_wrapping,
         );
+        assert_type::<unsafe extern "fastcall" fn(*const State, u16, u16, u8) -> u32>(
+            ffi::scanr_non_wrapping,
+        );
 
         let ptr = match scanr.ptr() {
             Value::U8(byte) => self.builder.ins().iconst(I16, byte),
@@ -590,15 +471,7 @@ impl<'a> Codegen<'a> {
             Value::Bool(_) => unreachable!(),
             Value::Val(value, _ty) => {
                 let (value, ty) = self.values[&value];
-                if ty == I16 {
-                    value
-                } else if ty == I8 {
-                    self.builder.ins().uextend(I16, value)
-                } else if ty == I32 || ty == I64 {
-                    self.builder.ins().ireduce(I16, value)
-                } else {
-                    panic!("{}", ty)
-                }
+                self.resize_int(value, ty, I16)
             }
         };
         let step = match scanr.step() {
@@ -608,15 +481,7 @@ impl<'a> Codegen<'a> {
             Value::Bool(_) => unreachable!(),
             Value::Val(value, _ty) => {
                 let (value, ty) = self.values[&value];
-                if ty == I16 {
-                    value
-                } else if ty == I8 {
-                    self.builder.ins().uextend(I16, value)
-                } else if ty == I32 || ty == I64 {
-                    self.builder.ins().ireduce(I16, value)
-                } else {
-                    panic!("{}", ty)
-                }
+                self.resize_int(value, ty, I16)
             }
         };
         let needle = match scanr.needle() {
@@ -626,13 +491,7 @@ impl<'a> Codegen<'a> {
             Value::Bool(_) => unreachable!(),
             Value::Val(value, _ty) => {
                 let (value, ty) = self.values[&value];
-                if ty == I8 {
-                    value
-                } else if ty == I16 || ty == I32 || ty == I64 {
-                    self.builder.ins().ireduce(I16, value)
-                } else {
-                    panic!("{}", ty)
-                }
+                self.resize_int(value, ty, I8)
             }
         };
 
@@ -667,6 +526,9 @@ impl<'a> Codegen<'a> {
         assert_type::<unsafe extern "fastcall" fn(*const State, u16, u16, u8) -> u32>(
             ffi::scanl_wrapping,
         );
+        assert_type::<unsafe extern "fastcall" fn(*const State, u16, u16, u8) -> u32>(
+            ffi::scanl_non_wrapping,
+        );
 
         let ptr = match scanl.ptr() {
             Value::U8(byte) => self.builder.ins().iconst(I16, byte),
@@ -675,15 +537,7 @@ impl<'a> Codegen<'a> {
             Value::Bool(_) => unreachable!(),
             Value::Val(value, _ty) => {
                 let (value, ty) = self.values[&value];
-                if ty == I16 {
-                    value
-                } else if ty == I8 {
-                    self.builder.ins().uextend(I16, value)
-                } else if ty == I32 || ty == I64 {
-                    self.builder.ins().ireduce(I16, value)
-                } else {
-                    panic!("{}", ty)
-                }
+                self.resize_int(value, ty, I16)
             }
         };
         let step = match scanl.step() {
@@ -693,15 +547,7 @@ impl<'a> Codegen<'a> {
             Value::Bool(_) => unreachable!(),
             Value::Val(value, _ty) => {
                 let (value, ty) = self.values[&value];
-                if ty == I16 {
-                    value
-                } else if ty == I8 {
-                    self.builder.ins().uextend(I16, value)
-                } else if ty == I32 || ty == I64 {
-                    self.builder.ins().ireduce(I16, value)
-                } else {
-                    panic!("{}", ty)
-                }
+                self.resize_int(value, ty, I16)
             }
         };
         let needle = match scanl.needle() {
@@ -711,13 +557,7 @@ impl<'a> Codegen<'a> {
             Value::Bool(_) => unreachable!(),
             Value::Val(value, _ty) => {
                 let (value, ty) = self.values[&value];
-                if ty == I8 {
-                    value
-                } else if ty == I16 || ty == I32 || ty == I64 {
-                    self.builder.ins().ireduce(I16, value)
-                } else {
-                    panic!("{}", ty)
-                }
+                self.resize_int(value, ty, I8)
             }
         };
 
@@ -746,5 +586,87 @@ impl<'a> Codegen<'a> {
         self.builder.switch_to_block(call_prelude);
 
         (scanl_value, I32)
+    }
+
+    fn codegen_bitwise_not(&mut self, value: Value) -> (ClifValue, ClifType) {
+        match value {
+            Value::U8(byte) => (self.builder.ins().iconst(I8, !byte), I8),
+            Value::U16(int) => (self.builder.ins().iconst(I16, int.not().0 as i64), I16),
+            Value::TapePtr(uint) => (self.builder.ins().iconst(I32, !uint), I32),
+            Value::Bool(bool) => (self.builder.ins().bconst(B1, !bool), B1),
+            Value::Val(value, _ty) => {
+                let (value, ty) = self.values[&value];
+                (self.builder.ins().bnot(value), ty)
+            }
+        }
+    }
+
+    fn codegen_load(&mut self, load: &Load) -> (ClifValue, ClifType) {
+        let tape_start = self.tape_start();
+
+        // Get the value to store
+        let (ptr, offset) = match load.ptr() {
+            Value::U8(byte) => (tape_start, byte.into_ptr(self.tape_len).value() as i32),
+
+            Value::U16(int) => (tape_start, Ptr::new(int.0, self.tape_len).value() as i32),
+
+            Value::TapePtr(uint) => (tape_start, uint.value() as i32),
+
+            Value::Val(offset, _ty) => {
+                let (value, ty) = self.values[&offset];
+                let offset = self.resize_int(value, ty, I64);
+
+                // TODO: Overflow handling
+                // TODO: Analysis to figure out if certain adds can overflow
+                let ptr = self.builder.ins().iadd(tape_start, offset);
+
+                (ptr, 0)
+            }
+
+            Value::Bool(_) => unreachable!(),
+        };
+
+        // All of our loads are known to be aligned and not trap
+        let flags = MemFlags::trusted();
+        let loaded = self.builder.ins().load(I8, flags, ptr, offset);
+
+        // Loads from the program tape always return bytes
+        (loaded, I8)
+    }
+
+    #[track_caller]
+    fn resize_int(&mut self, value: ClifValue, from: ClifType, to: ClifType) -> ClifValue {
+        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+        enum Type {
+            I8 = 0,
+            I16 = 1,
+            I32 = 2,
+            I64 = 3,
+        }
+
+        impl From<ClifType> for Type {
+            #[track_caller]
+            fn from(ty: ClifType) -> Self {
+                if ty == I8 {
+                    Self::I8
+                } else if ty == I16 {
+                    Self::I16
+                } else if ty == I32 {
+                    Self::I32
+                } else if ty == I64 {
+                    Self::I64
+                } else {
+                    panic!("invalid type given to resize_int: {:?}", ty)
+                }
+            }
+        }
+
+        // TODO: Cache the resized versions of things so we only do it once
+        let (from_ty, to_ty) = (Type::from(from), Type::from(to));
+        match from_ty.cmp(&to_ty) {
+            Ordering::Less => self.builder.ins().uextend(to, value),
+            Ordering::Equal => value,
+            Ordering::Greater => self.builder.ins().ireduce(to, value),
+        }
     }
 }

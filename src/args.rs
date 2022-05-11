@@ -77,6 +77,9 @@ pub struct Settings {
 
     #[clap(long)]
     pub no_run: bool,
+
+    #[clap(long)]
+    pub interpreter: bool,
 }
 
 impl Settings {

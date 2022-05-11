@@ -27,12 +27,8 @@ impl Executable {
     pub unsafe fn execute(&self, tape: &mut [u8]) -> Result<u8> {
         let tape_len = tape.len();
 
-        let (stdin, stdout, mut _stdout_buffer, mut utf8_buffer) = (
-            io::stdin(),
-            io::stdout(),
-            Vec::<u8>::with_capacity(512),
-            String::with_capacity(512),
-        );
+        let (stdin, stdout, mut utf8_buffer) =
+            (io::stdin(), io::stdout(), String::with_capacity(512));
         let (start_ptr, end_ptr) = unsafe { (tape.as_mut_ptr(), tape.as_mut_ptr().add(tape_len)) };
 
         let mut stdout = stdout.lock();
@@ -60,18 +56,6 @@ impl Executable {
             .flush()
             .context("failed to flush stdout after jitted function execution")?;
         drop(stdout);
-
-        // {
-        //     let stdout = io::stdout();
-        //     let mut stdout = stdout.lock();
-        //
-        //     stdout
-        //         .write_all(&stdout_buffer)
-        //         .context("failed to write newline to stdout")?;
-        //     stdout
-        //         .flush()
-        //         .context("failed to flush stdout after jitted function execution")?;
-        // }
 
         tracing::debug!(
             "jitted function returned {:?} in {:#?}",

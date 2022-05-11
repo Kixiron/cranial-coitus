@@ -13,6 +13,7 @@ pub struct State<'a> {
     utf8_buffer: &'a mut String,
     start_ptr: *const u8,
     end_ptr: *const u8,
+    stdout_flushed: bool,
 }
 
 impl<'a> State<'a> {
@@ -29,6 +30,7 @@ impl<'a> State<'a> {
             utf8_buffer,
             start_ptr,
             end_ptr,
+            stdout_flushed: true,
         }
     }
 }
@@ -52,9 +54,13 @@ pub(super) unsafe extern "fastcall" fn input(state_ptr: *mut State, input_ptr: *
         let (state, input) = unsafe { (&mut *state_ptr, &mut *input_ptr) };
 
         // Flush stdout
-        if let Err(error) = state.stdout.flush() {
-            tracing::error!("failed to flush stdout during input call: {:?}", error);
-            return true;
+        if !state.stdout_flushed {
+            state.stdout_flushed = true;
+
+            if let Err(error) = state.stdout.flush() {
+                tracing::error!("failed to flush stdout during input call: {:?}", error);
+                return true;
+            }
         }
 
         // Read one byte from stdin
@@ -91,14 +97,17 @@ pub(super) unsafe extern "fastcall" fn output(
         let bytes = unsafe { slice::from_raw_parts(bytes_ptr, length) };
 
         let utf8 = from_utf8_lossy_buffered(state.utf8_buffer, bytes);
-
-        match state.stdout.write_all(utf8.as_bytes()) {
+        let result = match state.stdout.write_all(utf8.as_bytes()) {
             Ok(()) => false,
             Err(err) => {
                 tracing::error!("writing to stdout during output call failed: {:?}", err);
                 true
             }
-        }
+        };
+        state.utf8_buffer.clear();
+        state.stdout_flushed = false;
+
+        result
     }))
     .unwrap_or_else(|err| {
         tracing::error!("writing byte to stdout panicked: {:?}", err);

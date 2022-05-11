@@ -6,7 +6,7 @@ use crate::{
     lower_tokens,
     parse::{self, Token},
     passes::{self, PassConfig},
-    utils::{HashSet, PerfEvent},
+    utils::{HashMap, HashSet, PerfEvent},
     values::{Cell, Ptr},
 };
 use anyhow::{Context, Result};
@@ -23,8 +23,13 @@ pub fn run_opt_passes(
     graph: &mut Rvsdg,
     iteration_limit: usize,
     pass_config: &PassConfig,
+    mut stats: Option<&mut HashMap<String, (usize, Duration)>>,
 ) -> usize {
     let mut passes = passes::default_passes(pass_config);
+    if let Some(stats) = stats.as_mut() {
+        stats.reserve(passes.len());
+    }
+
     let (mut pass_num, mut stack, mut visited, mut buffer) = (
         1,
         VecDeque::new(),
@@ -36,10 +41,6 @@ pub fn run_opt_passes(
         let mut changed = false;
 
         for (pass_idx, pass) in passes.iter_mut().enumerate() {
-            if pass.pass_name() == "dataflow-v2" && pass_num % 5 != 0 {
-                continue;
-            }
-
             let span = tracing::info_span!("optimization-pass", pass = pass.pass_name());
             span.in_scope(|| {
                 tracing::info!(
@@ -50,7 +51,8 @@ pub fn run_opt_passes(
                 );
 
                 let event = PerfEvent::new(pass.pass_name());
-                changed |= pass.visit_graph_inner(graph, &mut stack, &mut visited, &mut buffer);
+                let pass_made_changes =
+                    pass.visit_graph_inner(graph, &mut stack, &mut visited, &mut buffer);
                 let elapsed = event.finish();
 
                 tracing::info!(
@@ -66,6 +68,16 @@ pub fn run_opt_passes(
                     },
                 );
 
+                if let Some(stats) = stats.as_mut() {
+                    // Update the pass stats
+                    let (activations, duration) = stats
+                        .entry(pass.pass_name().to_owned())
+                        .or_insert((0, Duration::ZERO));
+                    *activations += pass_made_changes as usize;
+                    *duration += elapsed;
+                }
+
+                changed |= pass_made_changes;
                 pass.reset();
                 stack.clear();
             });

@@ -26,6 +26,20 @@ pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<Xxh3
 // pub type ImHashSet<K> = im_rc::HashSet<K, BuildHasherDefault<Xxh3>>;
 pub type ImHashMap<K, V> = im_rc::HashMap<K, V, BuildHasherDefault<Xxh3>>;
 
+pub fn hex_encode<T: AsRef<[u8]>>(data: T) -> String {
+    const HEX_CHARACTERS: [u8; 16] = *b"0123456789abcdef";
+
+    let data = data.as_ref();
+
+    let mut output = String::with_capacity(data.len() * 2);
+    for &byte in data {
+        output.push(HEX_CHARACTERS[(byte >> 4) as usize] as char);
+        output.push(HEX_CHARACTERS[(byte & 0xF) as usize] as char);
+    }
+
+    output
+}
+
 pub(crate) enum DebugCollapse<T> {
     Single(T),
     Many(T, usize, usize),

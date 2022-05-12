@@ -1126,6 +1126,10 @@ impl Value {
             Self::Val(_, ty) => ty,
         }
     }
+
+    pub const fn is_const(&self) -> bool {
+        !matches!(self, Self::Val(..))
+    }
 }
 
 impl Default for Value {

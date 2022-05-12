@@ -1,17 +1,19 @@
 mod instruction;
 mod terminator;
 
+use std::{collections::hash_map::Entry, mem::align_of};
+
 use crate::{
     jit::{
         basic_block::{BlockId, Blocks, ValId},
         ffi, State, SCAN_ERROR_MESSAGE,
     },
-    utils::{HashMap, HashSet},
+    utils::{self, HashMap, HashSet},
 };
 use anyhow::{Context as _, Result};
 use cranelift::{
     codegen::{
-        ir::{FuncRef, Function},
+        ir::{FuncRef, Function, GlobalValue},
         Context,
     },
     frontend::{FunctionBuilder, FunctionBuilderContext},
@@ -36,11 +38,12 @@ pub struct Codegen<'a> {
     ssa: &'a Blocks,
     builder: FunctionBuilder<'a>,
     module: &'a mut JITModule,
-    _data_ctx: &'a mut DataContext,
+    data_ctx: &'a mut DataContext,
     intrinsics: Intrinsics,
     handlers: Handlers,
     params: JitParams,
     values: HashMap<ValId, (Value, Type)>,
+    declared_data: HashMap<Box<[u8]>, GlobalValue>,
     blocks: HashMap<BlockId, Block>,
     visited_blocks: HashSet<BlockId>,
     ptr_type: Type,
@@ -93,11 +96,12 @@ impl<'a> Codegen<'a> {
             ssa,
             builder,
             module,
-            _data_ctx: data_ctx,
+            data_ctx,
             intrinsics,
             handlers,
             params,
             values: HashMap::default(),
+            declared_data: HashMap::default(),
             blocks,
             visited_blocks: HashSet::default(),
             ptr_type,
@@ -248,6 +252,39 @@ impl<'a> Codegen<'a> {
 
     fn scan_error_handler(&mut self) -> Block {
         self.handlers.scan_error_handler()
+    }
+
+    fn static_readonly_slice<I>(&mut self, data: I) -> Result<GlobalValue>
+    where
+        I: IntoIterator<Item = u8>,
+    {
+        let data = Box::from_iter(data);
+
+        match self.declared_data.entry(data) {
+            Entry::Occupied(occupied) => Ok(*occupied.get()),
+            Entry::Vacant(vacant) => {
+                self.data_ctx.define(vacant.key().clone());
+                self.data_ctx.set_align(align_of::<u8>() as u64);
+
+                let hex_data = utils::hex_encode(vacant.key());
+                let global_id = self
+                    .module
+                    .declare_data(&hex_data, Linkage::Local, false, false)
+                    .context("failed to declare readonly data")?;
+
+                self.module
+                    .define_data(global_id, self.data_ctx)
+                    .context("failed to define readonly data")?;
+                self.data_ctx.clear();
+
+                let local_id = self
+                    .module
+                    .declare_data_in_func(global_id, self.builder.func);
+                vacant.insert(local_id);
+
+                Ok(local_id)
+            }
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::{
     ir::{CmpKind, Pretty, PrettyConfig},
     jit::{
-        basic_block::{Instruction, Load, RValue, Scanl, Scanr, Type, Value},
+        basic_block::{Instruction, Load, Output, RValue, Scanl, Scanr, Type, Value},
         codegen::{assert_type, Codegen},
         ffi, State,
     },
@@ -395,64 +395,7 @@ impl<'a> Codegen<'a> {
                     .debug_unwrap_none();
             }
 
-            Instruction::Output(output) => {
-                assert_type::<unsafe extern "fastcall" fn(*mut State, *const u8, usize) -> bool>(
-                    ffi::output,
-                );
-
-                // Create a block to house the stuff that happens after the function
-                // call and associated error check
-                let call_prelude = self.builder.create_block();
-
-                // TODO: Create const array if all args are constant
-                // Create a stack slot to hold the arguments
-                let bytes_slot = self.builder.create_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    output.values().len() as u32,
-                ));
-
-                // Store the arguments into the stack slot
-                for (offset, &value) in output.values().iter().enumerate() {
-                    let value = match value {
-                        Value::U8(byte) => self.builder.ins().iconst(I8, byte),
-                        Value::U16(int) => self.builder.ins().iconst(I8, int.0 as i64),
-                        Value::TapePtr(uint) => self.builder.ins().iconst(I8, uint),
-                        Value::Bool(bool) => self.builder.ins().iconst(I8, bool as i64),
-                        Value::Val(value, _ty) => {
-                            let (value, ty) = self.values[&value];
-                            self.resize_int(value, ty, I8)
-                        }
-                    };
-
-                    self.builder
-                        .ins()
-                        .stack_store(value, bytes_slot, offset as i32);
-                }
-
-                // Get the address of the stack slot and the number of arguments in it
-                let bytes_ptr = self.builder.ins().stack_addr(self.ptr_type, bytes_slot, 0);
-                let bytes_len = self
-                    .builder
-                    .ins()
-                    .iconst(self.ptr_type, output.values().len() as i64);
-
-                // Call the output function
-                let (output_func, state_ptr) = (self.output_function(), self.state_ptr());
-                let output_call = self
-                    .builder
-                    .ins()
-                    .call(output_func, &[state_ptr, bytes_ptr, bytes_len]);
-                let output_result = self.builder.inst_results(output_call)[0];
-
-                // If the call to output failed (and therefore returned true),
-                // branch to the io error handler
-                let error_handler = self.io_error_handler();
-                self.builder.ins().brnz(output_result, error_handler, &[]);
-
-                // Otherwise if the call didn't fail, we don't have any work to do
-                self.builder.ins().jump(call_prelude, &[]);
-                self.builder.switch_to_block(call_prelude);
-            }
+            Instruction::Output(output) => self.codegen_output(output),
         }
     }
 
@@ -632,6 +575,90 @@ impl<'a> Codegen<'a> {
 
         // Loads from the program tape always return bytes
         (loaded, I8)
+    }
+
+    fn codegen_output(&mut self, output: &Output) {
+        assert_type::<unsafe extern "fastcall" fn(*mut State, *const u8, usize) -> bool>(
+            ffi::output,
+        );
+
+        // Create a block to house the stuff that happens after the function
+        // call and associated error check
+        let call_prelude = self.builder.create_block();
+
+        // If every value is a constant we can create a static array instead of
+        // building one on the stack
+        let bytes_ptr = if output.values().iter().all(Value::is_const) {
+            let values = output.values().iter().map(|&value| {
+                match value {
+                    Value::U8(byte) => byte,
+                    Value::U16(int) => Cell::from(int.0),
+                    Value::TapePtr(ptr) => ptr.into_cell(),
+                    Value::Bool(_) => unreachable!("cannot pass a boolean to an output call"),
+                    Value::Val(_, _) => unreachable!("all values are const"),
+                }
+                .into_inner()
+            });
+
+            // Create a static value containing all the bytes to be output
+            let static_data = self
+                .static_readonly_slice(values)
+                .expect("failed to create slice for output");
+
+            // Get a pointer to the static data
+            self.builder.ins().symbol_value(self.ptr_type, static_data)
+
+        // Otherwise we build a stack value (is there a more efficient way to do this?)
+        } else {
+            // Create a stack slot to hold the arguments
+            let bytes_slot = self.builder.create_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                output.values().len() as u32,
+            ));
+
+            // Store the arguments into the stack slot
+            for (offset, &value) in output.values().iter().enumerate() {
+                let value = match value {
+                    Value::U8(byte) => self.builder.ins().iconst(I8, byte),
+                    Value::U16(int) => self.builder.ins().iconst(I8, Cell::from(int)),
+                    Value::TapePtr(uint) => self.builder.ins().iconst(I8, uint.into_cell()),
+                    Value::Bool(_) => unreachable!("cannot pass a boolean to an output call"),
+                    Value::Val(value, _ty) => {
+                        let (value, ty) = self.values[&value];
+                        self.resize_int(value, ty, I8)
+                    }
+                };
+
+                self.builder
+                    .ins()
+                    .stack_store(value, bytes_slot, offset as i32);
+            }
+
+            self.builder.ins().stack_addr(self.ptr_type, bytes_slot, 0)
+        };
+
+        // Get the address of the stack slot and the number of arguments in it
+        let bytes_len = self
+            .builder
+            .ins()
+            .iconst(self.ptr_type, output.values().len() as i64);
+
+        // Call the output function
+        let (output_func, state_ptr) = (self.output_function(), self.state_ptr());
+        let output_call = self
+            .builder
+            .ins()
+            .call(output_func, &[state_ptr, bytes_ptr, bytes_len]);
+        let output_result = self.builder.inst_results(output_call)[0];
+
+        // If the call to output failed (and therefore returned true),
+        // branch to the io error handler
+        let error_handler = self.io_error_handler();
+        self.builder.ins().brnz(output_result, error_handler, &[]);
+
+        // Otherwise if the call didn't fail, we don't have any work to do
+        self.builder.ins().jump(call_prelude, &[]);
+        self.builder.switch_to_block(call_prelude);
     }
 
     #[track_caller]

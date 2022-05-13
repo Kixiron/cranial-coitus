@@ -300,37 +300,52 @@ impl Rvsdg {
     }
 
     /// Runs the provided closure for each node within the graph and all contained subgraphs
-    /// until the provided function returns `false` or there are no further nodes to visit
-    pub fn try_for_each_transitive_node<F>(&self, mut for_each: F)
+    /// until the provided function returns `false` or there are no further nodes to visit.
+    ///
+    /// Returns `true` if short circuiting happened at any point  
+    /// The order nodes are visited in is not guaranteed
+    pub fn try_for_each_transitive_node<F>(&self, mut for_each: F) -> bool
     where
         F: FnMut(NodeId, &Node) -> bool,
     {
-        self.try_for_each_transitive_node_inner(&mut for_each);
+        self.try_for_each_transitive_node_inner(&mut for_each)
     }
 
-    pub fn try_for_each_transitive_node_inner<F>(&self, for_each: &mut F)
+    pub fn try_for_each_transitive_node_inner<F>(&self, for_each: &mut F) -> bool
     where
         F: FnMut(NodeId, &Node) -> bool,
     {
+        // TODO: Convert this to use a work list instead of recursion
         for (&node_id, node) in self.nodes.iter() {
             if !for_each(node_id, node) {
-                break;
+                return true;
             }
 
             match node {
                 Node::Gamma(gamma) => {
-                    gamma
+                    if gamma
                         .true_branch()
-                        .try_for_each_transitive_node_inner(for_each);
-                    gamma
-                        .false_branch()
-                        .try_for_each_transitive_node_inner(for_each);
+                        .try_for_each_transitive_node_inner(for_each)
+                        || gamma
+                            .false_branch()
+                            .try_for_each_transitive_node_inner(for_each)
+                    {
+                        return true;
+                    }
                 }
-                Node::Theta(theta) => theta.body().try_for_each_transitive_node_inner(for_each),
+
+                Node::Theta(theta) => {
+                    if theta.body().try_for_each_transitive_node_inner(for_each) {
+                        return true;
+                    }
+                }
 
                 _ => {}
             }
         }
+
+        // Short circuiting didn't happen
+        false
     }
 
     pub fn try_node(&self, node: NodeId) -> Option<&Node> {

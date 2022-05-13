@@ -672,10 +672,15 @@ fn run(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
         let tokens = span.in_scope(|| {
             tracing::info!("started parsing {}", file.display());
 
-            let tokens = parse::parse(&contents);
+            let (tokens, total_tokens) = parse::parse(&contents);
 
             let elapsed = start_time.elapsed();
-            tracing::info!("finished parsing {} in {:#?}", file.display(), elapsed);
+            tracing::info!(
+                total_tokens,
+                "finished parsing {} in {:#?}",
+                file.display(),
+                elapsed
+            );
 
             tokens
         });
@@ -689,8 +694,7 @@ fn run(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
         let effect = start.effect();
         let ptr = graph.int(Ptr::zero(settings.tape_len.get())).value();
 
-        let (_ptr, effect) =
-            lower_tokens::lower_tokens(&mut graph, ptr, effect, &tokens, settings.tape_len.get());
+        let (_ptr, effect) = lower_tokens::lower_tokens(&mut graph, ptr, effect, &tokens);
         graph.end(effect);
 
         let elapsed = graph_building_start.elapsed();

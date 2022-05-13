@@ -597,7 +597,7 @@ test_opts! {
     output = [74, 0],
     |graph, effect, tape_len| {
         let ptr = graph.int(Ptr::zero(tape_len)).value();
-        compile_brainfuck_into(",>,[-<+>]<.>.", graph, ptr, effect, tape_len).1
+        compile_brainfuck_into(",>,[-<+>]<.>.", graph, ptr, effect).1
     },
 }
 
@@ -607,6 +607,6 @@ test_opts! {
     output = [50, 24, 10, 0],
     |graph, effect, tape_len| {
         let ptr = graph.int(Ptr::zero(tape_len)).value();
-        compile_brainfuck_into("+[>,.]", graph, ptr, effect, tape_len).1
+        compile_brainfuck_into("+[>,.]", graph, ptr, effect).1
     },
 }

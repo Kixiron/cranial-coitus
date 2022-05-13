@@ -463,7 +463,7 @@ mod tests {
             effect = store.output_effect();
 
             // Compile the loop
-            let (x_ptr, mut effect) = compile_brainfuck_into("[->+<]>", graph, y_ptr, effect, tape_len);
+            let (x_ptr, mut effect) = compile_brainfuck_into("[->+<]>", graph, y_ptr, effect);
 
             // Print the y value
             let y_value = graph.load(y_ptr, effect);

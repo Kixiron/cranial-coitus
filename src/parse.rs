@@ -20,7 +20,7 @@ enum RawToken {
     JumpEnd,
 }
 
-pub fn parse(source: &str) -> Box<[Token]> {
+pub fn parse(source: &str) -> (Box<[Token]>, usize) {
     let tokens = source.chars().flat_map(|token| {
         Some(match token {
             '>' => RawToken::IncPtr,
@@ -35,7 +35,7 @@ pub fn parse(source: &str) -> Box<[Token]> {
         })
     });
 
-    let mut scopes = vec![Vec::new()];
+    let (mut scopes, mut total_tokens) = (vec![Vec::new()], 0);
     for token in tokens {
         match token {
             RawToken::IncPtr => scopes.last_mut().unwrap().push(Token::IncPtr),
@@ -53,8 +53,10 @@ pub fn parse(source: &str) -> Box<[Token]> {
                     .push(Token::Loop(body.into_boxed_slice()));
             }
         }
+
+        total_tokens += 1;
     }
 
     assert_eq!(scopes.len(), 1);
-    scopes.remove(0).into_boxed_slice()
+    (scopes.remove(0).into_boxed_slice(), total_tokens)
 }

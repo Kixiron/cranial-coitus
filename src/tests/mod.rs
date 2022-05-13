@@ -12,7 +12,6 @@ test_opts! {
             graph,
             ptr,
             effect,
-            tape_len,
         );
 
         effect

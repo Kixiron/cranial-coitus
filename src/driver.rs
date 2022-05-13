@@ -103,7 +103,7 @@ where
 {
     let tokens = tokens.as_ref();
 
-    tracing::info!(total_tokens = tokens.len(), "started building rvsdg");
+    tracing::info!("started building rvsdg");
     let event = PerfEvent::new("build-graph");
 
     let mut graph = Rvsdg::new();
@@ -115,7 +115,7 @@ where
     let ptr = graph.int(Ptr::zero(tape_len)).value();
 
     // Lower all of the program's tokens into the graph
-    let (_ptr, effect) = lower_tokens::lower_tokens(&mut graph, ptr, effect, tokens, tape_len);
+    let (_ptr, effect) = lower_tokens::lower_tokens(&mut graph, ptr, effect, tokens);
     // Create the program's end node
     graph.end(effect);
 
@@ -133,12 +133,12 @@ pub fn parse_source(file: &Path, source: &str) -> Box<[Token]> {
     let event = PerfEvent::new("parsing");
 
     // Parse the program's source code into tokens
-    let tokens = parse::parse(source);
+    let (tokens, total_tokens) = parse::parse(source);
 
     let elapsed = event.finish();
     tracing::info!(
         source_len = source.len(),
-        total_tokens = tokens.len(),
+        total_tokens,
         "finished parsing '{}' in {:#?}",
         file,
         elapsed,

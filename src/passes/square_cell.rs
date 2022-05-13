@@ -832,7 +832,7 @@ test_opts! {
         let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/square.bf"));
 
         let ptr = graph.int(Ptr::new(0, tape_len));
-        let (_ptr, effect) = compile_brainfuck_into(source, graph, ptr.value(), effect, tape_len);
+        let (_ptr, effect) = compile_brainfuck_into(source, graph, ptr.value(), effect);
         effect
     },
 }

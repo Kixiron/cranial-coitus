@@ -9,11 +9,11 @@ use std::{cell::RefCell, mem::take, thread};
 thread_local! {
     // FIXME: https://github.com/rust-lang/rust-clippy/issues/8493
     #[allow(clippy::declare_interior_mutable_const)]
-    static CONSTANT_STORE_BUFFERS: RefCell<Vec<HashMap<OutputPort, Const>>>
+    static VALUE_BUFFERS: RefCell<Vec<HashMap<OutputPort, Const>>>
         = const { RefCell::new(Vec::new()) };
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ConstantStore {
     values: HashMap<OutputPort, Const>,
     tape_len: u16,
@@ -21,7 +21,7 @@ pub struct ConstantStore {
 
 impl ConstantStore {
     pub fn new(tape_len: u16) -> Self {
-        let values = CONSTANT_STORE_BUFFERS
+        let values = VALUE_BUFFERS
             .with_borrow_mut(|buffers| buffers.pop())
             .unwrap_or_default();
         debug_assert!(values.is_empty());
@@ -109,13 +109,35 @@ impl ConstantStore {
     }
 }
 
+impl Clone for ConstantStore {
+    fn clone(&self) -> Self {
+        let values =
+            if let Some(mut values) = VALUE_BUFFERS.with_borrow_mut(|buffers| buffers.pop()) {
+                values.clone_from(&self.values);
+                values
+            } else {
+                self.values.clone()
+            };
+
+        Self {
+            values,
+            tape_len: self.tape_len,
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.values.clone_from(&source.values);
+        self.tape_len = source.tape_len;
+    }
+}
+
 impl Drop for ConstantStore {
     fn drop(&mut self) {
         if !thread::panicking() && self.values.capacity() != 0 {
             let mut values = take(&mut self.values);
             values.clear();
 
-            CONSTANT_STORE_BUFFERS.with_borrow_mut(|buffers| buffers.push(values));
+            VALUE_BUFFERS.with_borrow_mut(|buffers| buffers.push(values));
         }
     }
 }

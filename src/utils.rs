@@ -248,17 +248,16 @@ pub fn compile_brainfuck_into(
     graph: &mut Rvsdg,
     ptr: OutputPort,
     effect: OutputPort,
-    tape_len: u16,
 ) -> (OutputPort, OutputPort) {
     let parsing_start = Instant::now();
 
     let span = tracing::info_span!("parsing");
     let tokens = span.in_scope(|| {
         tracing::info!("started parsing source code");
-        let tokens = parse::parse(source);
+        let (tokens, total_tokens) = parse::parse(source);
 
         let elapsed = parsing_start.elapsed();
-        tracing::info!("finished parsing in {:#?}", elapsed);
+        tracing::info!(total_tokens, "finished parsing in {:#?}", elapsed);
 
         tokens
     });
@@ -268,7 +267,7 @@ pub fn compile_brainfuck_into(
         tracing::info!("started building rvsdg");
         let graph_building_start = Instant::now();
 
-        let (ptr, effect) = lower_tokens::lower_tokens(graph, ptr, effect, &tokens, tape_len);
+        let (ptr, effect) = lower_tokens::lower_tokens(graph, ptr, effect, &tokens);
 
         let elapsed = graph_building_start.elapsed();
         tracing::info!("finished building rvsdg in {:#?}", elapsed);

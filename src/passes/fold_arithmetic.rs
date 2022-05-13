@@ -42,7 +42,7 @@ impl FoldArithmetic {
 
 // TODO: Double bitwise and logical negation
 impl Pass for FoldArithmetic {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "fold-arithmetic"
     }
 

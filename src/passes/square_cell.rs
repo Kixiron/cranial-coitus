@@ -5,7 +5,7 @@ use crate::{
     },
     ir::Const,
     passes::{utils::ChangeReport, Pass},
-    utils::{AssertNone},
+    utils::AssertNone,
     values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
@@ -502,7 +502,7 @@ fn gamma_branch_is_empty(branch: &Rvsdg) -> bool {
 }
 
 impl Pass for SquareCell {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "square-cell"
     }
 

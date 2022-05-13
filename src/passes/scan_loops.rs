@@ -271,7 +271,7 @@ impl ScanLoops {
 }
 
 impl Pass for ScanLoops {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "scan-loops"
     }
 

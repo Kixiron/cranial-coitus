@@ -12,7 +12,7 @@ use crate::{
 };
 
 impl Pass for Dataflow {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "dataflow"
     }
 

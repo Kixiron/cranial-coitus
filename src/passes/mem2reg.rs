@@ -5,7 +5,7 @@ use crate::{
     },
     ir::Const,
     passes::{utils::ChangeReport, Pass},
-    utils::{AssertNone},
+    utils::AssertNone,
     values::{Cell, Ptr},
 };
 use std::collections::BTreeMap;
@@ -70,7 +70,7 @@ impl Mem2Reg {
 // TODO: Better analyze stores on the outs from thetas & gammas for fine-grained
 //       tape invalidation
 impl Pass for Mem2Reg {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "mem2reg"
     }
 

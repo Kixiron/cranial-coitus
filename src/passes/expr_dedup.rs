@@ -72,7 +72,7 @@ impl ExprDedup {
 // TODO: Use a union-find to deduplicate all expressions
 // TODO: Deduplicate invariant loop inputs
 impl Pass for ExprDedup {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "expression-deduplication"
     }
 

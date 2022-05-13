@@ -4,6 +4,14 @@ use crate::{
     utils::HashMap,
     values::{Cell, Ptr},
 };
+use std::{cell::RefCell, mem::take, thread};
+
+thread_local! {
+    // FIXME: https://github.com/rust-lang/rust-clippy/issues/8493
+    #[allow(clippy::declare_interior_mutable_const)]
+    static CONSTANT_STORE_BUFFERS: RefCell<Vec<HashMap<OutputPort, Const>>>
+        = const { RefCell::new(Vec::new()) };
+}
 
 #[derive(Debug, Clone)]
 pub struct ConstantStore {
@@ -13,10 +21,12 @@ pub struct ConstantStore {
 
 impl ConstantStore {
     pub fn new(tape_len: u16) -> Self {
-        Self {
-            values: HashMap::default(),
-            tape_len,
-        }
+        let values = CONSTANT_STORE_BUFFERS
+            .with_borrow_mut(|buffers| buffers.pop())
+            .unwrap_or_default();
+        debug_assert!(values.is_empty());
+
+        Self { values, tape_len }
     }
 
     pub fn clear(&mut self) {
@@ -96,5 +106,16 @@ impl ConstantStore {
     /// Get the constant store's tape len
     pub fn tape_len(&self) -> u16 {
         self.tape_len
+    }
+}
+
+impl Drop for ConstantStore {
+    fn drop(&mut self) {
+        if !thread::panicking() && self.values.capacity() != 0 {
+            let mut values = take(&mut self.values);
+            values.clear();
+
+            CONSTANT_STORE_BUFFERS.with_borrow_mut(|buffers| buffers.push(values));
+        }
     }
 }

@@ -25,7 +25,7 @@ impl Canonicalize {
 }
 
 impl Pass for Canonicalize {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "canonicalize"
     }
 

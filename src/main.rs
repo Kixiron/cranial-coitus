@@ -1,5 +1,6 @@
 #![feature(
     stdsimd,
+    option_zip,
     let_chains,
     new_uninit,
     try_blocks,
@@ -21,7 +22,7 @@
     nonnull_slice_from_raw_parts
 )]
 #![allow(incomplete_features)]
-#![forbid(unsafe_op_in_unsafe_fn)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 #[macro_use]
 mod utils;
@@ -44,13 +45,14 @@ use crate::{
     interpreter::EvaluationError,
     ir::{IrBuilder, Pretty, PrettyConfig},
     jit::Jit,
-    utils::{HashMap, HashSet, PerfEvent},
+    utils::{HashMap, HashSet, PassName, PerfEvent},
     values::Ptr,
 };
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::{
-    collections::VecDeque,
+    cmp::max,
+    collections::{hash_map::Entry, VecDeque},
     fmt::Write,
     fs::{self, File},
     io::{BufWriter, Write as _},
@@ -221,7 +223,31 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
     let mut evolution = BufWriter::new(File::create(dump_dir.join("evolution.diff")).unwrap());
     write!(evolution, ">>>>> input\n{}", input_program_ir).unwrap();
 
-    let mut passes = passes::default_passes(&settings.pass_config());
+    let mut passes: Vec<_> = {
+        let passes = passes::default_passes(&settings.pass_config());
+
+        let mut pass_names = HashMap::with_capacity_and_hasher(passes.len(), Default::default());
+
+        for (idx, pass) in passes.into_iter().enumerate() {
+            for i in 0usize.. {
+                let name = PassName::new(pass.pass_name(), i);
+
+                // If no pass by this name we cna use it for the current pass
+                if let Entry::Vacant(entry) = pass_names.entry(name) {
+                    entry.insert((idx, pass));
+                    break;
+                }
+            }
+        }
+
+        let mut passes: Vec<_> = pass_names.into_iter().collect();
+        passes.sort_unstable_by_key(|&(_, (idx, _))| idx);
+        passes
+            .into_iter()
+            .map(|(name, (_, pass))| (name, pass))
+            .collect()
+    };
+
     let (mut pass_stats, mut pass_num, mut stack, mut visited, mut buffer, mut previous_program_ir) = (
         HashMap::with_capacity_and_hasher(passes.len(), Default::default()),
         1,
@@ -232,20 +258,81 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
     );
 
     if !settings.disable_optimizations {
+        let mut pass_name_buf = String::with_capacity(128);
+
+        let mut dump_files = {
+            let mut dump_files =
+                HashMap::with_capacity_and_hasher(passes.len(), Default::default());
+
+            let (mut file_name_buf, mut pass_path_buf) =
+                (String::with_capacity(128), dump_dir.clone());
+            for (pass_idx, &(name, _)) in passes.iter().enumerate() {
+                pass_path_buf.push(name.name());
+                if pass_num == 1 {
+                    fs::create_dir_all(&pass_path_buf)?;
+                }
+
+                write!(file_name_buf, "{}.{}.input.cir", pass_num, pass_idx).unwrap();
+                pass_path_buf.push(&file_name_buf);
+                let input_path = File::create(&pass_path_buf).with_context(|| {
+                    format!(
+                        "failed to create dump file '{}' for pass '{}'",
+                        pass_path_buf.display(),
+                        name,
+                    )
+                })?;
+                file_name_buf.clear();
+                pass_path_buf.pop();
+
+                write!(file_name_buf, "{}.{}.cir", pass_num, pass_idx).unwrap();
+                pass_path_buf.push(&file_name_buf);
+                let output_path = File::create(&pass_path_buf).with_context(|| {
+                    format!(
+                        "failed to create dump file '{}' for pass '{}'",
+                        pass_path_buf.display(),
+                        name,
+                    )
+                })?;
+                file_name_buf.clear();
+                pass_path_buf.pop();
+
+                write!(file_name_buf, "{}.{}.diff", pass_num, pass_idx).unwrap();
+                pass_path_buf.push(&file_name_buf);
+                let diff_path = File::create(&pass_path_buf).with_context(|| {
+                    format!(
+                        "failed to create dump file '{}' for pass '{}'",
+                        pass_path_buf.display(),
+                        name,
+                    )
+                })?;
+                file_name_buf.clear();
+                pass_path_buf.pop();
+
+                dump_files.insert(
+                    name,
+                    (
+                        BufWriter::new(input_path),
+                        BufWriter::new(output_path),
+                        BufWriter::new(diff_path),
+                    ),
+                );
+                pass_path_buf.pop();
+            }
+
+            dump_files
+        };
+
         loop {
             let mut changed = false;
 
-            for (pass_idx, pass) in passes.iter_mut().enumerate() {
-                let span = tracing::info_span!("pass", pass = pass.pass_name());
+            for (pass_idx, &mut (pass_name, ref mut pass)) in passes.iter_mut().enumerate() {
+                let span = tracing::info_span!("pass", pass = %pass_name);
                 span.in_scope(|| {
-                    tracing::info!(
-                        "running {} (pass #{}.{})",
-                        pass.pass_name(),
-                        pass_num,
-                        pass_idx,
-                    );
+                    tracing::info!("running {} (pass #{}.{})", pass_name, pass_num, pass_idx,);
 
-                    let event = PerfEvent::new(pass.pass_name());
+                    write!(pass_name_buf, "{}", pass_name).unwrap();
+                    let event = PerfEvent::new(&pass_name_buf);
+
                     let pass_made_changes =
                         pass.visit_graph_inner(&mut graph, &mut stack, &mut visited, &mut buffer);
                     let elapsed = event.finish();
@@ -253,15 +340,14 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
                     changed |= pass_made_changes;
 
                     // Update the pass stats
-                    let (activations, duration) = pass_stats
-                        .entry(pass.pass_name().to_owned())
-                        .or_insert((0, Duration::ZERO));
+                    let (activations, duration) =
+                        pass_stats.entry(pass_name).or_insert((0, Duration::ZERO));
                     *activations += pass_made_changes as usize;
                     *duration += elapsed;
 
                     tracing::info!(
                         "finished running {} in {:#?} (pass #{}.{}, {})",
-                        pass.pass_name(),
+                        pass_name,
                         elapsed,
                         pass_num,
                         pass_idx,
@@ -281,30 +367,22 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
                     let diff = utils::diff_ir(&previous_program_ir, &output_program_ir);
 
                     if !diff.is_empty() {
-                        let pass_dir = dump_dir.join(pass.pass_name());
-                        fs::create_dir_all(&pass_dir)?;
+                        let (input_file, output_file, diff_file) =
+                            dump_files.get_mut(&pass_name).unwrap();
 
-                        let input_file =
-                            pass_dir.join(format!("{}.{}.input.cir", pass_num, pass_idx));
-                        fs::write(input_file, &previous_program_ir)?;
-
-                        let output_file = pass_dir.join(format!("{}.{}.cir", pass_num, pass_idx));
-                        fs::write(output_file, &output_program_ir)?;
-
-                        let diff_file = pass_dir.join(format!("{}.{}.diff", pass_num, pass_idx));
-                        fs::write(diff_file, &diff)?;
+                        input_file.write_all(previous_program_ir.as_bytes())?;
+                        output_file.write_all(output_program_ir.as_bytes())?;
+                        diff_file.write_all(diff.as_bytes())?;
 
                         write!(
                             evolution,
                             ">>>>> {}-{}.{}\n{}",
-                            pass.pass_name(),
-                            pass_num,
-                            pass_idx,
-                            diff,
+                            pass_name, pass_num, pass_idx, diff,
                         )?;
                     }
 
                     previous_program_ir = output_program_ir;
+                    pass_name_buf.clear();
 
                     Result::<()>::Ok(())
                 })?;
@@ -322,22 +400,12 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
         let mut reports = Vec::with_capacity(passes.len());
         let mut max_len = 0;
 
-        for pass in &passes {
-            let mut pass_name = pass.pass_name().to_owned();
-
-            let mut idx = 1;
-            while reports.iter().any(|(name, _)| name == &pass_name) {
-                pass_name = format!("{}-{}", pass.pass_name(), idx);
-                idx += 1;
-            }
-
+        for (pass_name, pass) in &passes {
             let mut report: Vec<_> = pass.report().into_iter().collect();
             report.sort_unstable_by_key(|&(aspect, _)| aspect);
 
             if let Some(longest) = report.iter().map(|(aspect, _)| aspect.len()).max() {
-                if longest > max_len {
-                    max_len = longest;
-                }
+                max_len = max(max_len, longest);
             }
 
             reports.push((pass_name, report));

@@ -15,7 +15,9 @@ use std::{
 };
 
 thread_local! {
-    static TAPE_CACHE: RefCell<Vec<Box<[ByteSet]>>> = RefCell::new(Vec::new());
+    // FIXME: https://github.com/rust-lang/rust-clippy/issues/8493
+    #[allow(clippy::declare_interior_mutable_const)]
+    static TAPE_CACHE: RefCell<Vec<Box<[ByteSet]>>> = const { RefCell::new(Vec::new()) };
 }
 
 #[repr(transparent)]

@@ -1,7 +1,7 @@
 use crate::{
     graph::{Node, NodeExt, NodeId, Rvsdg},
     passes::{utils::ChangeReport, Pass},
-    utils::{HashSet},
+    utils::HashSet,
 };
 use std::collections::VecDeque;
 
@@ -198,7 +198,7 @@ impl Dce {
 // TODO: Demote variant inputs that don't vary into invariant inputs
 // TODO: Deduplicate both variant and invariant inputs & outputs
 impl Pass for Dce {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "dead-code-elimination"
     }
 

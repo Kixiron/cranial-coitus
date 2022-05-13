@@ -18,7 +18,9 @@ type BitArray = [u64; BITS_LEN];
 type BitBox = ManuallyDrop<Box<BitArray>>;
 
 thread_local! {
-    static BITMAP_CACHE: RefCell<Vec<Box<BitArray>>> = RefCell::new(Vec::new());
+    // FIXME: https://github.com/rust-lang/rust-clippy/issues/8493
+    #[allow(clippy::declare_interior_mutable_const)]
+    static BITMAP_CACHE: RefCell<Vec<Box<BitArray>>> = const { RefCell::new(Vec::new()) };
 }
 
 pub struct U16Bitmap {

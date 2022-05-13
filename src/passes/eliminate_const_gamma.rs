@@ -33,7 +33,7 @@ impl ElimConstGamma {
 }
 
 impl Pass for ElimConstGamma {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "eliminate-const-gamma"
     }
 

@@ -216,7 +216,7 @@ impl AddSubLoop {
 }
 
 impl Pass for AddSubLoop {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "add-sub-loop"
     }
 

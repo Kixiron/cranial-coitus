@@ -93,7 +93,7 @@ impl Licm {
 
 // TODO: Invariant branches and loops
 impl Pass for Licm {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "loop-invariant-code-motion"
     }
 

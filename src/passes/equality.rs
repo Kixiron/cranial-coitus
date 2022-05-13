@@ -34,7 +34,7 @@ impl Equality {
 }
 
 impl Pass for Equality {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "equality"
     }
 

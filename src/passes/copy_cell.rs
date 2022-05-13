@@ -384,8 +384,8 @@ impl CopyCell {
 }
 
 impl Pass for CopyCell {
-    fn pass_name(&self) -> &str {
-        "duplicate-cell"
+    fn pass_name(&self) -> &'static str {
+        "copy-cell"
     }
 
     fn did_change(&self) -> bool {

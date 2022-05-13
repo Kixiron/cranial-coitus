@@ -19,7 +19,7 @@ impl FuseIO {
 }
 
 impl Pass for FuseIO {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "fuse-io"
     }
 

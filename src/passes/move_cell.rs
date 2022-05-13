@@ -1,5 +1,7 @@
 use crate::{
-    graph::{AddOrSub, Byte, Gamma, Int, Load, Neq, NodeExt, OutputPort, Rvsdg, Store, Theta},
+    graph::{
+        AddOrSub, Byte, Gamma, InputPort, Int, Load, Neq, NodeExt, OutputPort, Rvsdg, Store, Theta,
+    },
     ir::Const,
     passes::{
         utils::{Changes, ConstantStore},
@@ -7,6 +9,8 @@ use crate::{
     },
     values::{Cell, Ptr},
 };
+
+use super::utils::ChangeReport;
 
 pub struct MoveCell {
     changes: Changes<1>,
@@ -21,11 +25,47 @@ impl MoveCell {
         }
     }
 
-    fn theta_move_cell(&self, graph: &mut Rvsdg, theta: &mut Theta) -> bool {
-        if self.move_cell_inner(theta).is_some() {
-            // TODO: Replace the theta with a succinct move
-            tracing::info!("found move cell motif");
-            false
+    /// If we detect a move cell motif, this should be the generated code:
+    /// ```
+    /// // Load the source value
+    /// src_val := load src_ptr
+    ///
+    /// // Store the source value into the destination cell
+    /// // TODO: Technically this should add src_val to dest_val
+    /// store dest_ptr, src_val
+    ///
+    /// // Zero out the source cell
+    /// store src_ptr, int 0
+    /// ```
+    fn theta_move_cell(&mut self, graph: &mut Rvsdg, theta: &mut Theta) -> bool {
+        if let Some((src_ptr, dest_ptr)) = self.move_cell_inner(theta) {
+            let src_ptr = match src_ptr {
+                Ok(input) => graph.input_source(input),
+                Err(constant) => graph.constant(constant).value(),
+            };
+            let dest_ptr = match dest_ptr {
+                Ok(input) => graph.input_source(input),
+                Err(constant) => graph.constant(constant).value(),
+            };
+
+            let input_effect = graph.input_source(theta.input_effect().unwrap());
+            let zero = graph.byte(0).value();
+
+            // src_val := load src_ptr
+            let src_val = graph.load(src_ptr, input_effect);
+
+            // store src_ptr, byte 0
+            let store_src = graph.store(src_ptr, zero, src_val.output_effect());
+
+            // store dest_ptr, src_val
+            let store_dest =
+                graph.store(dest_ptr, src_val.output_value(), store_src.output_effect());
+
+            graph.rewire_dependents(theta.output_effect().unwrap(), store_dest.output_effect());
+            graph.remove_node(theta.node());
+            self.changes.inc::<"move-cell">();
+
+            true
         } else {
             false
         }
@@ -50,9 +90,16 @@ impl MoveCell {
     //     src_is_zero := cmp.neq {src_dec, src_dec_reload}, int 0
     // } while { src_is_zero }
     // ```
-    fn move_cell_inner(&self, theta: &Theta) -> Option<()> {
+    fn move_cell_inner(
+        &self,
+        theta: &Theta,
+    ) -> Option<(Result<InputPort, Const>, Result<InputPort, Const>)> {
         let graph = theta.body();
         let start = theta.start_node();
+
+        if theta.outputs_len() != 0 || theta.variant_inputs_len() != 0 {
+            return None;
+        }
 
         let first = self.load_mutate_store(graph, start.effect())?;
 
@@ -70,10 +117,11 @@ impl MoveCell {
                     return None;
                 }
 
-                let src_dec =
+                let src_dec_port =
                     // src_dec_reload := load src_ptr
                     if let Some(reload) = graph.cast_output_dest::<Load>(src_dec.output_effect) {
-                        if graph.input_source(reload.ptr()) != src_dec.ptr {
+                        let ptr_src = graph.input_source(reload.ptr());
+                        if ptr_src != src_dec.ptr && self.constants.get(ptr_src).zip_with(self.constants.get(src_dec.ptr), |lhs, rhs| lhs != rhs).unwrap_or(true) {
                             return None;
                         } else {
                             reload.output_value()
@@ -84,7 +132,7 @@ impl MoveCell {
 
                 // src_is_zero := cmp.neq {src_dec, src_dec_reload}, int 0
                 let src_is_zero = graph.cast_input_source::<Neq>(theta.condition().input())?;
-                if graph.input_source(src_is_zero.lhs()) != src_dec
+                if graph.input_source(src_is_zero.lhs()) != src_dec_port
                     || !self
                         .constants
                         .get(graph.input_source(src_is_zero.rhs()))?
@@ -92,6 +140,11 @@ impl MoveCell {
                 {
                     return None;
                 }
+
+                Some((
+                    self.const_or_input(src_dec.ptr, theta)?,
+                    self.const_or_input(first.ptr, theta)?,
+                ))
             }
 
             // src_val := load src_ptr
@@ -102,7 +155,7 @@ impl MoveCell {
                 // dest_inc := add dest_val, byte 1
                 // store dest_ptr, dest_inc
                 let dest_inc = self.load_mutate_store(graph, first.output_effect)?;
-                dest_inc.loaded_value.as_sub()?;
+                dest_inc.loaded_value.as_add()?;
                 if first.mutated_value != dest_inc.mutated_value {
                     return None;
                 }
@@ -110,7 +163,8 @@ impl MoveCell {
                 let src_dec =
                     // src_dec_reload := load src_ptr
                     if let Some(reload) = graph.cast_output_dest::<Load>(dest_inc.output_effect) {
-                        if graph.input_source(reload.ptr()) != first.ptr {
+                        let ptr_src = graph.input_source(reload.ptr());
+                        if ptr_src != first.ptr && self.constants.get(ptr_src).zip_with(self.constants.get(first.ptr), |lhs, rhs| lhs != rhs).unwrap_or(true) {
                             return None;
                         } else {
                             reload.output_value()
@@ -129,10 +183,13 @@ impl MoveCell {
                 {
                     return None;
                 }
+
+                Some((
+                    self.const_or_input(first.ptr, theta)?,
+                    self.const_or_input(dest_inc.ptr, theta)?,
+                ))
             }
         }
-
-        Some(())
     }
 
     fn load_mutate_store(
@@ -164,15 +221,37 @@ impl MoveCell {
             ptr: src_ptr,
         })
     }
+
+    fn const_or_input(&self, ptr: OutputPort, theta: &Theta) -> Option<Result<InputPort, Const>> {
+        if let Some(value) = self.constants.get(ptr) {
+            Some(Err(value))
+        } else {
+            let ptr_node = theta.body().port_parent(ptr);
+
+            if let Some(input) = theta
+                .invariant_input_pairs()
+                .find_map(|(input, param)| (param.node() == ptr_node).then_some(input))
+            {
+                Some(Ok(input))
+            } else {
+                tracing::warn!("found move cell motif with an input pointer that was neither const nor an input param");
+                None
+            }
+        }
+    }
 }
 
 impl Pass for MoveCell {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "move-cell"
     }
 
     fn did_change(&self) -> bool {
         self.changes.did_change()
+    }
+
+    fn report(&self) -> ChangeReport {
+        self.changes.as_report()
     }
 
     fn reset(&mut self) {
@@ -190,7 +269,7 @@ impl Pass for MoveCell {
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         // TODO: Propagate constants
 
-        if self.visit_graph(theta.body_mut()) && !self.theta_move_cell(graph, &mut theta) {
+        if self.visit_graph(theta.body_mut()) & !self.theta_move_cell(graph, &mut theta) {
             graph.replace_node(theta.node(), theta);
         }
     }
@@ -204,6 +283,7 @@ impl Pass for MoveCell {
     }
 }
 
+#[derive(Debug)]
 struct LoadMutateStore {
     output_effect: OutputPort,
     loaded_value: AddOrSub,

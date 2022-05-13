@@ -14,7 +14,6 @@ mod licm;
 mod mem2reg;
 mod move_cell;
 mod scan_loops;
-mod shift;
 mod square_cell;
 mod symbolic_eval;
 mod unobserved_store;
@@ -37,7 +36,6 @@ pub use licm::Licm;
 pub use mem2reg::Mem2Reg;
 pub use move_cell::MoveCell;
 pub use scan_loops::ScanLoops;
-pub use shift::ShiftCell;
 pub use square_cell::SquareCell;
 pub use symbolic_eval::SymbolicEval;
 pub use unobserved_store::UnobservedStore;
@@ -84,7 +82,6 @@ pub fn default_passes(config: &PassConfig) -> Vec<Box<dyn Pass>> {
         ZeroLoop::new(tape_len),
         Mem2Reg::new(tape_len),
         AddSubLoop::new(tape_len),
-        ShiftCell::new(tape_len),
         FuseIO::new(),
         MoveCell::new(tape_len),
         ScanLoops::new(tape_len),
@@ -105,8 +102,11 @@ pub fn default_passes(config: &PassConfig) -> Vec<Box<dyn Pass>> {
 
 thread_local! {
     /// A cache to hold buffers for visitors to reuse
+    // FIXME: https://github.com/rust-lang/rust-clippy/issues/8493
+    #[allow(clippy::declare_interior_mutable_const)]
     #[allow(clippy::type_complexity)]
-    static VISIT_GRAPH_CACHE: RefCell<Vec<(VecDeque<NodeId>, HashSet<NodeId>, Vec<NodeId>)>> = RefCell::new(Vec::new());
+    static VISIT_GRAPH_CACHE: RefCell<Vec<(VecDeque<NodeId>, HashSet<NodeId>, Vec<NodeId>)>>
+        = const { RefCell::new(Vec::new()) };
 }
 
 // TODO:
@@ -144,7 +144,7 @@ thread_local! {
 // - Build dataflow lattices of variant theta values
 pub trait Pass {
     /// The name of the current pass
-    fn pass_name(&self) -> &str;
+    fn pass_name(&self) -> &'static str;
 
     fn did_change(&self) -> bool;
 

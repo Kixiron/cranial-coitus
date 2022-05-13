@@ -223,7 +223,7 @@ impl SymbolicEval {
 }
 
 impl Pass for SymbolicEval {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "symbolic-eval"
     }
 

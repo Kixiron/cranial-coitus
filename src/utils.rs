@@ -26,6 +26,42 @@ pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<Xxh3
 // pub type ImHashSet<K> = im_rc::HashSet<K, BuildHasherDefault<Xxh3>>;
 pub type ImHashMap<K, V> = im_rc::HashMap<K, V, BuildHasherDefault<Xxh3>>;
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PassName {
+    name: &'static str,
+    idx: usize,
+}
+
+impl PassName {
+    pub const fn new(name: &'static str, idx: usize) -> Self {
+        Self { name, idx }
+    }
+
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+impl Debug for PassName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.idx == 0 {
+            f.write_str(self.name)
+        } else {
+            write!(f, "{}-{}", self.name, self.idx)
+        }
+    }
+}
+
+impl Display for PassName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.idx == 0 {
+            f.write_str(self.name)
+        } else {
+            write!(f, "{}-{}", self.name, self.idx)
+        }
+    }
+}
+
 pub fn hex_encode<T: AsRef<[u8]>>(data: T) -> String {
     const HEX_CHARACTERS: [u8; 16] = *b"0123456789abcdef";
 

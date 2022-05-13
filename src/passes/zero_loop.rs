@@ -311,7 +311,7 @@ impl ZeroLoop {
 }
 
 impl Pass for ZeroLoop {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "zero-loop"
     }
 

@@ -34,7 +34,7 @@ impl UnobservedStore {
 }
 
 impl Pass for UnobservedStore {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "unobserved-store"
     }
 

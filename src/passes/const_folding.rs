@@ -42,7 +42,7 @@ impl ConstFolding {
 
 // TODO: Double bitwise and logical negation
 impl Pass for ConstFolding {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "constant-folding"
     }
 

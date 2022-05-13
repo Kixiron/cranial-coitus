@@ -127,7 +127,7 @@ impl AssociativeOps {
 }
 
 impl Pass for AssociativeOps {
-    fn pass_name(&self) -> &str {
+    fn pass_name(&self) -> &'static str {
         "associative-operations"
     }
 

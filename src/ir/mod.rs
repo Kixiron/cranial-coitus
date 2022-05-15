@@ -1432,10 +1432,32 @@ pub enum Const {
 }
 
 impl Const {
+    pub fn values_eq(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Ptr(lhs), Self::Ptr(rhs)) => lhs == rhs,
+            (Self::Ptr(lhs), Self::Cell(rhs)) => lhs == rhs.into_ptr(lhs.tape_len()),
+            (Self::Cell(lhs), Self::Ptr(rhs)) => lhs.into_ptr(rhs.tape_len()) == rhs,
+            (Self::Cell(lhs), Self::Cell(rhs)) => lhs == rhs,
+            (Self::Bool(lhs), Self::Bool(rhs)) => lhs == rhs,
+
+            (Self::Bool(_), _) | (_, Self::Bool(_)) => {
+                panic!("can't compare booleans to other constants")
+            }
+        }
+    }
+
     pub fn is_zero(&self) -> bool {
         match self {
             Self::Ptr(ptr) => ptr.is_zero(),
             Self::Cell(cell) => cell.is_zero(),
+            Self::Bool(_) => false,
+        }
+    }
+
+    pub fn is_one(&self) -> bool {
+        match self {
+            Self::Ptr(ptr) => ptr.is_one(),
+            Self::Cell(cell) => cell.is_one(),
             Self::Bool(_) => false,
         }
     }

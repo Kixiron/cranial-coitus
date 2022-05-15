@@ -54,6 +54,12 @@ impl Ptr {
         self.value() == 0
     }
 
+    /// Returns `true` if the current number is one
+    #[inline]
+    pub const fn is_one(&self) -> bool {
+        self.value() == 1
+    }
+
     /// Returns `true` if the current number is even
     #[inline]
     pub const fn is_even(self) -> bool {

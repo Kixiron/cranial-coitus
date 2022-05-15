@@ -222,6 +222,9 @@ impl Pass for Mem2Reg {
             .map(|(&input, &params)| (input, params))
             .collect();
 
+        true_visitor.constants.reserve(inputs.len());
+        false_visitor.constants.reserve(inputs.len());
+
         for (input, [true_param, false_param]) in inputs {
             if let Some(value) = self.constants.get(graph.input_source(input)) {
                 let param = gamma.true_branch().to_node::<InputParam>(true_param);
@@ -240,10 +243,10 @@ impl Pass for Mem2Reg {
 
         // Figure out if there's any stores within either of the gamma branches
         let contains_stores = gamma
-            .true_branch()
+            .false_branch()
             .try_for_each_transitive_node(|_, node| node.is_store())
             || gamma
-                .false_branch()
+                .true_branch()
                 .try_for_each_transitive_node(|_, node| node.is_store());
 
         // Invalidate the whole tape if any stores occur within it
@@ -286,6 +289,7 @@ impl Pass for Mem2Reg {
         };
 
         let mut visitor = Self::with_tape(tape);
+        visitor.constants.reserve(theta.invariant_inputs_len());
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant

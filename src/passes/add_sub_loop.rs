@@ -364,7 +364,7 @@ impl Pass for AddSubLoop {
             let store_sum_diff = graph.store(acc_ptr, sum_diff, acc_val.output_effect());
 
             // Unconditionally store 0 to the counter cell
-            let zero = graph.int(Ptr::zero(self.tape_len));
+            let zero = graph.byte(0);
             let zero_counter =
                 graph.store(counter_ptr, zero.value(), store_sum_diff.output_effect());
 
@@ -374,11 +374,14 @@ impl Pass for AddSubLoop {
             for (port, param) in theta.output_pairs() {
                 if let Some((input_node, ..)) = theta.body().try_input(param.input()) {
                     match *input_node {
+                        Node::Byte(_, value) => {
+                            let byte = graph.byte(value);
+                            graph.rewire_dependents(port, byte.value());
+                        }
                         Node::Int(_, value) => {
                             let int = graph.int(value);
                             graph.rewire_dependents(port, int.value());
                         }
-
                         Node::Bool(_, value) => {
                             let bool = graph.bool(value);
                             graph.rewire_dependents(port, bool.value());

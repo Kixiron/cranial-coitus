@@ -31,9 +31,16 @@ impl Cell {
         Self::new(1)
     }
 
+    /// Returns `true` if the current cell is zero
     #[inline]
     pub const fn is_zero(self) -> bool {
         self.value == 0
+    }
+
+    /// Returns `true` if the current cell is one
+    #[inline]
+    pub const fn is_one(&self) -> bool {
+        self.value == 1
     }
 
     #[inline]

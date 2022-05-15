@@ -4,6 +4,7 @@ mod nodes;
 mod ports;
 mod remove;
 mod stats;
+mod structural_eq;
 mod subgraph;
 
 pub use building::ConstNode;

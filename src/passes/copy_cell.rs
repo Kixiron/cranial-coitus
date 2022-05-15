@@ -137,7 +137,7 @@ impl CopyCell {
             }
 
             // Unconditionally store 0 to the source cell
-            let zero = graph.int(Ptr::zero(self.constants.tape_len()));
+            let zero = graph.byte(0);
             let zero_src_cell = graph.store(src_ptr, zero.value(), last_effect);
 
             // Wire the final store into the gamma's output effect

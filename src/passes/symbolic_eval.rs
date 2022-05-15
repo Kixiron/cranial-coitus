@@ -153,17 +153,16 @@ impl SymbolicEval {
                 for (output, param) in theta.output_pairs() {
                     let source = theta.body().input_source(param.input());
 
-                    let value = machine
+                    let value = *machine
                         .values
                         .last()
                         .unwrap()
                         .get(&VarId::new(source))
-                        .unwrap()
-                        .into_ptr(self.tape_len);
+                        .unwrap();
 
-                    let int = graph.int(value);
+                    let constant = graph.constant(value);
                     self.constants.add(output, value);
-                    graph.rewire_dependents(output, int.value());
+                    graph.rewire_dependents(output, constant.value());
 
                     self.evaluated_outputs += 1;
                 }
@@ -187,7 +186,7 @@ impl SymbolicEval {
                             });
                             let value = *created_values
                                 .entry(new.into_inner() as u16)
-                                .or_insert_with(|| graph.int(new.into_ptr(self.tape_len)).value());
+                                .or_insert_with(|| graph.byte(new).value());
 
                             let store = graph.store(ptr, value, last_effect);
                             last_effect = store.output_effect();
@@ -198,7 +197,7 @@ impl SymbolicEval {
                         });
                         let value = *created_values
                             .entry(value.into_inner() as u16)
-                            .or_insert_with(|| graph.int(value.into_ptr(self.tape_len)).value());
+                            .or_insert_with(|| graph.byte(value).value());
 
                         let store = graph.store(ptr, value, last_effect);
                         last_effect = store.output_effect();

@@ -107,6 +107,10 @@ impl ConstantStore {
     pub fn tape_len(&self) -> u16 {
         self.tape_len
     }
+
+    pub fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
+    }
 }
 
 impl Clone for ConstantStore {

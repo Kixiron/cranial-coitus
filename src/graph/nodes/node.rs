@@ -11,11 +11,34 @@ use crate::{
     values::{Cell, Ptr},
 };
 
+macro_rules! Node {
+    ($($variant:ident($($ty:ty),+ $(,)?)),* $(,)?) => {
+        #[derive(Debug, Clone, PartialEq)]
+        pub enum Node {
+            $($variant($($ty),+),)*
+        }
+
+        impl Node {
+            // TODO: Make this part of the `NodeExt` trait?
+            #[inline]
+            pub const fn kind(&self) -> NodeKind {
+                match self {
+                    $(Self::$variant(..) => NodeKind::$variant,)*
+                }
+            }
+        }
+
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+        pub enum NodeKind {
+            $($variant,)*
+        }
+    };
+}
+
 // TODO: derive_more?
 // TODO: Type casting node(s)
 // TODO: Byte node?
-#[derive(Debug, Clone, PartialEq)]
-pub enum Node {
+Node! {
     Int(Int, Ptr),
     Byte(Byte, Cell),
     Bool(Bool, bool),

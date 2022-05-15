@@ -78,4 +78,6 @@ pub trait NodeExt {
 
     // TODO: Should this return a bool?
     fn update_output(&mut self, from: OutputPort, to: OutputPort);
+
+    // fn kind(&self) -> NodeKind;
 }

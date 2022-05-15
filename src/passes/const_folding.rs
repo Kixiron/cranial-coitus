@@ -6,7 +6,7 @@ use crate::{
     ir::Const,
     passes::{
         utils::{ChangeReport, Changes, ConstantStore},
-        Pass,
+        Pass, PassConfig,
     },
     values::{Cell, Ptr},
 };
@@ -14,7 +14,7 @@ use crate::{
 /// Evaluates constant operations within the program
 pub struct ConstFolding {
     values: ConstantStore,
-    changes: Changes<4>,
+    changes: Changes<5>,
     tape_len: u16,
 }
 
@@ -24,6 +24,7 @@ impl ConstFolding {
             values: ConstantStore::new(tape_len),
             changes: Changes::new([
                 "exprs-folded",
+                "const-gamma-output",
                 "propagated-inputs",
                 "invariant-theta-output",
                 "invariant-theta-feedback",
@@ -32,9 +33,9 @@ impl ConstFolding {
         }
     }
 
-    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (OutputPort, Option<Ptr>) {
+    fn operand(&self, graph: &Rvsdg, input: InputPort) -> (OutputPort, Option<Const>) {
         let source = graph.input_source(input);
-        let value = self.values.ptr(source);
+        let value = self.values.get(source);
 
         (source, value)
     }
@@ -84,7 +85,7 @@ impl Pass for ConstFolding {
                 let sum = lhs + rhs;
                 tracing::debug!(%lhs, %rhs, "evaluated add {:?} to {}", add, sum);
 
-                let int = graph.int(sum);
+                let int = graph.constant(sum);
                 graph.rewire_dependents(add.value(), int.value());
 
                 // Add the derived values to the known constants
@@ -154,7 +155,7 @@ impl Pass for ConstFolding {
                 let difference = lhs - rhs;
                 tracing::debug!(%lhs, %rhs, "evaluated sub {:?} to {}", sub, difference);
 
-                let int = graph.int(difference);
+                let int = graph.constant(difference);
                 graph.rewire_dependents(sub.value(), int.value());
 
                 // Add the derived values to the known constants
@@ -242,7 +243,7 @@ impl Pass for ConstFolding {
                 let product = lhs * rhs;
                 tracing::debug!(%lhs, %rhs, "evaluated multiply {:?} to {}", mul, product);
 
-                let int = graph.int(product);
+                let int = graph.constant(product);
                 graph.rewire_dependents(mul.value(), int.value());
 
                 // Add the derived values to the known constants
@@ -271,7 +272,7 @@ impl Pass for ConstFolding {
 
             // If either side of the multiply is one, we can remove the multiply entirely for the non-one value
             // `x * 1 => x`, `1 * x => x`
-            [(_, Some(one)), (value, None)] | [(value, None), (_, Some(one))] if one == 1 => {
+            [(_, Some(one)), (value, None)] | [(value, None), (_, Some(one))] if one.is_one() => {
                 tracing::debug!(
                     "removing an multiply by one {:?} into a direct value of {:?}",
                     mul,
@@ -469,13 +470,9 @@ impl Pass for ConstFolding {
         if let Some(value) = self.values.get(output) {
             tracing::debug!("constant folding 'neg {}' to '{}'", value, !value);
 
-            let inverted = match -value {
-                Const::Ptr(int) => graph.int(int).value(),
-                // FIXME: Do we need a byte node?
-                Const::Cell(byte) => graph.int(byte.into_ptr(self.tape_len)).value(),
-                Const::Bool(bool) => graph.bool(bool).value(),
-            };
+            let inverted = graph.constant(-value).value();
             self.values.remove(neg.value());
+            self.values.add(inverted, -value);
 
             graph.rewire_dependents(neg.value(), inverted);
 
@@ -498,25 +495,15 @@ impl Pass for ConstFolding {
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
         for (input, [truthy_param, falsy_param]) in inputs {
-            let (_, output, _) = graph.get_input(input);
+            let output = graph.input_source(input);
 
             // If the param has a constant value, pull the constant into both bodies
             // and allow dce to remove any redundant parameters or constants
             if let Some(constant) = self.values.get(output) {
-                let (true_val, false_val) = match constant {
-                    Const::Ptr(ptr) => (
-                        gamma.true_mut().int(ptr).value(),
-                        gamma.false_mut().int(ptr).value(),
-                    ),
-                    Const::Cell(cell) => (
-                        gamma.true_mut().byte(cell).value(),
-                        gamma.false_mut().byte(cell).value(),
-                    ),
-                    Const::Bool(bool) => (
-                        gamma.true_mut().bool(bool).value(),
-                        gamma.false_mut().bool(bool).value(),
-                    ),
-                };
+                let (true_val, false_val) = (
+                    gamma.true_mut().constant(constant).value(),
+                    gamma.false_mut().constant(constant).value(),
+                );
 
                 true_visitor.values.add(true_val, constant);
                 false_visitor.values.add(false_val, constant);
@@ -532,9 +519,6 @@ impl Pass for ConstFolding {
                     .to_node::<InputParam>(falsy_param)
                     .output();
                 gamma.false_mut().rewire_dependents(false_output, false_val);
-
-                self.changes.inc::<"propagated-inputs">();
-                changed = true;
             }
         }
 
@@ -565,9 +549,13 @@ impl Pass for ConstFolding {
                 true_visitor.values.get(true_output),
                 false_visitor.values.get(false_output),
             ) {
-                if truthy == falsy {
+                if truthy.values_eq(falsy) {
                     tracing::trace!("propagating {:?} out of gamma node", truthy);
                     self.values.add(port, truthy);
+
+                    let value = graph.constant(truthy);
+                    graph.rewire_dependents(port, value.value());
+                    self.changes.inc::<"const-gamma-output">();
                 } else {
                     tracing::debug!(
                         "failed to propagate value out of gamma node, branches disagree ({:?} vs. {:?})",
@@ -599,6 +587,41 @@ test_opts! {
 
         graph.output(sum.value(), effect).output_effect()
     },
+}
+
+#[test]
+fn const_add() {
+    let mut input = {
+        let mut graph = Rvsdg::new();
+
+        let start = graph.start();
+        let lhs = graph.byte(10);
+        let rhs = graph.byte(20);
+        let sum = graph.add(lhs.value(), rhs.value());
+        let output = graph.output(sum.value(), start.effect());
+        let _end = graph.end(output.output_effect());
+
+        graph
+    };
+    crate::driver::run_opt_passes(
+        &mut input,
+        usize::MAX,
+        &PassConfig::new(30_000, true, true),
+        None,
+    );
+
+    let expected = {
+        let mut graph = Rvsdg::new();
+
+        let start = graph.start();
+        let thirty = graph.byte(30);
+        let output = graph.output(thirty.value(), start.effect());
+        let _end = graph.end(output.output_effect());
+
+        graph
+    };
+
+    assert!(input.structural_eq(&expected));
 }
 
 test_opts! {

@@ -424,7 +424,7 @@ impl Pass for ZeroLoop {
             };
 
             // Create the zero store
-            let zero = graph.int(Ptr::zero(self.tape_len));
+            let zero = graph.byte(0);
             let store = graph.store(target_cell, zero.value(), effect_source);
 
             // Rewire the theta's ports

@@ -3,13 +3,15 @@ use crate::{
         Bool, EdgeKind, End, Gamma, InputParam, InputPort, Node, NodeExt, NodeId, OutputParam,
         OutputPort, Rvsdg, Start, Theta,
     },
-    passes::Pass,
+    passes::{utils::ConstantStore, Pass},
     utils::{AssertNone, HashMap},
 };
 
 /// Evaluates constant operations within the program
+// TODO: Write this within an iterative style so that
+//       we can handle deeply nested programs
 pub struct ElimConstGamma {
-    values: HashMap<OutputPort, bool>,
+    values: ConstantStore,
     nodes: Vec<(NodeId, Node)>,
     input_lookup: HashMap<InputPort, Vec<InputPort>>,
     output_lookup: HashMap<OutputPort, OutputPort>,
@@ -17,9 +19,9 @@ pub struct ElimConstGamma {
 }
 
 impl ElimConstGamma {
-    pub fn new() -> Self {
+    pub fn new(tape_len: u16) -> Self {
         Self {
-            values: HashMap::default(),
+            values: ConstantStore::new(tape_len),
             nodes: Vec::new(),
             input_lookup: HashMap::default(),
             output_lookup: HashMap::default(),
@@ -50,12 +52,14 @@ impl Pass for ElimConstGamma {
     }
 
     fn visit_bool(&mut self, _graph: &mut Rvsdg, bool: Bool, value: bool) {
-        let replaced = self.values.insert(bool.value(), value);
-        debug_assert!(replaced.is_none());
+        self.values.add(bool.value(), value);
     }
 
     fn visit_gamma(&mut self, graph: &mut Rvsdg, mut gamma: Gamma) {
-        let (mut truthy_visitor, mut falsy_visitor) = (Self::new(), Self::new());
+        let (mut truthy_visitor, mut falsy_visitor) = (
+            Self::new(self.values.tape_len()),
+            Self::new(self.values.tape_len()),
+        );
 
         // For each input into the gamma region, if the input value is a known constant
         // then we should associate the input value with said constant
@@ -63,21 +67,19 @@ impl Pass for ElimConstGamma {
         {
             let (_, source, _) = graph.get_input(input);
 
-            if let Some(constant) = self.values.get(&source).cloned() {
+            if let Some(constant) = self.values.get(source) {
                 let true_param = gamma.true_branch().to_node::<InputParam>(true_param);
-                let replaced = truthy_visitor.values.insert(true_param.output(), constant);
-                debug_assert!(replaced.is_none());
+                truthy_visitor.values.add(true_param.output(), constant);
 
                 let false_param = gamma.true_branch().to_node::<InputParam>(false_param);
-                let replaced = falsy_visitor.values.insert(false_param.output(), constant);
-                debug_assert!(replaced.is_none());
+                falsy_visitor.values.add(false_param.output(), constant);
             }
         }
 
         // If a constant condition is found, inline the chosen branch
         // Note that we don't actually visit the inlined subgraph in this iteration,
         // we leave that for successive passes to take care of
-        if let Some(&condition) = self.values.get(&graph.get_input(gamma.condition()).1) {
+        if let Some(condition) = self.values.bool(graph.get_input(gamma.condition()).1) {
             tracing::debug!(
                 "eliminated gamma with constant conditional, inlining the {} branch of {:?}",
                 condition,
@@ -322,20 +324,16 @@ impl Pass for ElimConstGamma {
             for node_id in chosen_branch.node_ids() {
                 for (branch_input, _, branch_output, kind) in chosen_branch.all_node_inputs(node_id)
                 {
-                    let (inputs, output) = (
-                        self.input_lookup.get(&branch_input).into_iter().flatten(),
-                        self.output_lookup.get(&branch_output).copied(),
-                    );
-
-                    if let Some(output) = output {
-                        for &input in inputs {
-                            graph.add_edge(output, input, kind);
+                    if let Some(output) = self.output_lookup.get(&branch_output).copied() {
+                        if let Some(inputs) = self.input_lookup.get(&branch_input) {
+                            for &input in inputs {
+                                graph.add_edge(output, input, kind);
+                            }
                         }
                     } else {
                         tracing::error!(
-                            "failed to add edge while inlining gamma branch, missing output port for {:?} (inputs: {:?})",
+                            "failed to add edge while inlining gamma branch, missing output port for {:?}",
                             branch_output,
-                            inputs.collect::<Vec<_>>(),
                         );
                     }
                 }
@@ -364,16 +362,13 @@ impl Pass for ElimConstGamma {
     // FIXME: Inlining gamma bodies is broken rn
     fn visit_theta(&mut self, graph: &mut Rvsdg, mut theta: Theta) {
         let mut changed = false;
-        let mut visitor = Self::new();
+        let mut visitor = Self::new(self.values.tape_len());
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
         for (input, param) in theta.invariant_input_pairs() {
-            if let Some(constant) = self.values.get(&graph.input_source(input)).cloned() {
-                visitor
-                    .values
-                    .insert(param.output(), constant)
-                    .debug_unwrap_none();
+            if let Some(constant) = self.values.get(graph.input_source(input)) {
+                visitor.values.add(param.output(), constant);
             }
         }
 
@@ -381,7 +376,7 @@ impl Pass for ElimConstGamma {
 
         let cond_out = theta.condition();
         let cond_source = theta.body().input_source(cond_out.input());
-        let cond_value = visitor.values.get(&cond_source).copied();
+        let cond_value = visitor.values.bool(cond_source);
 
         // If the theta's condition is `false`, it will never loop and we can inline the body
         if cond_value == Some(false) {
@@ -642,11 +637,5 @@ impl Pass for ElimConstGamma {
             graph.replace_node(theta.node(), theta);
             self.changed();
         }
-    }
-}
-
-impl Default for ElimConstGamma {
-    fn default() -> Self {
-        Self::new()
     }
 }

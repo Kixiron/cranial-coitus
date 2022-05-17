@@ -442,7 +442,7 @@ mod tests {
                 Mem2Reg::new(tape_len),
                 AddSubLoop::new(tape_len),
                 Dce::new(),
-                ElimConstGamma::new(),
+                ElimConstGamma::new(tape_len),
                 ConstFolding::new(tape_len),
                 ExprDedup::new(tape_len),
             ]

@@ -1,6 +1,6 @@
 use core::str::lossy::{Utf8Lossy, Utf8LossyChunk};
 use std::{
-    io::{Read, StdinLock, Write},
+    io::{Read, Write},
     panic::{self, AssertUnwindSafe},
     slice,
 };
@@ -8,7 +8,7 @@ use std::{
 const IO_FAILURE_MESSAGE: &[u8] = b"encountered an io failure during execution\n";
 
 pub struct State<'a> {
-    stdin: StdinLock<'a>,
+    stdin: &'a mut dyn Read,
     stdout: &'a mut dyn Write,
     utf8_buffer: &'a mut String,
     start_ptr: *const u8,
@@ -18,7 +18,7 @@ pub struct State<'a> {
 
 impl<'a> State<'a> {
     pub fn new(
-        stdin: StdinLock<'a>,
+        stdin: &'a mut dyn Read,
         stdout: &'a mut dyn Write,
         utf8_buffer: &'a mut String,
         start_ptr: *const u8,

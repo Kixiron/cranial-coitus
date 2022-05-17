@@ -10,6 +10,8 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+// FIXME: Rewrite this pass, as of now it has *horrific* performance if there's
+//        nested loops of any degree
 /// Turn the multiplication of a cell by itself (x²) into a multiplication instruction
 ///
 /// ```

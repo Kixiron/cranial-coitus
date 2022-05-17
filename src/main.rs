@@ -46,6 +46,7 @@ use crate::{
     interpreter::EvaluationError,
     ir::{IrBuilder, Pretty, PrettyConfig},
     jit::Jit,
+    parse::Parsed,
     utils::{HashMap, HashSet, PassName, PerfEvent},
     values::Ptr,
 };
@@ -112,7 +113,8 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
 
     let unoptimized_execution = if !settings.no_run && settings.run_unoptimized_program {
         let compile_attempt: Result<Result<_>, _> = panic::catch_unwind(|| {
-            let jit = Jit::new(settings, &dump_dir, "input")?.compile(&input_program)?;
+            let jit =
+                Jit::new(settings, Some(&dump_dir), Some("input"))?.compile(&input_program)?;
 
             let mut tape = vec![0x00; settings.tape_len.get() as usize];
             let start = Instant::now();
@@ -645,7 +647,7 @@ fn debug(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
 
         println!("Executing...");
 
-        let jit = Jit::new(settings, &dump_dir, "output")?.compile(&output_program)?;
+        let jit = Jit::new(settings, Some(&dump_dir), Some("output"))?.compile(&output_program)?;
 
         let mut tape = vec![0x00; settings.tape_len.get() as usize];
         let start = Instant::now();
@@ -673,14 +675,21 @@ fn run(settings: &Settings, file: &Path, start_time: Instant) -> Result<()> {
         let tokens = span.in_scope(|| {
             tracing::info!("started parsing {}", file.display());
 
-            let (tokens, total_tokens) = parse::parse(&contents);
+            let Parsed {
+                tokens,
+                source_len,
+                total_tokens,
+                deepest_nesting,
+            } = parse::parse(&contents);
 
             let elapsed = start_time.elapsed();
             tracing::info!(
+                source_len,
                 total_tokens,
+                deepest_nesting,
                 "finished parsing {} in {:#?}",
                 file.display(),
-                elapsed
+                elapsed,
             );
 
             tokens

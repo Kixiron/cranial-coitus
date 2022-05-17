@@ -6,7 +6,7 @@ use crate::{
     ir::Const,
     passes::{
         utils::{ChangeReport, Changes, ConstantStore},
-        Pass, PassConfig,
+        Pass,
     },
     values::{Cell, Ptr},
 };
@@ -591,6 +591,8 @@ test_opts! {
 
 #[test]
 fn const_add() {
+    use crate::{driver, passes::PassConfig};
+
     let mut input = {
         let mut graph = Rvsdg::new();
 
@@ -603,7 +605,7 @@ fn const_add() {
 
         graph
     };
-    crate::driver::run_opt_passes(
+    driver::run_opt_passes(
         &mut input,
         usize::MAX,
         &PassConfig::new(30_000, true, true),

@@ -4,7 +4,7 @@ use crate::{
     interpreter::{EvaluationError, ExecutionStats, Machine},
     ir::{Block, IrBuilder, Pretty, PrettyConfig},
     lower_tokens,
-    parse::{self, Token},
+    parse::{self, Parsed, Token},
     passes::{self, PassConfig},
     utils::{HashMap, HashSet, PerfEvent},
     values::{Cell, Ptr},
@@ -133,12 +133,18 @@ pub fn parse_source(file: &Path, source: &str) -> Box<[Token]> {
     let event = PerfEvent::new("parsing");
 
     // Parse the program's source code into tokens
-    let (tokens, total_tokens) = parse::parse(source);
+    let Parsed {
+        tokens,
+        source_len,
+        total_tokens,
+        deepest_nesting,
+    } = parse::parse(source);
 
     let elapsed = event.finish();
     tracing::info!(
-        source_len = source.len(),
+        source_len,
         total_tokens,
+        deepest_nesting,
         "finished parsing '{}' in {:#?}",
         file,
         elapsed,

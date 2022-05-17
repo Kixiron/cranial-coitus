@@ -99,3 +99,22 @@ impl Settings {
         )
     }
 }
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            tape_len: NonZeroU16::new(30_000).unwrap(),
+            iteration_limit: None,
+            step_limit: None,
+            print_output_ir: false,
+            dont_inline_constants: false,
+            tape_wrapping_ub: false,
+            cell_wrapping_ub: false,
+            disable_optimizations: false,
+            run_unoptimized_program: false,
+            no_step_limit: false,
+            no_run: false,
+            interpreter: false,
+        }
+    }
+}

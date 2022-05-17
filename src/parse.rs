@@ -1,3 +1,5 @@
+use std::cmp::max;
+
 #[derive(Debug)]
 pub enum Token {
     IncPtr,
@@ -20,7 +22,15 @@ enum RawToken {
     JumpEnd,
 }
 
-pub fn parse(source: &str) -> (Box<[Token]>, usize) {
+#[derive(Debug)]
+pub struct Parsed {
+    pub tokens: Box<[Token]>,
+    pub source_len: usize,
+    pub total_tokens: usize,
+    pub deepest_nesting: usize,
+}
+
+pub fn parse(source: &str) -> Parsed {
     let tokens = source.chars().flat_map(|token| {
         Some(match token {
             '>' => RawToken::IncPtr,
@@ -35,7 +45,7 @@ pub fn parse(source: &str) -> (Box<[Token]>, usize) {
         })
     });
 
-    let (mut scopes, mut total_tokens) = (vec![Vec::new()], 0);
+    let (mut scopes, mut total_tokens, mut deepest_nesting) = (vec![Vec::new()], 0, 0);
     for token in tokens {
         match token {
             RawToken::IncPtr => scopes.last_mut().unwrap().push(Token::IncPtr),
@@ -44,7 +54,10 @@ pub fn parse(source: &str) -> (Box<[Token]>, usize) {
             RawToken::Dec => scopes.last_mut().unwrap().push(Token::Dec),
             RawToken::Output => scopes.last_mut().unwrap().push(Token::Output),
             RawToken::Input => scopes.last_mut().unwrap().push(Token::Input),
-            RawToken::JumpStart => scopes.push(Vec::new()),
+            RawToken::JumpStart => {
+                scopes.push(Vec::new());
+                deepest_nesting = max(deepest_nesting, scopes.len());
+            }
             RawToken::JumpEnd => {
                 let body = scopes.pop().unwrap();
                 scopes
@@ -58,5 +71,12 @@ pub fn parse(source: &str) -> (Box<[Token]>, usize) {
     }
 
     assert_eq!(scopes.len(), 1);
-    (scopes.remove(0).into_boxed_slice(), total_tokens)
+    let tokens = scopes.remove(0).into_boxed_slice();
+
+    Parsed {
+        tokens,
+        source_len: source.len(),
+        total_tokens,
+        deepest_nesting,
+    }
 }

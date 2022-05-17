@@ -1,9 +1,10 @@
 use atty::Stream;
 use similar::{Algorithm, TextDiff};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     fmt::{self, Debug, Display},
     hash::{BuildHasherDefault, Hash},
+    io::{self, Read},
     iter::Peekable,
     time::{Duration, Instant},
 };
@@ -25,6 +26,50 @@ pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<Xxh3
 
 // pub type ImHashSet<K> = im_rc::HashSet<K, BuildHasherDefault<Xxh3>>;
 pub type ImHashMap<K, V> = im_rc::HashMap<K, V, BuildHasherDefault<Xxh3>>;
+
+#[repr(transparent)]
+pub struct ByteVec(VecDeque<u8>);
+
+impl ByteVec {
+    pub fn new() -> Self {
+        Self(VecDeque::new())
+    }
+}
+
+impl<const N: usize> From<[u8; N]> for ByteVec {
+    fn from(bytes: [u8; N]) -> Self {
+        let mut vec = VecDeque::with_capacity(N);
+        vec.extend(bytes);
+
+        Self(vec)
+    }
+}
+
+impl<const N: usize> From<&'_ [u8; N]> for ByteVec {
+    fn from(bytes: &'_ [u8; N]) -> Self {
+        Self::from(*bytes)
+    }
+}
+
+impl From<&'_ [u8]> for ByteVec {
+    fn from(bytes: &'_ [u8]) -> Self {
+        let mut vec = VecDeque::with_capacity(bytes.len());
+        vec.extend(bytes);
+
+        Self(vec)
+    }
+}
+
+impl Read for ByteVec {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if let Some(byte) = self.0.pop_front() {
+            buf[0] = byte;
+            Ok(1)
+        } else {
+            Ok(0)
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PassName {
@@ -249,15 +294,28 @@ pub fn compile_brainfuck_into(
     ptr: OutputPort,
     effect: OutputPort,
 ) -> (OutputPort, OutputPort) {
+    use crate::parse::Parsed;
+
     let parsing_start = Instant::now();
 
     let span = tracing::info_span!("parsing");
     let tokens = span.in_scope(|| {
         tracing::info!("started parsing source code");
-        let (tokens, total_tokens) = parse::parse(source);
+        let Parsed {
+            tokens,
+            source_len,
+            total_tokens,
+            deepest_nesting,
+        } = parse::parse(source);
 
         let elapsed = parsing_start.elapsed();
-        tracing::info!(total_tokens, "finished parsing in {:#?}", elapsed);
+        tracing::info!(
+            source_len,
+            total_tokens,
+            deepest_nesting,
+            "finished parsing in {:#?}",
+            elapsed,
+        );
 
         tokens
     });

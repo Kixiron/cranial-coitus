@@ -56,13 +56,17 @@ pub struct Jit<'a> {
     /// The length of the (program/turing) tape we're targeting
     tape_len: u16,
 
-    dump_dir: &'a Path,
-    file_name: &'a str,
+    dump_dir: Option<&'a Path>,
+    file_name: Option<&'a str>,
 }
 
 impl<'a> Jit<'a> {
     /// Create a new jit
-    pub fn new(settings: &Settings, dump_dir: &'a Path, file_name: &'a str) -> Result<Self> {
+    pub fn new(
+        settings: &Settings,
+        dump_dir: Option<&'a Path>,
+        file_name: Option<&'a str>,
+    ) -> Result<Self> {
         let isa = build_isa()?;
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
@@ -114,13 +118,10 @@ impl<'a> Jit<'a> {
         let blocks = cir_to_bb::translate(block);
 
         // Create a formatted version of the ssa ir we just generated
-        {
+        if let (Some(dump_dir), Some(file_name)) = (self.dump_dir, self.file_name) {
             let ssa_ir = blocks.pretty_print(PrettyConfig::minimal());
-            fs::write(
-                self.dump_dir.join(self.file_name).with_extension("ssa"),
-                ssa_ir,
-            )
-            .context("failed to write ssa ir file")?;
+            fs::write(dump_dir.join(file_name).with_extension("ssa"), ssa_ir)
+                .context("failed to write ssa ir file")?;
         }
 
         let mut codegen = Codegen::new(
@@ -133,11 +134,13 @@ impl<'a> Jit<'a> {
         )?;
         let function = codegen.run()?;
 
-        fs::write(
-            self.dump_dir.join(self.file_name).with_extension("clif"),
-            &function.to_string(),
-        )
-        .context("failed to write clif ir file")?;
+        if let (Some(dump_dir), Some(file_name)) = (self.dump_dir, self.file_name) {
+            fs::write(
+                dump_dir.join(file_name).with_extension("clif"),
+                &function.to_string(),
+            )
+            .context("failed to write clif ir file")?;
+        }
 
         codegen.finish();
 
@@ -164,13 +167,13 @@ impl<'a> Jit<'a> {
         let code = self.module.get_finalized_function(function_id);
 
         // Disassemble the generated instructions
-        let code_bytes = unsafe { slice::from_raw_parts(code, code_len.size as usize) };
-        let disassembly = disassemble::disassemble(code_bytes)?;
-        fs::write(
-            self.dump_dir.join(self.file_name).with_extension("asm"),
-            disassembly,
-        )
-        .context("failed to write asm file")?;
+        if let (Some(dump_dir), Some(file_name)) = (self.dump_dir, self.file_name) {
+            let code_bytes = unsafe { slice::from_raw_parts(code, code_len.size as usize) };
+            let disassembly = disassemble::disassemble(code_bytes)?;
+
+            fs::write(dump_dir.join(file_name).with_extension("asm"), disassembly)
+                .context("failed to write asm file")?;
+        }
 
         // TODO: Assembly statistics
 

@@ -18,7 +18,13 @@ pub use ports::{InputPort, OutputPort, Port, PortData, PortId, PortKind};
 pub use subgraph::Subgraph;
 
 use crate::utils::{AssertNone, HashMap};
-use std::{cell::Cell, collections::hash_map::Entry, fmt::Debug, rc::Rc};
+use std::{
+    cell::Cell,
+    collections::{hash_map::Entry, BTreeSet, VecDeque},
+    fmt::Debug,
+    ops::Not as _,
+    rc::Rc,
+};
 use tinyvec::TinyVec;
 
 // FIXME: Make a `Subgraph` type and use it in gamma & theta nodes
@@ -255,48 +261,83 @@ impl Rvsdg {
         input_port
     }
 
-    pub fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.nodes.keys().copied()
-    }
-
-    pub fn port_ids(&self) -> impl Iterator<Item = PortId> + '_ {
-        self.ports.keys().copied()
-    }
-
-    #[track_caller]
-    pub fn iter_nodes(&self) -> impl Iterator<Item = (NodeId, &Node)> + '_ {
-        self.nodes
-            .keys()
-            .copied()
-            .map(|node_id| (node_id, self.get_node(node_id)))
-    }
+    // pub fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    //     self.nodes.keys().copied()
+    // }
+    //
+    // pub fn port_ids(&self) -> impl Iterator<Item = PortId> + '_ {
+    //     self.ports.keys().copied()
+    // }
+    //
+    // #[track_caller]
+    // pub fn iter_nodes(&self) -> impl Iterator<Item = (NodeId, &Node)> + '_ {
+    //     self.nodes
+    //         .keys()
+    //         .copied()
+    //         .map(|node_id| (node_id, self.get_node(node_id)))
+    // }
 
     /// Runs the provided closure for each node within the graph and all contained subgraphs
     pub fn for_each_transitive_node<F>(&self, mut for_each: F)
     where
         F: FnMut(NodeId, &Node),
     {
-        self.for_each_transitive_node_inner(&mut for_each);
+        self.for_each_transitive_node_inner(
+            // Seed with the graph's start and end
+            [self.start_nodes[0], self.end_nodes[0]],
+            &mut for_each,
+        );
     }
 
-    pub fn for_each_transitive_node_inner<F>(&self, for_each: &mut F)
+    // FIXME: Take into account new subgraph system
+    // TODO: Add parallel version?
+    pub fn for_each_transitive_node_inner<S, F>(&self, seeds: S, for_each: &mut F)
     where
+        S: IntoIterator<Item = NodeId>,
         F: FnMut(NodeId, &Node),
     {
-        for (&node_id, node) in self.nodes.iter() {
+        // TODO: Pool these allocations
+        let (mut queue, mut visited) = (VecDeque::with_capacity(512), BTreeSet::<NodeId>::new());
+        queue.extend(seeds);
+
+        while let Some(node_id) = queue.pop_front() {
+            let node = self.get_node(node_id);
+
+            // Execute the callback
             for_each(node_id, node);
 
-            match node {
-                Node::Gamma(gamma) => {
-                    gamma.true_branch().for_each_transitive_node_inner(for_each);
-                    gamma
-                        .false_branch()
-                        .for_each_transitive_node_inner(for_each);
-                }
-                Node::Theta(theta) => theta.body().for_each_transitive_node_inner(for_each),
+            // Add the node's inputs
+            queue.extend(node.all_input_ports().into_iter().filter_map(|input| {
+                let source = self.input_source_id(input);
+                visited.contains(&source).not().then_some(source)
+            }));
 
-                _ => {}
+            // If this is a theta node, add the innards of the theta
+            if let Node::Theta(theta) = node {
+                // Add the theta body's start and end nodes
+                queue.extend([theta.start_id(), theta.end_id()]);
+
+                // Add the theta body's input params
+                queue.extend(
+                    theta
+                        .input_param_ids()
+                        .filter_map(|param| visited.contains(&param).not().then_some(param)),
+                );
+
+                // Add the theta body's output params
+                queue.extend(
+                    theta
+                        .output_param_ids()
+                        .filter_map(|param| visited.contains(&param).not().then_some(param)),
+                );
             }
+            // TODO: Gammas
+
+            // Add the node's outputs
+            queue.extend(node.all_output_ports().into_iter().filter_map(|output| {
+                self.output_dest_id(output)
+                    .and_then(|dest| visited.contains(&dest).not().then_some(dest))
+            }));
         }
     }
 
@@ -305,47 +346,69 @@ impl Rvsdg {
     ///
     /// Returns `true` if short circuiting happened at any point  
     /// The order nodes are visited in is not guaranteed
-    pub fn try_for_each_transitive_node<F>(&self, mut for_each: F) -> bool
+    pub fn try_for_each_transitive_node<F>(&self, for_each: F) -> bool
     where
         F: FnMut(NodeId, &Node) -> bool,
     {
-        self.try_for_each_transitive_node_inner(&mut for_each)
+        self.try_for_each_transitive_node_inner(
+            // Seed with the graph's start and end
+            [self.start_nodes[0], self.end_nodes[0]],
+            for_each,
+        )
     }
 
-    pub fn try_for_each_transitive_node_inner<F>(&self, for_each: &mut F) -> bool
+    // FIXME: Take into account new subgraph system
+    pub fn try_for_each_transitive_node_inner<S, F>(&self, seeds: S, mut for_each: F) -> bool
     where
+        S: IntoIterator<Item = NodeId>,
         F: FnMut(NodeId, &Node) -> bool,
     {
-        // TODO: Convert this to use a work list instead of recursion
-        for (&node_id, node) in self.nodes.iter() {
+        // TODO: Pool these allocations
+        let (mut queue, mut visited) = (VecDeque::with_capacity(512), BTreeSet::<NodeId>::new());
+        queue.extend(seeds);
+
+        while let Some(node_id) = queue.pop_front() {
+            let node = self.get_node(node_id);
+
+            // Execute the callback
             if !for_each(node_id, node) {
                 return true;
             }
 
-            match node {
-                Node::Gamma(gamma) => {
-                    if gamma
-                        .true_branch()
-                        .try_for_each_transitive_node_inner(for_each)
-                        || gamma
-                            .false_branch()
-                            .try_for_each_transitive_node_inner(for_each)
-                    {
-                        return true;
-                    }
-                }
+            // Add the node's inputs
+            queue.extend(node.all_input_ports().into_iter().filter_map(|input| {
+                let source = self.input_source_id(input);
+                visited.contains(&source).not().then_some(source)
+            }));
 
-                Node::Theta(theta) => {
-                    if theta.body().try_for_each_transitive_node_inner(for_each) {
-                        return true;
-                    }
-                }
+            // If this is a theta node, add the innards of the theta
+            if let Node::Theta(theta) = node {
+                // Add the theta body's start and end nodes
+                queue.extend([theta.start_id(), theta.end_id()]);
 
-                _ => {}
+                // Add the theta body's input params
+                queue.extend(
+                    theta
+                        .input_param_ids()
+                        .filter_map(|param| visited.contains(&param).not().then_some(param)),
+                );
+
+                // Add the theta body's output params
+                queue.extend(
+                    theta
+                        .output_param_ids()
+                        .filter_map(|param| visited.contains(&param).not().then_some(param)),
+                );
             }
+            // TODO: Gammas
+
+            // Add the node's outputs
+            queue.extend(node.all_output_ports().into_iter().filter_map(|output| {
+                self.output_dest_id(output)
+                    .and_then(|dest| visited.contains(&dest).not().then_some(dest))
+            }));
         }
 
-        // Short circuiting didn't happen
         false
     }
 

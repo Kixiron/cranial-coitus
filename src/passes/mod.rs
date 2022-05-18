@@ -154,10 +154,10 @@ pub trait Pass {
         ChangeReport::default()
     }
 
-    fn visit_graph(&mut self, graph: &mut Rvsdg) -> bool {
+    fn visit_graph(&mut self, graph: &mut Rvsdg, seeds: &mut Vec<NodeId>) -> bool {
         // Attempt to reuse any available buffers
         let (mut stack, mut visited, mut buffer) = VISIT_GRAPH_CACHE
-            .with(|buffers| buffers.borrow_mut().pop())
+            .with_borrow_mut(|buffers| buffers.pop())
             // If we couldn't reuse a buffer, make new ones
             .unwrap_or_else(|| {
                 (
@@ -166,6 +166,11 @@ pub trait Pass {
                     Vec::new(),
                 )
             });
+        stack.clear();
+        visited.clear();
+
+        // Add the seed nodes to visit
+        stack.extend(seeds.drain(..));
 
         let result = self.visit_graph_inner(graph, &mut stack, &mut visited, &mut buffer);
 
@@ -173,7 +178,7 @@ pub trait Pass {
         stack.clear();
         visited.clear();
         buffer.clear();
-        VISIT_GRAPH_CACHE.with(|buffers| buffers.borrow_mut().push((stack, visited, buffer)));
+        VISIT_GRAPH_CACHE.with_borrow_mut(|buffers| buffers.push((stack, visited, buffer)));
 
         result
     }
@@ -190,21 +195,6 @@ pub trait Pass {
         buffer: &mut Vec<NodeId>,
     ) -> bool {
         visited.clear();
-        buffer.clear();
-
-        // Initialize the stack with all of the important nodes within the graph
-        // The reason we do this weird pushing thing is to make sure that the start nodes
-        // are to the end of the queue so that they'll be the first ones to be popped and
-        // processed
-        for node_id in graph.node_ids() {
-            let node = graph.get_node(node_id);
-
-            if node.is_start() || node.is_input_param() {
-                stack.push_back(node_id);
-            } else if node.is_end() || node.is_output_param() {
-                stack.push_front(node_id);
-            }
-        }
 
         while let Some(node_id) = stack.pop_back() {
             // If our attempts failed and we let a duplicate sneak onto the stack,

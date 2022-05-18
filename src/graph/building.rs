@@ -402,19 +402,15 @@ impl Rvsdg {
             })
             .collect();
 
-        // Create the theta's subgraph
-        let mut subgraph =
-            Rvsdg::from_counters(self.node_counter.clone(), self.port_counter.clone());
-
         // Create the theta start node
-        let start = subgraph.start();
+        let start = self.start();
 
         // Create the input params for the invariant inputs
         let (invariant_inputs, invariant_param_outputs): (HashMap<_, _>, TinyVec<[_; 5]>) =
             invariant_input_ports
                 .iter()
                 .map(|&input| {
-                    let param = subgraph.input_param(EdgeKind::Value);
+                    let param = self.input_param(EdgeKind::Value);
                     ((input, param.node()), param.output())
                 })
                 .unzip();
@@ -424,7 +420,7 @@ impl Rvsdg {
             variant_input_ports
                 .iter()
                 .map(|&input| {
-                    let param = subgraph.input_param(EdgeKind::Value);
+                    let param = self.input_param(EdgeKind::Value);
                     ((input, param.node()), param.output())
                 })
                 .unzip();
@@ -435,19 +431,19 @@ impl Rvsdg {
             condition,
             effect: body_effect_output,
         } = build_theta(
-            &mut subgraph,
+            self,
             start.effect(),
             &invariant_param_outputs,
             &variant_param_outputs,
         );
 
         // Create the subgraph condition's output param
-        subgraph.assert_value_port(condition);
-        let condition_param = subgraph.output_param(condition, EdgeKind::Value);
+        self.assert_value_port(condition);
+        let condition_param = self.output_param(condition, EdgeKind::Value);
 
         // Create the subgraph's end node
-        subgraph.assert_effect_port(body_effect_output);
-        let end = subgraph.end(body_effect_output);
+        self.assert_effect_port(body_effect_output);
+        let end = self.end(body_effect_output);
 
         // If there's no input effect then the body can't contain effectful operations
         if effect_input.is_none() {
@@ -472,10 +468,10 @@ impl Rvsdg {
                 .iter()
                 .zip(variant_inputs.keys())
                 .map(|(&output, &variant_input)| {
-                    subgraph.assert_value_port(output);
+                    self.assert_value_port(output);
 
                     // Create the output param within the subgraph
-                    let output_param = subgraph.output_param(output, EdgeKind::Value);
+                    let output_param = self.output_param(output, EdgeKind::Value);
 
                     (variant_input, output_param)
                 });
@@ -509,7 +505,7 @@ impl Rvsdg {
             outputs,
             output_back_edges,
             condition_param.node(),
-            Box::new(Subgraph::new(subgraph, start.node(), end.node())),
+            Subgraph::new(start.node(), end.node()),
         );
 
         self.insert_node(theta).to_theta()

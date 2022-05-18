@@ -59,7 +59,7 @@ pub struct Theta {
     ///
     /// [`Start`]: crate::graph::Start
     /// [`End`]: crate::graph::End
-    subgraph: Box<Subgraph>,
+    subgraph: Subgraph,
 }
 
 impl Theta {
@@ -73,7 +73,7 @@ impl Theta {
         outputs: HashMap<OutputPort, NodeId>,
         output_feedback: HashMap<OutputPort, InputPort>,
         condition: NodeId,
-        subgraph: Box<Subgraph>,
+        subgraph: Subgraph,
     ) -> Self {
         if cfg!(debug_assertions) {
             assert_eq!(variant_inputs.len(), outputs.len());
@@ -110,33 +110,31 @@ impl Theta {
     }
 
     /// Get the [`OutputParam`] of the theta's condition from within its body
-    pub fn condition(&self) -> OutputParam {
-        *self.subgraph.to_node(self.condition)
+    pub fn condition(&self, graph: &Rvsdg) -> OutputParam {
+        *graph.to_node(self.condition)
     }
 
     /// Get the [`Start`] of the theta's body
-    pub fn start_node(&self) -> Start {
-        self.subgraph.start_node()
+    pub fn start_node(&self, graph: &Rvsdg) -> Start {
+        self.subgraph.start_node(graph)
     }
 
     /// Get the [`End`] of the theta's body
-    pub fn end_node(&self) -> End {
-        self.subgraph.end_node()
+    pub fn end_node(&self, graph: &Rvsdg) -> End {
+        self.subgraph.end_node(graph)
+    }
+
+    pub const fn start_id(&self) -> NodeId {
+        self.subgraph.start
+    }
+
+    pub const fn end_id(&self) -> NodeId {
+        self.subgraph.end
     }
 
     /// Get the [`NodeId`] of the theta body's [`End`] node
     pub const fn end_node_id(&self) -> NodeId {
         self.subgraph.end
-    }
-
-    /// Get access to the theta node's body
-    pub fn body(&self) -> &Rvsdg {
-        &self.subgraph
-    }
-
-    /// Get mutable access to the theta node's body
-    pub fn body_mut(&mut self) -> &mut Rvsdg {
-        &mut self.subgraph
     }
 
     /// Get the input effect's port from the theta node if it's available
@@ -195,8 +193,8 @@ impl Theta {
     }
 
     pub fn add_invariant_input_raw(&mut self, input: InputPort, param: NodeId) {
-        debug_assert!(self.body().contains_node(param));
-        debug_assert!(self.body().get_node(param).is_input_param());
+        // debug_assert!(graph.contains_node(param));
+        // debug_assert!(graph.get_node(param).is_input_param());
 
         self.invariant_inputs
             .insert(input, param)
@@ -256,9 +254,12 @@ impl Theta {
 
     /// Returns the input ports and the associated input param of all inputs (variant and invariant)
     /// to the theta node, *not including effect inputs*
-    pub fn input_pairs(&self) -> impl Iterator<Item = (InputPort, InputParam)> + '_ {
-        self.invariant_input_pairs()
-            .chain(self.variant_input_pairs())
+    pub fn input_pairs<'a>(
+        &'a self,
+        graph: &'a Rvsdg,
+    ) -> impl Iterator<Item = (InputPort, InputParam)> + 'a {
+        self.invariant_input_pairs(graph)
+            .chain(self.variant_input_pairs(graph))
     }
 
     /// Returns the input ports and the associated node id of each input param for all inputs (variant and invariant)
@@ -269,9 +270,9 @@ impl Theta {
     }
 
     /// Returns all input params to the theta node, *not including effect inputs*
-    pub fn input_params(&self) -> impl Iterator<Item = InputParam> + '_ {
-        self.invariant_input_params()
-            .chain(self.variant_input_params())
+    pub fn input_params<'a>(&'a self, graph: &'a Rvsdg) -> impl Iterator<Item = InputParam> + 'a {
+        self.invariant_input_params(graph)
+            .chain(self.variant_input_params(graph))
     }
 
     /// Returns the node ids of all input params to the theta node (variant and invariant),
@@ -292,10 +293,13 @@ impl Theta {
     }
 
     /// Returns the invariant inputs and the input ports that feed into them
-    pub fn invariant_input_pairs(&self) -> impl Iterator<Item = (InputPort, InputParam)> + '_ {
+    pub fn invariant_input_pairs<'a>(
+        &'a self,
+        graph: &'a Rvsdg,
+    ) -> impl Iterator<Item = (InputPort, InputParam)> + 'a {
         self.invariant_inputs
             .iter()
-            .map(|(&port, &param)| (port, *self.subgraph.to_node(param)))
+            .map(|(&port, &param)| (port, *graph.to_node(param)))
     }
 
     /// Returns the node ids of each invariant input and the input port that feeds into them
@@ -306,11 +310,13 @@ impl Theta {
     }
 
     /// Returns the invariant inputs to the theta node
-    pub fn invariant_input_params(&self) -> impl Iterator<Item = InputParam> + '_ {
+    pub fn invariant_input_params<'a>(
+        &'a self,
+        graph: &'a Rvsdg,
+    ) -> impl Iterator<Item = InputParam> + 'a {
         self.invariant_inputs
             .iter()
-            .map(|(_, &param)| self.subgraph.to_node(param))
-            .copied()
+            .map(|(_, &param)| *graph.to_node(param))
     }
 
     /// Returns the node ids of invariant inputs to the theta node
@@ -333,10 +339,13 @@ impl Theta {
     }
 
     /// Returns the variant inputs and the input ports that feed into them
-    pub fn variant_input_pairs(&self) -> impl Iterator<Item = (InputPort, InputParam)> + '_ {
+    pub fn variant_input_pairs<'a>(
+        &'a self,
+        graph: &'a Rvsdg,
+    ) -> impl Iterator<Item = (InputPort, InputParam)> + 'a {
         self.variant_inputs
             .iter()
-            .map(|(&port, &param)| (port, *self.subgraph.to_node(param)))
+            .map(|(&port, &param)| (port, *graph.to_node(param)))
     }
 
     /// Returns the node ids of each variant input and the input port that feeds into them
@@ -347,11 +356,13 @@ impl Theta {
     }
 
     /// Returns the variant inputs to the theta node
-    pub fn variant_input_params(&self) -> impl Iterator<Item = InputParam> + '_ {
+    pub fn variant_input_params<'a>(
+        &'a self,
+        graph: &'a Rvsdg,
+    ) -> impl Iterator<Item = InputParam> + 'a {
         self.variant_inputs
             .iter()
-            .map(|(_, &param)| self.subgraph.to_node(param))
-            .copied()
+            .map(|(_, &param)| *graph.to_node(param))
     }
 
     /// Returns the node ids of variant inputs to the theta node
@@ -390,10 +401,13 @@ impl Theta {
 
     /// Returns all output ports and the output params that they feed into,
     /// *not including effect outputs*
-    pub fn output_pairs(&self) -> impl Iterator<Item = (OutputPort, OutputParam)> + '_ {
+    pub fn output_pairs<'a>(
+        &'a self,
+        graph: &'a Rvsdg,
+    ) -> impl Iterator<Item = (OutputPort, OutputParam)> + 'a {
         self.outputs
             .iter()
-            .map(|(&port, &param)| (port, *self.subgraph.to_node(param)))
+            .map(|(&port, &param)| (port, *graph.to_node(param)))
     }
 
     /// Returns the node ids of each output param and the output port that feeds into them
@@ -418,11 +432,8 @@ impl Theta {
     }
 
     /// Returns the outputs from the theta node, *not including effect outputs*
-    pub fn output_params(&self) -> impl Iterator<Item = OutputParam> + '_ {
-        self.outputs
-            .iter()
-            .map(|(_, &param)| self.subgraph.to_node(param))
-            .copied()
+    pub fn output_params<'a>(&'a self, graph: &'a Rvsdg) -> impl Iterator<Item = OutputParam> + 'a {
+        self.outputs.iter().map(|(_, &param)| *graph.to_node(param))
     }
 
     /// Returns the node ids of outputs from the theta node, *not including effect outputs*
@@ -432,13 +443,13 @@ impl Theta {
 
     /// Returns all variant inputs to the theta node along with the output
     /// that loops back into the given input
-    pub fn variant_inputs_loopback(&self) -> impl Iterator<Item = (InputParam, OutputParam)> + '_ {
+    pub fn variant_inputs_loopback<'a>(
+        &'a self,
+        graph: &'a Rvsdg,
+    ) -> impl Iterator<Item = (InputParam, OutputParam)> + 'a {
         self.output_feedback.iter().map(|(output, input)| {
             let (input, output) = (self.variant_inputs[input], self.outputs[output]);
-            (
-                *self.subgraph.to_node(input),
-                *self.subgraph.to_node(output),
-            )
+            (*graph.to_node(input), *graph.to_node(output))
         })
     }
 
@@ -467,36 +478,27 @@ impl Theta {
             .map(|(&input_port, _)| input_port)
     }
 
-    pub(crate) fn has_child_thetas(&self) -> bool {
-        let mut has_child_thetas = false;
-        self.body().try_for_each_transitive_node(|_, node| {
-            if node.is_theta() {
-                has_child_thetas = true;
-                false
-            } else {
-                true
-            }
-        });
+    pub(crate) fn has_child_thetas(&self, graph: &Rvsdg) -> bool {
+        let params = [self.start_id(), self.end_id()]
+            .into_iter()
+            .chain(self.input_param_ids())
+            .chain(self.output_param_ids());
 
-        has_child_thetas
+        graph.try_for_each_transitive_node_inner(params, |_, node| node.is_theta())
     }
 }
 
 /// Utility functions
 // TODO: Function to inline the theta's body into the given graph
 impl Theta {
-    pub fn get_output_param(&self, port: OutputPort) -> Option<OutputParam> {
-        self.outputs
-            .get(&port)
-            .map(|&node| self.subgraph.to_node(node))
-            .copied()
+    pub fn get_output_param(&self, port: OutputPort, graph: &Rvsdg) -> Option<OutputParam> {
+        self.outputs.get(&port).map(|&node| *graph.to_node(node))
     }
 
     /// Returns `true` if the theta's condition is always `false`
-    pub fn is_infinite(&self) -> bool {
-        let cond = self.condition();
-        let condition_is_false = self
-            .body()
+    pub fn is_infinite(&self, graph: &Rvsdg) -> bool {
+        let cond = self.condition(graph);
+        let condition_is_false = graph
             .input_source_node(cond.input())
             .as_bool_value()
             .unwrap_or(false);

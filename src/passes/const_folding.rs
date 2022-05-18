@@ -301,15 +301,15 @@ impl Pass for ConstFolding {
         // then we should associate the input value with said constant
         // Note: We only propagate **invariant** inputs into the loop, propagating
         //       variant inputs requires dataflow information
-        let invariant_inputs: Vec<_> = theta.invariant_input_pairs().collect();
+        let invariant_inputs: Vec<_> = theta.invariant_input_pairs(graph).collect();
         for (input, param) in invariant_inputs {
             if let Some(constant) = self.values.get(graph.input_source(input))
                 && !graph.input_source_node(input).is_constant()
             {
-                let value = theta.body_mut().constant(constant).value();
+                let value = graph.constant(constant).value();
                 visitor.values.add(value, constant);
                 theta.remove_invariant_input(input);
-                theta.body_mut().rewire_dependents(param.output(), value);
+                graph.rewire_dependents(param.output(), value);
 
                 self.changes.inc::<"propagated-inputs">();
                 changed = true;
@@ -322,11 +322,11 @@ impl Pass for ConstFolding {
         // Deduplicate variant inputs with identical values (currently only for constants)
         // and pull constant outputs out of the theta's body
         let variant_inputs: Vec<_> = theta
-            .variant_input_pairs()
-            .zip(theta.output_pairs())
+            .variant_input_pairs(graph)
+            .zip(theta.output_pairs(graph))
             .collect();
         for ((input, input_param), (output, output_param)) in variant_inputs {
-            let output_source = theta.body().input_source(output_param.input());
+            let output_source = graph.input_source(output_param.input());
             if let Some(feedback_value) = visitor.values.get(output_source) {
                 // If the input and feedback values are identical, deduplicate them
                 if let Some(input_value) = self.values.get(graph.input_source(input))
@@ -334,8 +334,8 @@ impl Pass for ConstFolding {
                 {
                     // Rewire dependents on the parameters to the constant value and
                     // remove the parameters from the theta
-                    theta.body_mut().rewire_dependents(input_param.output(), output_source);
-                    theta.body_mut().remove_node(output_param.node());
+                    graph.rewire_dependents(input_param.output(), output_source);
+                    graph.remove_node(output_param.node());
                     theta.remove_variant_input(input);
 
                     self.changes.inc::<"invariant-theta-feedback">();

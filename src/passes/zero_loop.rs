@@ -13,6 +13,7 @@ use crate::{
 pub struct ZeroLoop {
     changed: bool,
     values: ConstantStore,
+    // TODO: Switch to Changes
     zero_gammas_removed: usize,
     zero_loops_removed: usize,
     tape_len: u16,
@@ -72,12 +73,11 @@ impl ZeroLoop {
     fn is_zero_loop(
         &self,
         theta: &Theta,
+        graph: &Rvsdg,
         body_values: &ConstantStore,
     ) -> Option<Result<Ptr, InputPort>> {
-        let graph = theta.body();
-
         // The theta's start node
-        let start = theta.start_node();
+        let start = theta.start_node(graph);
 
         // cell_value = load cell_ptr
         let cell_value = graph.cast_output_dest::<Load>(start.effect())?;
@@ -99,7 +99,7 @@ impl ZeroLoop {
         // not_zero = neq cell_value, int 1
         // not_zero = neq plus_one, int 0
         // not_zero = neq minus_one, int 0
-        let not_zero = graph.cast_input_source::<Neq>(theta.condition().input())?;
+        let not_zero = graph.cast_input_source::<Neq>(theta.condition(graph).input())?;
         {
             let lhs = graph.input_source(not_zero.lhs());
             let rhs_value = body_values.ptr(graph.input_source(not_zero.rhs()))?;
@@ -129,8 +129,8 @@ impl ZeroLoop {
 
                 // Find the port that the input param refers to
                 let input_port = theta
-                    .input_pairs()
-                    .find_map(|(port, param)| (param.node() == input.node()).then(|| port))?;
+                    .input_pairs(graph)
+                    .find_map(|(port, param)| (param.node() == input.node()).then_some(port))?;
 
                 Err(input_port)
             }
@@ -408,7 +408,7 @@ impl Pass for ZeroLoop {
         self.zero_loops_removed += visitor.zero_loops_removed;
         self.zero_gammas_removed += visitor.zero_gammas_removed;
 
-        if let Some(target_ptr) = self.is_zero_loop(&theta, &visitor.values) {
+        if let Some(target_ptr) = self.is_zero_loop(&theta, graph, &visitor.values) {
             tracing::debug!(
                 "detected that theta {:?} is a zero loop, replacing with a store to {:?}",
                 theta.node(),
@@ -430,11 +430,11 @@ impl Pass for ZeroLoop {
             // Rewire the theta's ports
             graph.rewire_dependents(theta.output_effect().unwrap(), store.output_effect());
 
-            for (input_port, param) in theta.input_pairs() {
+            for (input_port, param) in theta.input_pairs(graph) {
                 if let Some((Node::OutputParam(output), _, EdgeKind::Value)) =
-                    theta.body().get_output(param.output())
+                    graph.get_output(param.output())
                 {
-                    let output_port = theta.output_pairs().find_map(|(output_port, param)| {
+                    let output_port = theta.output_pairs(graph).find_map(|(output_port, param)| {
                         (param.node() == output.node()).then(|| output_port)
                     });
 

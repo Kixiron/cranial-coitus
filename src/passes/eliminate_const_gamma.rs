@@ -366,7 +366,7 @@ impl Pass for ElimConstGamma {
 
         // For each input into the theta region, if the input value is a known constant
         // then we should associate the input value with said constant
-        for (input, param) in theta.invariant_input_pairs() {
+        for (input, param) in theta.invariant_input_pairs(graph) {
             if let Some(constant) = self.values.get(graph.input_source(input)) {
                 visitor.values.add(param.output(), constant);
             }
@@ -374,8 +374,8 @@ impl Pass for ElimConstGamma {
 
         changed |= visitor.visit_graph(theta.body_mut());
 
-        let cond_out = theta.condition();
-        let cond_source = theta.body().input_source(cond_out.input());
+        let cond_out = theta.condition(graph);
+        let cond_source = graph.input_source(cond_out.input());
         let cond_value = visitor.values.bool(cond_source);
 
         // If the theta's condition is `false`, it will never loop and we can inline the body
@@ -398,7 +398,7 @@ impl Pass for ElimConstGamma {
                     .map(|(node_id, node)| (node_id, node.clone())),
             );
 
-            for (input, param) in theta.input_pairs() {
+            for (input, param) in theta.input_pairs(graph) {
                 let inlined_output = graph.input_source(input);
 
                 self.output_lookup
@@ -406,7 +406,7 @@ impl Pass for ElimConstGamma {
                     .debug_unwrap_none();
             }
 
-            for (output, param) in theta.output_pairs() {
+            for (output, param) in theta.output_pairs(graph) {
                 self.input_lookup
                     .insert(param.input(), graph.output_dest(output).collect::<Vec<_>>())
                     .debug_unwrap_none();
@@ -416,7 +416,7 @@ impl Pass for ElimConstGamma {
             for (node_id, mut node) in self.nodes.drain(..) {
                 // Replace start nodes with the gamma's input effect
                 if node.is_start() {
-                    let start = theta.start_node();
+                    let start = theta.start_node(graph);
                     let output_effect = graph.input_source(theta.input_effect().unwrap());
 
                     self.output_lookup
@@ -425,7 +425,7 @@ impl Pass for ElimConstGamma {
 
                 // Replace end nodes with the gamma's output effect
                 } else if node.is_end() {
-                    let end = theta.end_node();
+                    let end = theta.end_node(graph);
                     self.input_lookup
                         .insert(
                             end.input_effect(),
